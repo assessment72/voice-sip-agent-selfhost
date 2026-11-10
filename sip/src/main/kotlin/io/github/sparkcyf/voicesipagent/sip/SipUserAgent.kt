@@ -66,6 +66,8 @@ class SipUserAgent(
     private val issuedNonces = HashMap<String, Long>()          // nonce -> issuedAt (ms)
     private val authFailTimes = HashMap<String, ArrayDeque<Long>>() // source IP -> recent failure times
     private val authBanUntil = HashMap<String, Long>()          // source IP -> banned until (ms)
+    private val authBanCount = HashMap<String, Int>()           // source IP -> consecutive ban level
+    private val authBanLastMs = HashMap<String, Long>()         // source IP -> time of last ban (escalation decay)
 
     private val account get() = config.account
     // Identity used when we originate (device-in-itself mode has no configured account).
@@ -315,7 +317,7 @@ class SipUserAgent(
             }
             call != null && (toTag != null || req.method == "INVITE") -> call.onInDialogRequest(req, tx)
             toTag != null -> tx.respond(buildResponse(req, 481))
-            req.method == "INVITE" -> onNewInvite(req, tx)
+            req.method == "INVITE" -> onNewInvite(req, tx, from)
             req.method == "OPTIONS" -> tx.respond(buildResponse(req, 200, toTag = newTag()).also { addCapabilities(it) })
             req.method == "NOTIFY" -> tx.respond(buildResponse(req, 200, toTag = newTag()))
             req.method == "BYE" || req.method == "INFO" || req.method == "UPDATE" -> tx.respond(buildResponse(req, 481))
@@ -323,7 +325,11 @@ class SipUserAgent(
         }
     }
 
-    private fun onNewInvite(req: SipRequest, tx: ServerTransaction) {
+    private fun onNewInvite(req: SipRequest, tx: ServerTransaction, from: InetSocketAddress) {
+        // An inbound INVITE makes the bridge place a GSM call, which costs money.  In server mode it
+        // must be authenticated with the same digest secret as REGISTER, or any host reaching this port
+        // dials out for free (open toll-fraud relay).  Gate before any call state is created.
+        if (!inviteAuthPassed(req, from, tx)) return
         val handler = incomingHandler
         // X-VSA-Dial: the number to dial when the PBX keeps the Request-URI user as our own AoR
         // (needed behind registrar-based proxies such as Flexisip).
@@ -350,7 +356,11 @@ class SipUserAgent(
     private val nonceTtlMs = 300_000L
     private val authMaxFails = 5          // failures within the window before a ban
     private val authFailWindowMs = 60_000L
-    private val authBanMs = 600_000L      // 10 minutes
+    // Repeat offenders escalate: 1st ban 10 min, 2nd 1 h, 3rd+ 24 h.  A single IP bursts until banned,
+    // then the same hoster rotates to the next IP between sessions; a longer ban on a returning IP makes
+    // that expensive.  No /24 ban: a legitimate softphone could share a hoster with an attacker.
+    private val authBanEscalation = longArrayOf(600_000L, 3_600_000L, 86_400_000L)
+    private val authBanResetMs = 86_400_000L  // no new ban for this long -> escalation resets
 
     /**
      * Challenge/verify a REGISTER when a registrar password is set. Returns true to let the REGISTER
@@ -359,49 +369,114 @@ class SipUserAgent(
     private fun registrarAuthPassed(req: SipRequest, from: InetSocketAddress): Boolean {
         if (config.registrarPassword.isEmpty()) return true
         val ip = from.address?.hostAddress ?: ""
+        return when (val o = digestCheck(req, ip, "REGISTER")) {
+            AuthOutcome.PASS -> true
+            AuthOutcome.DROP -> false
+            is AuthOutcome.Challenge -> {
+                val resp = buildResponse(req, 401, toTag = newTag())
+                resp.headers.add("WWW-Authenticate", DigestAuth.challengeHeader(config.registrarRealm, o.nonce))
+                transport.send(resp, from)
+                false
+            }
+        }
+    }
+
+    /**
+     * Challenge/verify an inbound INVITE before the bridge dials it out over the cellular leg.  Without
+     * this any host that reaches the SIP port places a GSM call for free with a forged From — an open
+     * toll-fraud relay (the registrar password only ever gated REGISTER, i.e. who may RECEIVE calls, not
+     * who may PLACE them).  Enforced only in server mode; classic mode trusts its one upstream.  Fails
+     * closed: with no registrar password set, outbound INVITEs are refused (403) rather than dialed.
+     */
+    private fun inviteAuthPassed(req: SipRequest, from: InetSocketAddress, tx: ServerTransaction): Boolean {
+        if (!config.serverMode) return true
+        val ip = from.address?.hostAddress ?: ""
+        if (config.registrarPassword.isEmpty()) {
+            tx.respond(buildResponse(req, 403, toTag = newTag()))
+            log.warn("INVITE from $ip refused: set a registrar password to allow outbound calls")
+            return false
+        }
+        return when (val o = digestCheck(req, ip, "INVITE")) {
+            AuthOutcome.PASS -> true
+            AuthOutcome.DROP -> {
+                tx.respond(buildResponse(req, 403, toTag = newTag()))
+                false
+            }
+            is AuthOutcome.Challenge -> {
+                val resp = buildResponse(req, 401, toTag = newTag())
+                resp.headers.add("WWW-Authenticate", DigestAuth.challengeHeader(config.registrarRealm, o.nonce))
+                tx.respond(resp)
+                false
+            }
+        }
+    }
+
+    private sealed class AuthOutcome {
+        object PASS : AuthOutcome()
+        object DROP : AuthOutcome()                    // banned or over-limit; caller rejects/drops
+        data class Challenge(val nonce: String) : AuthOutcome()
+    }
+
+    /**
+     * Shared digest verify + brute-force accounting for inbound REGISTER and INVITE in server mode.
+     * Sends nothing; the caller emits the 401 (REGISTER via transport, INVITE via its server tx).
+     * Assumes a non-empty registrar password (the caller decides the empty-password policy).
+     */
+    private fun digestCheck(req: SipRequest, ip: String, method: String): AuthOutcome {
         val now = System.currentTimeMillis()
         authBanUntil[ip]?.let { until ->
             if (now < until) {
-                log.warn("REGISTER from banned $ip dropped (${(until - now) / 1000}s left)")
-                return false
+                log.warn("$method from banned $ip dropped (${(until - now) / 1000}s left)")
+                return AuthOutcome.DROP
             }
             authBanUntil.remove(ip); authFailTimes.remove(ip)
         }
         val authHeader = req.headers["Authorization"]
         val cred = authHeader?.let { DigestAuth.parseCredentials(it) }
-        val ok = cred != null && DigestAuth.verify(cred, "REGISTER", config.registrarPassword) { nonce ->
+        val ok = cred != null && DigestAuth.verify(cred, method, config.registrarPassword) { nonce ->
             val issuedAt = issuedNonces[nonce]
             issuedAt != null && now - issuedAt <= nonceTtlMs
         }
         if (ok) {
             authFailTimes.remove(ip); authBanUntil.remove(ip)
-            return true
+            return AuthOutcome.PASS
         }
-        // A credential-bearing REGISTER that failed counts toward the ban; a first, challenge-less
-        // REGISTER does not (that is the normal start of the handshake).
-        if (authHeader != null && registrarAuthFailed(ip, now)) {
-            log.warn("REGISTER brute-force from $ip: banned for ${authBanMs / 1000}s")
-            return false
+        // A credential-bearing request that failed counts toward the ban; a first, challenge-less one
+        // does not (that is the normal start of the digest handshake).
+        if (authHeader != null) {
+            val banMs = registrarAuthFailed(ip, now)
+            if (banMs > 0L) {
+                val who = cred?.username?.takeIf { it.isNotEmpty() }
+                log.warn("$method brute-force from $ip${if (who != null) " (user=$who)" else ""}: banned for ${banMs / 1000}s")
+                return AuthOutcome.DROP
+            }
         }
-        val nonce = issueNonce(now)
-        val resp = buildResponse(req, 401, toTag = newTag())
-        resp.headers.add("WWW-Authenticate", DigestAuth.challengeHeader(config.registrarRealm, nonce))
-        transport.send(resp, from)
-        log.info("REGISTER challenged (${if (authHeader == null) "no credentials" else "bad credentials"}) from $ip")
-        return false
+        val who = cred?.username?.takeIf { it.isNotEmpty() }
+        log.info("$method challenged (${if (authHeader == null) "no credentials" else "bad credentials"}) from $ip${if (who != null) " user=$who" else ""}")
+        return AuthOutcome.Challenge(issueNonce(now))
     }
 
-    /** Record a failed auth from [ip]; returns true once the window is over the limit (now banned). */
-    private fun registrarAuthFailed(ip: String, now: Long): Boolean {
+    /** Record a failed auth from [ip]; returns the ban duration in ms if this pushed it over the limit
+     *  (now banned), else 0.  Repeat offenders escalate per [authBanEscalation]; the level decays after
+     *  [authBanResetMs] of good behaviour, which also keeps the maps bounded. */
+    private fun registrarAuthFailed(ip: String, now: Long): Long {
+        val stale = authBanLastMs.filterValues { now - it > authBanResetMs }.keys.toList()
+        for (k in stale) { authBanLastMs.remove(k); authBanCount.remove(k) }
+
         val times = authFailTimes.getOrPut(ip) { ArrayDeque() }
         times.addLast(now)
         while (times.isNotEmpty() && now - times.first() > authFailWindowMs) times.removeFirst()
         if (times.size >= authMaxFails) {
-            authBanUntil[ip] = now + authBanMs
+            val prior = if (authBanLastMs[ip]?.let { now - it <= authBanResetMs } == true) authBanCount[ip] ?: 0 else 0
+            val level = prior + 1
+            val dur = authBanEscalation[minOf(level - 1, authBanEscalation.size - 1)]
+            authBanCount[ip] = level
+            authBanLastMs[ip] = now
+            authBanUntil[ip] = now + dur
             authFailTimes.remove(ip)
-            return true
+            return dur
         }
-        return false
+        return 0L
     }
 
     /** Issue a fresh nonce, pruning expired ones so the map cannot grow without bound. */
