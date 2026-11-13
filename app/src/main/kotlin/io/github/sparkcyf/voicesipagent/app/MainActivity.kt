@@ -297,8 +297,8 @@ private fun SettingsSection(rt: GatewayRuntime) {
                 label = { Text(t("Пароль для софтфона (защита регистратора)", "Softphone password (registrar auth)")) },
                 visualTransformation = PasswordVisualTransformation(), singleLine = true, modifier = Modifier.fillMaxWidth(),
             )
-            Text(t("Пусто = без пароля, регистрироваться может кто угодно. Задай пароль перед выходом в интернет и введи тот же пароль в софтфоне.",
-                "Empty = no password, anyone may register. Set one before exposing the gateway to the internet, and enter the same password in your softphone."),
+            Text(t("Пароль обязателен для исходящих SIP-звонков через SIM и для доступа из интернета. Введи тот же пароль в baresip. Без пароля шлюз отклоняет исходящие INVITE.",
+                "This password is required for SIP-to-SIM outgoing calls and for internet access. Enter the same password in baresip. Without it, the gateway rejects outgoing INVITEs."),
                 style = MaterialTheme.typography.bodySmall)
         }
         Choice(t("SIP-стек", "SIP stack"), SipStack.entries, stack, { it.id }, info = "sip_stack") {
