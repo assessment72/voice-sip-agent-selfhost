@@ -60,6 +60,7 @@ import io.github.sparkcyf.voicesipagent.privileged.ShizukuConnector
 class MainActivity : DialerRoleActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        requestPhoneStateAccessIfNeeded()
         val runtime = GatewayRuntime.get(this)
         GatewayService.start(this)
         setContent {
