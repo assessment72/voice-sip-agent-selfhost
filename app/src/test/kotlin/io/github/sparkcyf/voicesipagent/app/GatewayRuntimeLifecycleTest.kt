@@ -11,8 +11,6 @@ import android.os.Process
 import android.telecom.TelecomManager
 import android.util.Log
 import io.github.sparkcyf.voicesipagent.gateway.CallBridge
-import io.github.sparkcyf.voicesipagent.pjsua2.PjsipConfig
-import io.github.sparkcyf.voicesipagent.pjsua2.PjsipEndpoint
 import io.github.sparkcyf.voicesipagent.privileged.CallAccess
 import io.github.sparkcyf.voicesipagent.privileged.DialerRoleResult
 import io.github.sparkcyf.voicesipagent.privileged.IPrivilegedService
@@ -20,6 +18,8 @@ import io.github.sparkcyf.voicesipagent.privileged.ShizukuConnector
 import io.github.sparkcyf.voicesipagent.telephony.CallSnapshot
 import io.github.sparkcyf.voicesipagent.telephony.CellularEndpoint
 import io.github.sparkcyf.voicesipagent.voice.EndpointStatus
+import io.github.sparkcyf.voicesipagent.sip.SipConfig
+import io.github.sparkcyf.voicesipagent.sip.SipUserAgent
 import org.junit.Assert.*
 import org.junit.Test
 import org.mockito.MockedConstruction
@@ -204,7 +204,7 @@ class GatewayRuntimeLifecycleTest {
         private val workerScopes = mutableListOf<AutoCloseable>()
         lateinit var connector: ShizukuConnector
             private set
-        lateinit var endpoints: MockedConstruction<PjsipEndpoint>
+        lateinit var endpoints: MockedConstruction<SipUserAgent>
             private set
         lateinit var bridges: MockedConstruction<CallBridge>
             private set
@@ -276,8 +276,8 @@ class GatewayRuntimeLifecycleTest {
                 workerScopes += mockConstruction(ComponentName::class.java)
                 workerScopes += mockConstruction(Intent::class.java)
                 workerScopes += mockConstruction(ConnectivityManager.NetworkCallback::class.java)
-                endpoints = mockConstruction(PjsipEndpoint::class.java) { endpoint, construction ->
-                    `when`(endpoint.config).thenReturn(construction.arguments()[0] as PjsipConfig)
+                endpoints = mockConstruction(SipUserAgent::class.java) { endpoint, construction ->
+                    `when`(endpoint.config).thenReturn(construction.arguments()[0] as SipConfig)
                     `when`(endpoint.status).thenReturn(EndpointStatus(false, "test endpoint"))
                 }.also { workerScopes += it }
                 bridges = mockConstruction(CallBridge::class.java).also { workerScopes += it }
