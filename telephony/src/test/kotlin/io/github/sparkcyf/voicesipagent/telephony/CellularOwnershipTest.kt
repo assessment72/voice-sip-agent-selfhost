@@ -69,7 +69,7 @@ class CellularOwnershipTest {
         val account = mock(PhoneAccount::class.java)
         val accountHandle = mock(PhoneAccountHandle::class.java)
         doReturn(true).`when`(account).hasCapabilities(PhoneAccount.CAPABILITY_SIM_SUBSCRIPTION)
-        doReturn(account).`when`(telecom).getPhoneAccount(accountHandle)
+        doReturn(account).`when`(telecom).getPhoneAccount(any(PhoneAccountHandle::class.java))
         doReturn(listOf(accountHandle)).`when`(telecom).callCapablePhoneAccounts
         doReturn(2).`when`(telephony).getSubscriptionId(accountHandle)
         doAnswer { originalMute }.`when`(service).microphoneMuted
