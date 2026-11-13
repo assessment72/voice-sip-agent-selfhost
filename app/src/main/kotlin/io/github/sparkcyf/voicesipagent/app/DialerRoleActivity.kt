@@ -1,6 +1,7 @@
 package io.github.sparkcyf.voicesipagent.app
 
 import android.app.KeyguardManager
+import android.Manifest
 import android.app.role.RoleManager
 import android.content.Intent
 import android.content.pm.PackageManager
@@ -15,6 +16,18 @@ import rikka.shizuku.Shizuku
 abstract class DialerRoleActivity : ComponentActivity() {
     protected val roleMessage get() = GatewayRuntime.get(this).dialerMessage
     private fun message(value: String) = GatewayRuntime.get(this).showDialerMessage(value)
+    private val phoneStateRequest = registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+        message(if (granted) "Phone state access granted; SIM 2 can be selected." else
+            "Phone state access denied; SIM 2 routing cannot be selected.")
+        GatewayRuntime.get(this).refreshCallAccess()
+    }
+
+    protected fun requestPhoneStateAccessIfNeeded() {
+        if (checkSelfPermission(Manifest.permission.READ_PHONE_STATE) != PackageManager.PERMISSION_GRANTED) {
+            phoneStateRequest.launch(Manifest.permission.READ_PHONE_STATE)
+        }
+    }
+
     private val roleRequest = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
         val held = getSystemService(RoleManager::class.java).isRoleHeld(RoleManager.ROLE_DIALER)
         message(when {
