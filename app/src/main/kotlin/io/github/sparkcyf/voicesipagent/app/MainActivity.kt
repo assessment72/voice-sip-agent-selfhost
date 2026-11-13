@@ -296,8 +296,11 @@ private fun SettingsSection(rt: GatewayRuntime) {
                 "Off: this gateway registers to an external PBX / SIP server. Fill in PBX host, user and password below.")
         }
         Field(t("Порт регистратора", "Local SIP port (registrar listens here)"), localPort, KeyboardType.Number, info = "local_port") { localPort = it }
-        if (serverMode) Text(t("Укажи в софтфоне  <IP этого телефона>:$localPort  по UDP.", "Point your softphone at  <this phone's IP>:$localPort  over UDP."),
-            style = MaterialTheme.typography.bodySmall)
+        if (serverMode) Text(
+            t("Укажи в софтфоне  <IP этого телефона>:\$localPort  по UDP.", "Point your softphone at  <this phone's IP>:\$localPort  over UDP.")
+                .replace("\$localPort", localPort),
+            style = MaterialTheme.typography.bodySmall,
+        )
         Field(t("Аренда регистрации (сек)", "Registration lease (sec)"), lease, KeyboardType.Number, info = "lease") { lease = it }
         if (serverMode) {
             OutlinedTextField(
