@@ -5,7 +5,7 @@ plugins {
 android {
     namespace = "io.github.sparkcyf.voicesipagent.privileged"
     compileSdk {
-        version = release(37)
+        version = release(36)
     }
     defaultConfig {
         minSdk = 30
