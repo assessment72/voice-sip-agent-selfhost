@@ -135,8 +135,8 @@ fun helpText(key: String, lang: UiLang): Pair<String, String>? {
         )
         "prefixes" -> p(
             "Префиксы для исходящих", "Dial-out prefixes",
-            "Ограничение на номера, которые можно набирать через SIM (для будущих исходящих звонков). Через запятую. Пусто — любой номер.",
-            "Restricts which numbers may be dialed out through the SIM (for future outbound calls). Comma-separated. Empty — any number.",
+            "Оرقام البداية المسموح الاتصال بها عبر شريحة SIM. افصل بينها بفواصل. اتركه فارغاً للسماح بكل الأرقام.",
+            "Restricts which numbers may be dialed out through the SIM. Comma-separated. Empty — any number.",
         )
         "busy" -> p(
             "Второй звонок при занятости", "Second call while busy",
@@ -195,9 +195,9 @@ fun faqEntries(lang: UiLang): List<Pair<String, String>> {
         ),
         e(
             "Какой софтфон ставить на ДАЛЬНИЙ телефон (Android)?",
-            "Рекомендуем baresip — бесплатный, открытый, работает в фоне и умеет page-mode SMS. Где взять: F-Droid (пакет com.tutpro.baresip). После установки: выключи оптимизацию батареи для baresip и разреши фоновую работу/автозапуск, иначе регистрация будет слетать.\n\nНастройка аккаунта: меню ⋮ → «Профили» → поле «SIP URI или Новый аккаунт» → «sip:s23@<IP телефона-шлюза>:<порт регистратора>» → «+». Порт в адресе обязателен. В редакторе аккаунта: «Пароль аутентификации» — тот же пароль, что на шлюзе (пусто только для локальной сети), транспорт UDP, включи тумблер «Регистрация». И обязательно выдай baresip доступ к микрофону.",
+            "Рекомендуем baresip — бесплатный, открытый, работает в фоне и умеет page-mode SMS. Где взять: F-Droid (пакет com.tutpro.baresip). После установки: выключи оптимизацию батареи для baresip и разреши фоновую работу/автозапуск, иначе регистрация будет слетать.\n\nНастройка аккаунта: меню ⋮ → «Профили» → поле «SIP URI или Новый аккаунт» → «sip:s23@<IP телефона-шлюза>:<порт регистратора>» → «+». Порт в адресе обязателен. В редакторе аккаунта: «Пароль аутентификации» — тот же пароль, что на шлюзе (обязателен для исходящих вызовов через SIM), транспорт UDP, включи тумблер «Регистрация». И обязательно выдай baresip доступ к микрофону.",
             "Which softphone for the FIELD phone (Android)?",
-            "We recommend baresip — free, open-source, runs in the background, and does page-mode SMS. Where to get it: F-Droid (package com.tutpro.baresip). After installing: turn off battery optimization for baresip and allow background/autostart, otherwise the registration will keep dropping.\n\nAccount setup: menu ⋮ → «Accounts» → «SIP URI or New account» field → «sip:s23@<gateway phone IP>:<registrar port>» → «+». The port in the address is required. In the account editor: «Auth password» — the same password set on the gateway (empty only for a local network), transport UDP, enable the «Registration» toggle. And do grant baresip microphone access.",
+            "We recommend baresip — free, open-source, runs in the background, and does page-mode SMS. Where to get it: F-Droid (package com.tutpro.baresip). After installing: turn off battery optimization for baresip and allow background/autostart, otherwise the registration will keep dropping.\n\nAccount setup: menu ⋮ → «Accounts» → «SIP URI or New account» field → «sip:s23@<gateway phone IP>:<registrar port>» → «+». The port in the address is required. In the account editor: «Auth password» — the same password set on the gateway (required for outgoing calls through the SIM), transport UDP, enable the «Registration» toggle. And do grant baresip microphone access.",
         ),
         e(
             "А на iPhone (iOS)?",
