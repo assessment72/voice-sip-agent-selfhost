@@ -107,16 +107,22 @@ object DigestAuth {
         method: String,
         password: String,
         nonceValid: (String) -> Boolean,
+        expectedRealm: String? = null,
+        expectedUri: String? = null,
     ): Boolean {
         if (cred.username.isEmpty() || cred.response.isEmpty() || cred.nonce.isEmpty()) return false
+        if (expectedRealm != null && cred.realm != expectedRealm) return false
+        if (expectedUri != null && cred.uri != expectedUri) return false
+        if (!(cred.params["algorithm"] ?: "MD5").equals("MD5", ignoreCase = true)) return false
         if (!nonceValid(cred.nonce)) return false
+        val qop = cred.qop ?: return false
+        if (!qop.equals("auth", ignoreCase = true)) return false
+        val nc = cred.nc ?: return false
+        if (!nc.matches(Regex("[0-9a-fA-F]{8}") ) || nc.toLongOrNull(16) == 0L) return false
+        if (cred.cnonce.isNullOrEmpty()) return false
         val ha1 = md5("${cred.username}:${cred.realm}:$password")
         val ha2 = md5("$method:${cred.uri}")
-        val expected = if (cred.qop != null && cred.nc != null && cred.cnonce != null) {
-            md5("$ha1:${cred.nonce}:${cred.nc}:${cred.cnonce}:${cred.qop}:$ha2")
-        } else {
-            md5("$ha1:${cred.nonce}:$ha2")
-        }
+        val expected = md5("$ha1:${cred.nonce}:$nc:${cred.cnonce}:$qop:$ha2")
         return constantTimeEquals(expected, cred.response)
     }
 
@@ -125,5 +131,25 @@ object DigestAuth {
         var diff = 0
         for (i in a.indices) diff = diff or (a[i].code xor b[i].code)
         return diff == 0
+    }
+}
+
+/** Tracks strictly increasing Digest nonce-count values for credentials already verified. */
+internal class DigestNonceTracker {
+    private val counts = HashMap<Pair<String, String>, Long>()
+
+    fun accept(cred: DigestAuth.Credentials): Boolean {
+        val nc = cred.nc ?: return false
+        if (!nc.matches(Regex("[0-9a-fA-F]{8}"))) return false
+        val count = nc.toLongOrNull(16)?.takeIf { it > 0 } ?: return false
+        val key = cred.nonce to cred.username
+        val previous = counts[key] ?: 0L
+        if (count <= previous) return false
+        counts[key] = count
+        return true
+    }
+
+    fun retainNonces(active: Set<String>) {
+        counts.keys.removeAll { it.first !in active }
     }
 }

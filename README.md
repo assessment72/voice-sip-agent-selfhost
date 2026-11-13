@@ -61,7 +61,7 @@ who values privacy (no external server).
 
 ---
 
-## What already works
+## What has been implemented and verified
 
 Verified on a **Nubia NX769J (Android 16)** paired with the baresip client:
 
@@ -74,8 +74,35 @@ Verified on a **Nubia NX769J (Android 16)** paired with the baresip client:
 - ✅ Doze resilience: the service holds a wakelock while the gateway is on, so the phone doesn't drop
   the registration while asleep, even on aggressive OEM ROMs (0.2.0-selfhost4).
 
-Not done yet: outgoing calls/SMS from the far phone over the gateway's SIM; wideband audio
-(currently G.711). Working outside a single Wi-Fi needs a public IP (see below).
+The repository also contains a **SIP → SIM outgoing-call path**: authenticated INVITE handling,
+number routing and policy checks, `TelecomManager.placeCall()`, call-state tracking through
+`InCallService`, and a two-way media bridge. The audited branch adds optional SIM-account selection,
+Digest replay/URI checks, and safer handling of delayed Telecom placement. This is implementation
+status only; it is **not** a claim that outgoing calls or their audio have been proven on hardware.
+
+Outgoing SMS and wideband SIP audio are not implemented (audio is currently G.711). Working outside
+a single Wi-Fi needs a public IP (see below).
+
+### SIP → SIM verification status
+
+- **Implemented in code:** the components listed above are present. An empty SIM selection leaves
+  account routing to Android; a selected account is passed explicitly, and an unavailable selection
+  fails closed rather than falling back to a VoIP account. Opening the SIM picker requests
+  `READ_PHONE_STATE` at that point, not on app startup.
+- **Simulation tests in source:** `CallBridgeTest` uses fake endpoints and PCM ports to exercise
+  SIP-to-cellular routing, ringing/answer, both audio directions, hangup propagation, busy/reject,
+  emergency/prefix policy, and answer timeout. Digest URI/realm/replay checks, dialog-tag and
+  CANCEL/ACK transaction checks, and the two-SIM/no-VoIP selection rule are also covered by JVM tests.
+  The `:voice-api:test`, `:sip:test`, and `:gateway:test`
+  suites **passed in this audit environment**. Telephony unit tests use mocks for call ownership,
+  Telecom callbacks, placement timeout, and cleanup, but were not executable here because the Android
+  SDK is absent. None of these tests exercises a modem, Shizuku audio access, or a real RTP path.
+- **Real phone:** this repository's previous notes report incoming cellular-to-SIP audio on a Nubia
+  NX769J running Android 16. No real-phone SIP-to-SIM call, selected-SIM behavior, or outgoing audio
+  was verified as part of this audit.
+
+Android build and `:telephony:test` remain blocked here because the Android SDK is absent. Do not
+treat fake-endpoint or mock-based tests as proof of real Telecom or Shizuku behavior.
 
 > ⚠ **The capture method depends on the phone model.** On the Nubia it's "Direct telephony"; the
 > automatic mode chose wrong (no audio). Another phone may need "Call redirection". How to tell -
@@ -202,6 +229,7 @@ Short version for "device-in-itself" mode:
 | Local SIP port | **5062** |
 | Registration lease | **600 s** (raise to 1200 if registration keeps expiring) |
 | Cellular audio | **Direct telephony** on the Nubia; otherwise try Call redirection (§4.4) |
+| Outgoing SIM | Optional; choose a SIM in Settings (requires `READ_PHONE_STATE`); blank delegates to Android |
 
 ---
 
@@ -287,8 +315,10 @@ export JAVA_HOME="/c/Program Files/Eclipse Adoptium/jdk-17.0.20.101-hotspot"
 
 ## Honest status and risks
 
-- Incoming call (two-way audio), incoming SMS, built-in registrar - **confirmed** on the Nubia NX769J.
-- Outgoing calls/SMS from the far phone over the gateway's SIM - **not done**.
+- Incoming call (two-way audio), incoming SMS, built-in registrar - **reported confirmed** on the Nubia NX769J (Android 16).
+- SIP → SIM outgoing calls - **implemented in code; not verified on a real phone**. Fake-endpoint bridge tests passed; mock-based Telecom test sources exist but could not run here.
+- Outgoing SMS - **not implemented**.
+- `:voice-api:test`, `:sip:test`, and `:gateway:test` - **passed**. Android app build and `:telephony:test` - **blocked because the Android SDK is absent**.
 - **The internet path is not yet tested live** - a single Wi-Fi only.
 - **Without root, Shizuku does not survive a reboot** - the main operational risk (above).
 - **Registrar authentication is implemented** (SIP digest password + brute-force ban); for the

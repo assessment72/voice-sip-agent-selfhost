@@ -64,6 +64,7 @@ class SipUserAgent(
 
     // Registrar auth (server mode). All touched only from the single sip-ua executor thread.
     private val issuedNonces = HashMap<String, Long>()          // nonce -> issuedAt (ms)
+    private val nonceCounts = DigestNonceTracker()
     private val authFailTimes = HashMap<String, ArrayDeque<Long>>() // source IP -> recent failure times
     private val authBanUntil = HashMap<String, Long>()          // source IP -> banned until (ms)
     private val authBanCount = HashMap<String, Int>()           // source IP -> consecutive ban level
@@ -289,7 +290,9 @@ class SipUserAgent(
             return
         }
         if (req.method == "ACK") {
-            serverTxs[txKey(req.topVia?.branch, "INVITE")]?.onAck()
+            val inviteTx = serverTxs[txKey(req.topVia?.branch, "INVITE")]
+            if (inviteTx != null && !req.matchesInviteForAck(inviteTx.request)) return
+            inviteTx?.onAck()
             calls[req.callId]?.onAck(req)
             return
         }
@@ -308,7 +311,7 @@ class SipUserAgent(
         when {
             req.method == "CANCEL" -> {
                 val inviteTx = serverTxs[txKey(req.topVia?.branch, "INVITE")]
-                if (inviteTx == null || call == null) {
+                if (inviteTx == null || call == null || !req.matchesInviteForCancel(inviteTx.request)) {
                     tx.respond(buildResponse(req, 481))
                 } else {
                     tx.respond(buildResponse(req, 200, toTag = call.localTag))
@@ -334,7 +337,7 @@ class SipUserAgent(
         // X-VSA-Dial: the number to dial when the PBX keeps the Request-URI user as our own AoR
         // (needed behind registrar-based proxies such as Flexisip).
         val target = req.headers["X-VSA-Dial"]?.trim()?.takeIf { it.isNotEmpty() }
-            ?: SipUri.parse(req.uri)?.user ?: req.to?.sipUri?.user
+            ?: dialTargetFromUri(req.uri) ?: req.to?.let { dialTargetFromUri(it.uri) }
         val pai = req.headers["P-Asserted-Identity"]?.let(NameAddr::parse)
         val fromAddr = req.from!!
         val caller = Party(
@@ -433,10 +436,15 @@ class SipUserAgent(
         }
         val authHeader = req.headers["Authorization"]
         val cred = authHeader?.let { DigestAuth.parseCredentials(it) }
-        val ok = cred != null && DigestAuth.verify(cred, method, config.registrarPassword) { nonce ->
+        val ok = cred != null && DigestAuth.verify(
+            cred, method, config.registrarPassword,
+            nonceValid = { nonce ->
             val issuedAt = issuedNonces[nonce]
             issuedAt != null && now - issuedAt <= nonceTtlMs
-        }
+            },
+            expectedRealm = config.registrarRealm,
+            expectedUri = req.uri,
+        ) && nonceCounts.accept(cred)
         if (ok) {
             authFailTimes.remove(ip); authBanUntil.remove(ip)
             return AuthOutcome.PASS
@@ -482,6 +490,7 @@ class SipUserAgent(
     /** Issue a fresh nonce, pruning expired ones so the map cannot grow without bound. */
     private fun issueNonce(now: Long): String {
         issuedNonces.entries.removeAll { now - it.value > nonceTtlMs }
+        nonceCounts.retainNonces(issuedNonces.keys)
         val nonce = DigestAuth.newNonce()
         issuedNonces[nonce] = now
         return nonce

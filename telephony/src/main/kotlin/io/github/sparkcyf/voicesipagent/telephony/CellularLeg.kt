@@ -75,7 +75,6 @@ class CellularLeg internal constructor(
             }
             Call.STATE_HOLDING -> if (state == LegState.CONNECTED) abortAudio("gateway call put on hold")
             Call.STATE_DISCONNECTING -> {
-                hangupRequested = HangupCause.NORMAL
                 stopMedia()
             }
         }

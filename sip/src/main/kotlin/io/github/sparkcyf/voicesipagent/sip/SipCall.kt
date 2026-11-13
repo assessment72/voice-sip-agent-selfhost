@@ -273,14 +273,16 @@ internal class SipCall(
     }
 
     fun onAck(req: SipRequest) {
-        awaitingAck?.onAck()
+        val pendingAck = awaitingAck ?: return
+        if (!req.matchesDialogTags(localTag, remoteTag) || req.cseq?.seq != pendingAck.request.cseq?.seq) return
+        pendingAck.onAck()
         awaitingAck = null
         if (req.contentType == "application/sdp") Sdp.parse(req.bodyText)?.let(::applyRemoteSdp)
     }
 
     fun onInDialogRequest(req: SipRequest, tx: ServerTransaction) {
-        if (req.to?.tag == null) {
-            tx.respond(ua.buildResponse(req, 482))
+        if (!req.matchesDialogTags(localTag, remoteTag)) {
+            tx.respond(ua.buildResponse(req, 481))
             return
         }
         when (req.method) {

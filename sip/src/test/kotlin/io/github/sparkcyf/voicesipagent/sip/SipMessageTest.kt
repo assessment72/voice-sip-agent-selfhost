@@ -1,11 +1,21 @@
 package io.github.sparkcyf.voicesipagent.sip
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class SipMessageTest {
+    private fun taggedRequest(method: String, branch: String, seq: Int, fromTag: String, toTag: String? = null) =
+        SipRequest(method, "sip:gateway@example.test", SipHeaders().apply {
+            add("Via", "SIP/2.0/UDP 192.0.2.1:5060;branch=$branch")
+            add("From", "<sip:phone@example.test>;tag=$fromTag")
+            add("To", "<sip:gateway@example.test>" + (toTag?.let { ";tag=$it" } ?: ""))
+            add("Call-ID", "dialog-1")
+            add("CSeq", "$seq $method")
+        })
+
     private val invite = (
         "INVITE sip:13800000000@192.168.0.253:5062 SIP/2.0\r\n" +
             "Via: SIP/2.0/UDP 192.168.0.53:5066;rport;branch=z9hG4bKPjabc, SIP/2.0/UDP 10.0.0.1;branch=z9hG4bKx\r\n" +
@@ -68,5 +78,47 @@ class SipMessageTest {
         )!!
         val h = DigestAuth.authorize(ch, "GET", "/dir/index.html", "Mufasa", "Circle Of Life", nc = 1, cnonce = "0a4f113b")
         assertTrue(h, h.contains("response=\"6629fae49393a05397450978507c4ef1\""))
+    }
+
+    @Test
+    fun digestBindsRequestUriRealmAndNonceCount() {
+        val challenge = DigestAuth.parseChallenge("Digest realm=\"gateway\", nonce=\"n1\", qop=\"auth\"")!!
+        val header = DigestAuth.authorize(challenge, "INVITE", "tel:+12025550123", "phone", "secret", nc = 1, cnonce = "c1")
+        val credentials = DigestAuth.parseCredentials(header)!!
+        val tracker = DigestNonceTracker()
+        val nonceValid: (String) -> Boolean = { it == "n1" }
+        assertTrue(DigestAuth.verify(credentials, "INVITE", "secret", nonceValid, "gateway", "tel:+12025550123"))
+        assertTrue(tracker.accept(credentials))
+        assertFalse("same nonce-count must be rejected", tracker.accept(credentials))
+        assertTrue("different Request-URI must be rejected",
+            !DigestAuth.verify(credentials, "INVITE", "secret", nonceValid, "gateway", "tel:+12025550124"))
+        assertTrue("different realm must be rejected",
+            !DigestAuth.verify(credentials, "INVITE", "secret", nonceValid, "other", "tel:+12025550123"))
+    }
+
+    @Test
+    fun extractsGlobalTelAndSipTargetsSafely() {
+        assertEquals("+12025550123", dialTargetFromUri("tel:+1 (202) 555-0123"))
+        assertEquals("13800000000", dialTargetFromUri("sip:13800000000@pbx.example"))
+        assertNull(dialTargetFromUri("tel:5550123;phone-context=example.com"))
+        assertNull(dialTargetFromUri("tel:911abc"))
+    }
+
+    @Test
+    fun validatesDialogTagsAndTransactionIdentifiers() {
+        val bye = taggedRequest("BYE", "z9hG4bK-bye", 8, "remote", "local")
+        assertTrue(bye.matchesDialogTags("local", "remote"))
+        assertFalse(bye.matchesDialogTags("other-local", "remote"))
+        assertFalse(bye.matchesDialogTags("local", "other-remote"))
+
+        val invite = taggedRequest("INVITE", "z9hG4bK-invite", 7, "remote")
+        val cancel = taggedRequest("CANCEL", "z9hG4bK-invite", 7, "remote")
+        assertTrue(cancel.matchesInviteForCancel(invite))
+        assertFalse(taggedRequest("CANCEL", "wrong-branch", 7, "remote").matchesInviteForCancel(invite))
+
+        // A non-2xx transaction ACK carries the server-generated To-tag, not the tagless INVITE To.
+        val ack = taggedRequest("ACK", "z9hG4bK-invite", 7, "remote", "server-tag")
+        assertTrue(ack.matchesInviteForAck(invite))
+        assertFalse(taggedRequest("ACK", "wrong-branch", 7, "remote").matchesInviteForAck(invite))
     }
 }

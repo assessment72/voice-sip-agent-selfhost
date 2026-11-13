@@ -44,6 +44,8 @@ data class GatewaySettings(
     val inboundTarget: String = "",
     /** Comma-separated; empty = any number may be dialed out. */
     val allowedPrefixes: String = "",
+    /** Encoded Telecom phone account key; empty delegates SIM choice to Android. */
+    val outgoingPhoneAccountKey: String = "",
     val busyPolicy: BusyPolicy = BusyPolicy.REJECT,
     val audioMethod: Int = AudioMethod.AUTO,
     val callAccess: Int = CallAccess.AUTO,
@@ -103,6 +105,7 @@ class SettingsStore(context: Context) {
         registrarPassword = prefs.getString("registrar_password_sealed", null)?.let(::unseal).orEmpty(),
         inboundTarget = prefs.getString("inbound_target", "")!!,
         allowedPrefixes = prefs.getString("allowed_prefixes", "")!!,
+        outgoingPhoneAccountKey = prefs.getString("outgoing_phone_account", "")!!,
         busyPolicy = runCatching { BusyPolicy.valueOf(prefs.getString("busy_policy", "REJECT")!!) }.getOrDefault(BusyPolicy.REJECT),
         audioMethod = prefs.getInt("audio_method", AudioMethod.AUTO).takeIf { it in 0..2 } ?: AudioMethod.AUTO,
         callAccess = prefs.getInt("call_access", CallAccess.AUTO).takeIf { it in 0..2 } ?: CallAccess.AUTO,
@@ -131,6 +134,7 @@ class SettingsStore(context: Context) {
             .putString("registrar_password_sealed", seal(s.registrarPassword))
             .putString("inbound_target", s.inboundTarget.trim())
             .putString("allowed_prefixes", s.allowedPrefixes.trim())
+            .putString("outgoing_phone_account", s.outgoingPhoneAccountKey.trim())
             .putString("busy_policy", s.busyPolicy.name)
             .putInt("audio_method", s.audioMethod)
             .putInt("call_access", s.callAccess)

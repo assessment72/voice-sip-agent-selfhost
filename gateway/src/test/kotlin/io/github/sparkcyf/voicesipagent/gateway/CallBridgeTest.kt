@@ -89,6 +89,18 @@ class CallBridgeTest {
         assertEquals(LegState.CONNECTED, a.state)
         a.remoteDtmf('9'); settle()
         assertEquals(listOf('9'), b.dtmf)
+
+        val cellPort = FakePort(isClockSource = true, fill = 11)
+        val sipPort = FakePort(isClockSource = false, fill = 22)
+        b.mediaUp(cellPort); a.mediaUp(sipPort); settle()
+        cellPort.clock!!.onFrame()
+        assertEquals(11.toShort(), sipPort.written.single()[0])
+        assertEquals(22.toShort(), cellPort.written.single()[0])
+
+        b.remoteEnded(HangupCause.NORMAL); settle()
+        assertEquals(LegState.ENDED, a.state)
+        assertNull(bridge.session)
+        assertNull(cellPort.clock)
     }
 
     @Test fun mediaArrivingBeforeAnswerConfirmationDoesNotAnswerAgain() {

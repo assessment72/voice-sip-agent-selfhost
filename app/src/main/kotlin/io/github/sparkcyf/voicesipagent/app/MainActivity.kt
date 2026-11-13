@@ -1,8 +1,13 @@
 package io.github.sparkcyf.voicesipagent.app
 
+import android.Manifest
+import android.content.pm.PackageManager
 import android.os.Bundle
 import android.os.Build
+import android.telecom.TelecomManager
 import androidx.activity.compose.setContent
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.FlowRow
@@ -21,6 +26,8 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
@@ -44,6 +51,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.input.KeyboardType
@@ -56,6 +64,7 @@ import io.github.sparkcyf.voicesipagent.privileged.HealthKeys
 import io.github.sparkcyf.voicesipagent.privileged.AudioMethod
 import io.github.sparkcyf.voicesipagent.privileged.CallAccess
 import io.github.sparkcyf.voicesipagent.privileged.ShizukuConnector
+import io.github.sparkcyf.voicesipagent.telephony.PhoneAccountKeys
 
 class MainActivity : DialerRoleActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -326,6 +335,7 @@ private fun SettingsSection(rt: GatewayRuntime) {
         )
         Field(t("Куда переводить входящие (пусто = логин)", "Cellular inbound -> SIP target (blank = username)"), target, info = "inbound_target") { target = it }
         Field(t("Префиксы для исходящих (через запятую, пусто = любой)", "Allowed dial-out prefixes (comma separated, empty = any)"), prefixes, info = "prefixes") { prefixes = it }
+        SimAccountPicker(cur.outgoingPhoneAccountKey, rt::setOutgoingPhoneAccount)
         Choice(t("Второй звонок при занятости", "Second call while busy"), BusyPolicy.entries, busy,
             { when (it) { BusyPolicy.REJECT -> t("Отклонять", "Reject"); BusyPolicy.IGNORE -> t("Отдать звонилке", "Leave to phone") } }, info = "busy") {
             busy = it
@@ -343,6 +353,62 @@ private fun SettingsSection(rt: GatewayRuntime) {
                 ),
             )
         }) { Text(t("Сохранить и применить", "Save & apply")) }
+    }
+}
+
+private data class SimAccountOption(val key: String, val label: String)
+
+@Composable
+private fun SimAccountPicker(selectedKey: String, onSelect: (String) -> Unit) {
+    val context = LocalContext.current
+    var permissionGranted by remember {
+        mutableStateOf(context.checkSelfPermission(Manifest.permission.READ_PHONE_STATE) == PackageManager.PERMISSION_GRANTED)
+    }
+    var expanded by remember { mutableStateOf(false) }
+    val permissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) {
+        permissionGranted = it
+    }
+    val accounts = remember(permissionGranted) {
+        if (!permissionGranted) emptyList() else runCatching {
+            val telecom = context.getSystemService(TelecomManager::class.java)
+            telecom.callCapablePhoneAccounts.mapNotNull { handle ->
+                val account = telecom.getPhoneAccount(handle) ?: return@mapNotNull null
+                if (!account.hasCapabilities(android.telecom.PhoneAccount.CAPABILITY_SIM_SUBSCRIPTION)) return@mapNotNull null
+                SimAccountOption(PhoneAccountKeys.encode(handle), account.label.toString().ifBlank { "SIM" })
+            }.distinctBy { it.key }
+        }.getOrDefault(emptyList())
+    }
+    val selectedLabel = accounts.firstOrNull { it.key == selectedKey }?.label
+        ?: if (selectedKey.isBlank()) t("اختيار أندرويد الافتراضي", "Android default / system choice")
+        else t("الشريحة المحفوظة غير متاحة", "Saved SIM unavailable")
+    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        LabelWithInfo(t("شريحة الاتصال الصادر", "Outgoing SIM"), "outgoing_sim", style = MaterialTheme.typography.bodySmall)
+        androidx.compose.foundation.layout.Box {
+            OutlinedButton(onClick = {
+                if (permissionGranted) expanded = true
+                else permissionLauncher.launch(Manifest.permission.READ_PHONE_STATE)
+            }) { Text(selectedLabel) }
+            DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
+                DropdownMenuItem(
+                    text = { Text(t("اختيار أندرويد الافتراضي", "Android default / system choice")) },
+                    onClick = { expanded = false; onSelect("") },
+                )
+                accounts.forEach { option ->
+                    DropdownMenuItem(
+                        text = { Text(option.label) },
+                        onClick = { expanded = false; onSelect(option.key) },
+                    )
+                }
+            }
+        }
+        Text(
+            if (permissionGranted && accounts.isEmpty())
+                t("لم يُعثر على حساب SIM صوتي متاح. سيستخدم النظام الحساب الافتراضي عند ترك هذا الخيار كما هو.",
+                    "No call-capable SIM account was found. Leave this on Android default to use the system's default account.")
+            else t("اختيار حساب SIM يمرره صراحةً إلى Telecom. الحساب غير المتاح يرفض الاتصال ولا يتحول إلى مزود VoIP.",
+                "A selected SIM account is passed explicitly to Telecom. If it is unavailable, the call fails instead of falling back to a VoIP provider."),
+            style = MaterialTheme.typography.bodySmall,
+        )
     }
 }
 

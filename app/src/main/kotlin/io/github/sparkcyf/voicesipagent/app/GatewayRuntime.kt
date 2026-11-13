@@ -111,6 +111,7 @@ class GatewayRuntime private constructor(context: Context) {
     val cellular = CellularEndpoint(app,
         PrivilegedAudioOpener(shizuku, { settings.audioMethod }, { settings.muteEarpiece }, ::audioFormat),
         logger = { AppLog.i(it) },
+        selectedPhoneAccountKey = { settings.outgoingPhoneAccountKey },
     )
     /** Built-in SIP user agent. */
     private var sip: CallEndpoint? = null
@@ -692,6 +693,12 @@ class GatewayRuntime private constructor(context: Context) {
     fun setMuteEarpiece(on: Boolean) = worker.execute {
         settingsStore.save(settings.copy(muteEarpiece = on).also { _settings.value = it })
         AppLog.i("earpiece mute ${if (on) "on" else "off"} (from next call)")
+    }
+    /** SIM routing applies to the next call and does not restart SIP or the current bridge. */
+    fun setOutgoingPhoneAccount(key: String) = worker.execute {
+        settingsStore.save(settings.copy(outgoingPhoneAccountKey = key).also { _settings.value = it })
+        pendingSettings = pendingSettings?.copy(outgoingPhoneAccountKey = key)
+        AppLog.i(if (key.isBlank()) "outgoing SIM delegated to Android" else "outgoing SIM selection saved")
     }
 
     /** UI-only preference; never touches SIP or the bridge. */

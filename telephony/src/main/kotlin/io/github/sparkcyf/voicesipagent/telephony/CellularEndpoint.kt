@@ -10,6 +10,7 @@ import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
 import android.telecom.Call
+import android.telecom.PhoneAccountHandle
 import android.telecom.TelecomManager
 import android.telephony.TelephonyManager
 import io.github.sparkcyf.voicesipagent.voice.CallEndpoint
@@ -21,6 +22,7 @@ import io.github.sparkcyf.voicesipagent.voice.IncomingCallHandler
 import io.github.sparkcyf.voicesipagent.voice.LegDirection
 import io.github.sparkcyf.voicesipagent.voice.Party
 import io.github.sparkcyf.voicesipagent.voice.redactNumber
+import io.github.sparkcyf.voicesipagent.voice.selectSimAccount
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.Executor
@@ -38,6 +40,7 @@ class CellularEndpoint(
     private val logger: (String) -> Unit,
     private val main: Handler = Handler(Looper.getMainLooper()),
     internal val audioExecutor: Executor = CellularLeg.audioExecutor,
+    private val selectedPhoneAccountKey: () -> String = { "" },
 ) : CallEndpoint {
     override val name = "cellular"
 
@@ -60,7 +63,10 @@ class CellularEndpoint(
     /** Outbound placements waiting for Telecom's onCallAdded. Main thread only. */
     private val pending = ArrayList<Pending>()
 
-    private class Pending(val leg: CellularLeg, val digits: String, val atMs: Long)
+    private class Pending(val leg: CellularLeg, val digits: String, val account: PhoneAccountHandle?, val atMs: Long) {
+        var expired = false
+        var cleanup: Runnable? = null
+    }
 
     @Volatile override var status = EndpointStatus(false, "companion not configured")
         private set
@@ -141,11 +147,30 @@ class CellularEndpoint(
             leg.failPlacement(HangupCause.BUSY)
             return
         }
-        val p = Pending(leg, digits, SystemClock.elapsedRealtime())
+        val selectedKey = selectedPhoneAccountKey().trim()
+        val selectedAccount = if (selectedKey.isEmpty()) null else try {
+            selectSimAccount(selectedKey, telecom.callCapablePhoneAccounts,
+                keyOf = PhoneAccountKeys::encode,
+                isSim = { handle -> telecom.getPhoneAccount(handle)?.hasCapabilities(
+                    android.telecom.PhoneAccount.CAPABILITY_SIM_SUBSCRIPTION) == true },
+            )
+        } catch (e: SecurityException) {
+            log("READ_PHONE_STATE required to resolve the selected SIM")
+            leg.failPlacement(HangupCause.FORBIDDEN)
+            return
+        }
+        if (selectedKey.isNotEmpty() && selectedAccount == null) {
+            log("selected SIM is unavailable or is not a cellular account")
+            leg.failPlacement(HangupCause.UNAVAILABLE)
+            return
+        }
+        val p = Pending(leg, digits, selectedAccount, SystemClock.elapsedRealtime())
         pending += p
         reportCalls()
         try {
-            telecom.placeCall(Uri.fromParts("tel", digits, null), Bundle())
+            val extras = Bundle()
+            selectedAccount?.let { extras.putParcelable(TelecomManager.EXTRA_PHONE_ACCOUNT_HANDLE, it) }
+            telecom.placeCall(Uri.fromParts("tel", digits, null), extras)
             log("placeCall ${redactNumber(digits)} (leg ${leg.id})")
         } catch (e: SecurityException) {
             pending -= p
@@ -161,10 +186,14 @@ class CellularEndpoint(
             return
         }
         main.postDelayed({
-            if (pending.remove(p)) {
+            if (p in pending) {
+                p.expired = true
                 reportCalls()
                 log("leg ${leg.id}: Telecom never reported the call")
                 leg.failPlacement(HangupCause.NETWORK_ERROR)
+                val cleanup = Runnable { if (pending.remove(p)) reportCalls() }
+                p.cleanup = cleanup
+                main.postDelayed(cleanup, LATE_CALL_GRACE_MS)
             }
         }, PLACEMENT_TIMEOUT_MS)
     }
@@ -185,14 +214,22 @@ class CellularEndpoint(
         val number = details.handle?.schemeSpecificPart.orEmpty()
         when (details.callDirection) {
             Call.Details.DIRECTION_OUTGOING -> {
-                val match = pending.firstOrNull { sameNumber(it.digits, number) && isCellular(call) }
+                val match = pending.firstOrNull {
+                    sameNumber(it.digits, number) && isCellular(call) &&
+                        (it.account == null || it.account == call.details.accountHandle)
+                }
                 if (match == null) {
                     log("ignoring user-placed outgoing call")
                     reconcileCalls(); reportCalls()
                     return
                 }
                 pending -= match
-                if (!match.leg.stopping) legs[call] = match.leg
+                match.cleanup?.let(main::removeCallbacks)
+                if (match.expired || match.leg.stopping) {
+                    log("disconnecting late Telecom call for ended leg ${match.leg.id}")
+                } else {
+                    legs[call] = match.leg
+                }
                 match.leg.bind(call)
             }
             Call.Details.DIRECTION_INCOMING -> {
@@ -307,6 +344,7 @@ class CellularEndpoint(
 
     companion object {
         private const val PLACEMENT_TIMEOUT_MS = 10_000L
+        private const val LATE_CALL_GRACE_MS = 30_000L
 
         @Volatile internal var current: CellularEndpoint? = null
         @Volatile private var service: GatewayInCallService? = null

@@ -40,6 +40,42 @@ data class SipUri(
     }
 }
 
+/** Extract the user part used as a dial target from a SIP URI or a global/local tel URI. */
+fun dialTargetFromUri(value: String): String? {
+    val uri = value.trim().removePrefix("<").substringBefore('>')
+    val colon = uri.indexOf(':')
+    if (colon <= 0) return null
+    return when (uri.substring(0, colon).lowercase()) {
+        "sip", "sips" -> SipUri.parse(uri)?.user?.takeIf { it.isNotBlank() }
+        "tel" -> {
+            val body = uri.substring(colon + 1).substringBefore('?')
+            val number = body.substringBefore(';')
+            val params = parseParams(body.substringAfter(';', ""))
+            if (params.containsKey("phone-context") && !number.startsWith('+')) return null
+            if (number.any { !(it.isDigit() || it in "+*#(). -") }) return null
+            val digits = number.filter { it.isDigit() || it == '+' || it == '*' || it == '#' }
+            if (digits.isBlank() || digits.drop(1).contains('+')) null else digits
+        }
+        else -> null
+    }
+}
+
+/** Match both dialog tags; Call-ID is checked by the call lookup before this helper is used. */
+internal fun SipRequest.matchesDialogTags(localTag: String, remoteTag: String?): Boolean =
+    remoteTag != null && to?.tag == localTag && from?.tag == remoteTag
+
+/** A CANCEL must identify the original INVITE transaction, not merely reuse its Call-ID. */
+internal fun SipRequest.matchesInviteForCancel(invite: SipRequest): Boolean =
+    method == "CANCEL" && invite.method == "INVITE" && callId == invite.callId && uri == invite.uri &&
+        cseq?.seq == invite.cseq?.seq && topVia?.branch == invite.topVia?.branch &&
+        from?.tag == invite.from?.tag && to?.tag == invite.to?.tag
+
+/** Transaction ACK for a non-2xx INVITE response reuses that INVITE's branch and CSeq. */
+internal fun SipRequest.matchesInviteForAck(invite: SipRequest): Boolean =
+    method == "ACK" && invite.method == "INVITE" && callId == invite.callId && uri == invite.uri &&
+        cseq?.seq == invite.cseq?.seq && topVia?.branch == invite.topVia?.branch &&
+        from?.tag == invite.from?.tag
+
 /** `"Display" <uri>;tag=x` or `uri;tag=x` */
 data class NameAddr(
     val displayName: String?,

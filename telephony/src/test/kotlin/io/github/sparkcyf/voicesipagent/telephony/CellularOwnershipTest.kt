@@ -6,6 +6,7 @@ import android.os.Bundle
 import android.os.SystemClock
 import android.net.Uri
 import android.telecom.Call
+import android.telecom.DisconnectCause
 import android.telecom.PhoneAccount
 import android.telecom.PhoneAccountHandle
 import android.telecom.TelecomManager
@@ -247,6 +248,30 @@ class CellularOwnershipTest {
         }
     }
 
+    @Test fun placementTimeoutDisconnectsCallReportedLateByTelecom() {
+        mockStatic(SystemClock::class.java).use {
+            mockStatic(Uri::class.java).use { uris ->
+                mockConstruction(Bundle::class.java).use {
+                    val number = "5551234567"
+                    val uri = mock(Uri::class.java)
+                    doReturn(number).`when`(uri).schemeSpecificPart
+                    uris.`when`<Uri> { Uri.fromParts("tel", number, null) }.thenReturn(uri)
+                    val outgoing = endpoint.dial(number, Party(null))
+                    drainMain()
+                    delayedTasks.removeFirst().run() // Telecom placement timeout
+                    drainMain()
+                    assertEquals(LegState.ENDED, outgoing.state)
+
+                    val late = makeCall(Call.STATE_DIALING, Call.Details.DIRECTION_OUTGOING)
+                    doReturn(uri).`when`(late.details).handle
+                    endpoint.onCallAdded(service, late)
+                    verify(late).disconnect()
+                    assertTrue(audioTasks.isEmpty())
+                }
+            }
+        }
+    }
+
     @Test fun permissionRevocationBeforeQueuedPlacementRefusesCall() {
         val outgoing = endpoint.dial("5551234567", Party(null))
         doReturn(android.content.pm.PackageManager.PERMISSION_DENIED).`when`(context)
@@ -266,6 +291,34 @@ class CellularOwnershipTest {
         verify(service).setMuted(false)
         state(call, Call.STATE_DISCONNECTED)
         assertEquals(LegState.ENDED, leg.state)
+    }
+
+    @Test fun requestedRejectCauseSurvivesDisconnectingCallback() {
+        active(); open()
+        leg.hangup(HangupCause.REJECTED); drainMain()
+        state(call, Call.STATE_DISCONNECTING)
+        state(call, Call.STATE_DISCONNECTED)
+        assertEquals(HangupCause.REJECTED, leg.endCause)
+    }
+
+    @Test fun remoteBusyAndMissedDisconnectsMapToSipCauses() {
+        val busy = mock(DisconnectCause::class.java)
+        doReturn(DisconnectCause.BUSY).`when`(busy).code
+        doReturn("BUSY").`when`(busy).reason
+        doReturn(busy).`when`(call.details).disconnectCause
+        endpoint.onCallAdded(service, call)
+        state(call, Call.STATE_DISCONNECTED)
+        assertEquals(HangupCause.BUSY, leg.endCause)
+
+        // Use a fresh ringing call to exercise a carrier-reported missed/no-answer result.
+        val missedCall = makeCall(Call.STATE_RINGING)
+        endpoint.onCallAdded(service, missedCall)
+        val missed = mock(DisconnectCause::class.java)
+        doReturn(DisconnectCause.MISSED).`when`(missed).code
+        doReturn("MISSED").`when`(missed).reason
+        doReturn(missed).`when`(missedCall.details).disconnectCause
+        state(missedCall, Call.STATE_DISCONNECTED)
+        assertEquals(HangupCause.NO_ANSWER, leg.endCause)
     }
 
     @Test fun holdStopsOwnedCallAndCancelsAudio() {
