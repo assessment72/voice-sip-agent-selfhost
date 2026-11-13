@@ -42,6 +42,9 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.platform.LocalLayoutDirection
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalUriHandler
@@ -80,6 +83,8 @@ private fun Screen(rt: GatewayRuntime, modifier: Modifier, requestDialer: () -> 
     val log by AppLog.tail.collectAsState()
     val cur by rt.settingsFlow.collectAsState()
     currentUiLang = UiLang.of(cur.uiLanguage)
+    CompositionLocalProvider(LocalLayoutDirection provides
+        if (currentUiLang == UiLang.AR) LayoutDirection.Rtl else LayoutDirection.Ltr) {
     Column(
         modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
@@ -90,6 +95,7 @@ private fun Screen(rt: GatewayRuntime, modifier: Modifier, requestDialer: () -> 
                 val lang = UiLang.of(cur.uiLanguage)
                 TextButton(onClick = { rt.setUiLanguage("ru") }, enabled = lang != UiLang.RU) { Text("РУ") }
                 TextButton(onClick = { rt.setUiLanguage("en") }, enabled = lang != UiLang.EN) { Text("EN") }
+                TextButton(onClick = { rt.setUiLanguage("ar") }, enabled = lang != UiLang.AR) { Text("عربي") }
                 InfoButton("language")
             }
         }
@@ -257,6 +263,7 @@ private fun FaqSection() {
                 }
             }
         }
+    }
     }
 }
 
