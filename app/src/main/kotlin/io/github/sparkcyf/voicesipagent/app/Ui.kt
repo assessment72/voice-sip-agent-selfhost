@@ -152,7 +152,7 @@ fun InfoButton(key: String) {
     if (open) {
         AlertDialog(
             onDismissRequest = { open = false },
-            confirmButton = { TextButton(onClick = { open = false }) { Text(if (lang == UiLang.RU) "Понятно" else "Got it") } },
+            confirmButton = { TextButton(onClick = { open = false }) { Text(when (lang) { UiLang.RU -> "Понятно"; UiLang.AR -> "حسناً"; UiLang.EN -> "Got it" }) } },
             title = { Text(entry.first, fontWeight = FontWeight.SemiBold) },
             text = {
                 Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(8.dp)) {
