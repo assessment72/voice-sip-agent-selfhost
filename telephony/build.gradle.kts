@@ -5,7 +5,7 @@ plugins {
 android {
     namespace = "io.github.sparkcyf.voicesipagent.telephony"
     compileSdk {
-        version = release(36)
+        version = release(37)
     }
     defaultConfig {
         minSdk = 30
