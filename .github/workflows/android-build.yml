@@ -32,7 +32,10 @@ jobs:
         with:
           cmdline-tools-version: 20.0
           accept-android-sdk-licenses: true
-          packages: 'platform-tools platforms;android-37 build-tools;37.0.0'
+          packages: 'platform-tools'
+
+      - name: Install Android API 37 preview platform
+        run: sdkmanager --channel=3 --install "platforms;android-37" "build-tools;37.0.0"
 
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
