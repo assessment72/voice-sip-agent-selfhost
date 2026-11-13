@@ -6,7 +6,7 @@ plugins {
 android {
     namespace = "io.github.sparkcyf.voicesipagent.app"
     compileSdk {
-        version = release(37)
+        version = release(36)
     }
 
     defaultConfig {

@@ -42,6 +42,9 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.platform.LocalLayoutDirection
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalUriHandler
@@ -60,6 +63,7 @@ import io.github.sparkcyf.voicesipagent.privileged.ShizukuConnector
 class MainActivity : DialerRoleActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        requestPhoneStateAccessIfNeeded()
         val runtime = GatewayRuntime.get(this)
         GatewayService.start(this)
         setContent {
@@ -79,6 +83,8 @@ private fun Screen(rt: GatewayRuntime, modifier: Modifier, requestDialer: () -> 
     val log by AppLog.tail.collectAsState()
     val cur by rt.settingsFlow.collectAsState()
     currentUiLang = UiLang.of(cur.uiLanguage)
+    CompositionLocalProvider(LocalLayoutDirection provides
+        if (currentUiLang == UiLang.AR) LayoutDirection.Rtl else LayoutDirection.Ltr) {
     Column(
         modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
@@ -89,6 +95,7 @@ private fun Screen(rt: GatewayRuntime, modifier: Modifier, requestDialer: () -> 
                 val lang = UiLang.of(cur.uiLanguage)
                 TextButton(onClick = { rt.setUiLanguage("ru") }, enabled = lang != UiLang.RU) { Text("РУ") }
                 TextButton(onClick = { rt.setUiLanguage("en") }, enabled = lang != UiLang.EN) { Text("EN") }
+                TextButton(onClick = { rt.setUiLanguage("ar") }, enabled = lang != UiLang.AR) { Text("عربي") }
                 InfoButton("language")
             }
         }
@@ -213,6 +220,7 @@ private fun Screen(rt: GatewayRuntime, modifier: Modifier, requestDialer: () -> 
         FaqSection()
         DonateFooter()
     }
+    }
 }
 
 /**
@@ -288,8 +296,11 @@ private fun SettingsSection(rt: GatewayRuntime) {
                 "Off: this gateway registers to an external PBX / SIP server. Fill in PBX host, user and password below.")
         }
         Field(t("Порт регистратора", "Local SIP port (registrar listens here)"), localPort, KeyboardType.Number, info = "local_port") { localPort = it }
-        if (serverMode) Text(t("Укажи в софтфоне  <IP этого телефона>:$localPort  по UDP.", "Point your softphone at  <this phone's IP>:$localPort  over UDP."),
-            style = MaterialTheme.typography.bodySmall)
+        if (serverMode) Text(
+            t("Укажи в софтфоне  <IP этого телефона>:\$localPort  по UDP.", "Point your softphone at  <this phone's IP>:\$localPort  over UDP.")
+                .replace("\$localPort", localPort),
+            style = MaterialTheme.typography.bodySmall,
+        )
         Field(t("Аренда регистрации (сек)", "Registration lease (sec)"), lease, KeyboardType.Number, info = "lease") { lease = it }
         if (serverMode) {
             OutlinedTextField(
@@ -297,8 +308,8 @@ private fun SettingsSection(rt: GatewayRuntime) {
                 label = { Text(t("Пароль для софтфона (защита регистратора)", "Softphone password (registrar auth)")) },
                 visualTransformation = PasswordVisualTransformation(), singleLine = true, modifier = Modifier.fillMaxWidth(),
             )
-            Text(t("Пусто = без пароля, регистрироваться может кто угодно. Задай пароль перед выходом в интернет и введи тот же пароль в софтфоне.",
-                "Empty = no password, anyone may register. Set one before exposing the gateway to the internet, and enter the same password in your softphone."),
+            Text(t("Пароль обязателен для исходящих SIP-звонков через SIM и для доступа из интернета. Введи тот же пароль в baresip. Без пароля шлюз отклоняет исходящие INVITE.",
+                "This password is required for SIP-to-SIM outgoing calls and for internet access. Enter the same password in baresip. Without it, the gateway rejects outgoing INVITEs."),
                 style = MaterialTheme.typography.bodySmall)
         }
         Choice(t("SIP-стек", "SIP stack"), SipStack.entries, stack, { it.id }, info = "sip_stack") {
