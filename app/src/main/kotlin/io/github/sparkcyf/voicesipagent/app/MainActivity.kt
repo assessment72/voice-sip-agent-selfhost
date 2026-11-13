@@ -264,7 +264,6 @@ private fun FaqSection() {
             }
         }
     }
-    }
 }
 
 @Composable
