@@ -29,17 +29,12 @@ jobs:
           distribution: temurin
           java-version: '17'
 
-      - name: Configure preinstalled Android SDK
-        run: |
-          echo "ANDROID_HOME=/usr/local/lib/android/sdk" >> "$GITHUB_ENV"
-          echo "/usr/local/lib/android/sdk/platform-tools" >> "$GITHUB_PATH"
-          echo "/usr/local/lib/android/sdk/cmdline-tools/16.0/bin" >> "$GITHUB_PATH"
-
-      - name: Accept Android SDK licenses
-        run: yes | sdkmanager --licenses
-
-      - name: Install Android SDK platform
-        run: sdkmanager --install "platforms;android-37" "build-tools;37.0.0" "platform-tools"
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          cmdline-tools-version: 16.0
+          accept-android-sdk-licenses: true
+          packages: 'platform-tools platforms;android-37 build-tools;37.0.0'
 
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
