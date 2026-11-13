@@ -220,6 +220,7 @@ private fun Screen(rt: GatewayRuntime, modifier: Modifier, requestDialer: () -> 
         FaqSection()
         DonateFooter()
     }
+    }
 }
 
 /**
