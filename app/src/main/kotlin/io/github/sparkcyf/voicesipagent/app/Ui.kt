@@ -135,7 +135,7 @@ fun helpText(key: String, lang: UiLang): Pair<String, String>? {
         )
         "prefixes" -> p(
             "Префиксы для исходящих", "Dial-out prefixes",
-            "Оرقام البداية المسموح الاتصال بها عبر شريحة SIM. افصل بينها بفواصل. اتركه فارغاً للسماح بكل الأرقام.",
+            "Префиксы номеров, на которые разрешены исходящие вызовы через SIM. Разделяй их запятыми. Пустое поле разрешает любые номера.",
             "Restricts which numbers may be dialed out through the SIM. Comma-separated. Empty — any number.",
         )
         "busy" -> p(
