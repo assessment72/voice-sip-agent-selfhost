@@ -1,6 +1,8 @@
 package io.github.sparkcyf.voicesipagent.app
 
 import android.os.Bundle
+import android.media.MediaPlayer
+import android.net.Uri
 import android.os.Build
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.layout.Arrangement
@@ -45,6 +47,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalUriHandler
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
@@ -281,6 +284,8 @@ private fun SettingsSection(rt: GatewayRuntime) {
     var telegramEnabled by remember(cur) { mutableStateOf(cur.telegramVoiceEnabled) }
     var telegramToken by remember(cur) { mutableStateOf(cur.telegramBotToken) }
     var telegramChatId by remember(cur) { mutableStateOf(cur.telegramPrivateChatId) }
+    val context = LocalContext.current
+    var telegramInbox by remember { mutableStateOf(emptyList<java.io.File>()) }
     val builtin = stack == SipStack.BUILTIN
     Section(t("Настройки", "Settings")) {
         // Core mode: this phone is its own SIP server, or it registers to an external PBX.
@@ -348,6 +353,24 @@ private fun SettingsSection(rt: GatewayRuntime) {
             Text(t("لا ترسل Token لأي شخص. احصل على Chat ID من محادثتك الخاصة مع البوت. سيُخزّن الرمز مشفراً بمفتاح Android Keystore.",
                 "Never share the token. Use the numeric ID of your private chat with the bot. The token is encrypted with an Android Keystore key."),
                 style = MaterialTheme.typography.bodySmall)
+            OutlinedButton(onClick = {
+                telegramInbox = java.io.File(context.filesDir, "telegram/inbox").listFiles()
+                    ?.filter { it.isFile && it.extension.equals("ogg", ignoreCase = true) }
+                    ?.sortedByDescending { it.lastModified() }.orEmpty()
+            }) { Text(t("تحديث الرسائل المستلمة", "Refresh received voice messages")) }
+            telegramInbox.forEach { audioFile ->
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(audioFile.name, modifier = Modifier.weight(1f), style = MaterialTheme.typography.bodySmall)
+                    OutlinedButton(onClick = {
+                        runCatching {
+                            MediaPlayer.create(context, Uri.fromFile(audioFile))?.apply {
+                                setOnCompletionListener { it.release() }
+                                start()
+                            } ?: error("Audio playback is unavailable")
+                        }.onFailure { AppLog.w("Telegram voice playback failed", it) }
+                    }) { Text(t("تشغيل", "Play")) }
+                }
+            }
         }
         Button(onClick = {
             rt.applySettings(
