@@ -50,10 +50,16 @@ internal class WebRtcGatewayWorker(
                 ?: error("Could not create WebRTC peer connection")
 
             while (currentCoroutineContext().isActive && !stopping.get()) {
-                flushOutgoing()
-                val messages = pollMessages()
-                for (message in messages) handleSignal(message)
-                delay(POLL_INTERVAL_MS)
+                try {
+                    flushOutgoing()
+                    val messages = pollMessages()
+                    for (message in messages) handleSignal(message)
+                    delay(POLL_INTERVAL_MS)
+                } catch (e: SecurityException) {
+                    throw e
+                } catch (e: Exception) {
+                    delay(RETRY_DELAY_MS)
+                }
             }
         } catch (e: kotlinx.coroutines.CancellationException) {
             throw e
@@ -101,10 +107,11 @@ internal class WebRtcGatewayWorker(
 
     private fun attachDataChannel(channel: DataChannel) {
         channelAdapter?.dispose()
-        val adapter = AndroidWebRtcDataChannel(channel) { open ->
+        val adapter = AndroidWebRtcDataChannel(channel)
+        channelAdapter = adapter
+        adapter.setStateListener { open ->
             if (open && endpoint == null && !stopping.get()) {
-                val media = WebRtcPcmMediaPort(adapterRef(channel))
-                val created = WebRtcCallEndpoint(media, ::enqueueSignal)
+                val created = WebRtcCallEndpoint(WebRtcPcmMediaPort(adapter), ::enqueueSignal)
                 endpoint = created
                 onEndpointChanged(created)
             } else if (!open) {
@@ -113,11 +120,7 @@ internal class WebRtcGatewayWorker(
                 onEndpointChanged(null)
             }
         }
-        channelAdapter = adapter
     }
-
-    private fun adapterRef(channel: DataChannel): AndroidWebRtcDataChannel =
-        channelAdapter ?: AndroidWebRtcDataChannel(channel).also { channelAdapter = it }
 
     private fun enqueueSignal(type: String, data: JSONObject) {
         outgoing.offer(JSONObject().put("type", type).put("data", data))
@@ -263,7 +266,7 @@ internal class WebRtcGatewayWorker(
     }
 
     companion object {
-        private const val POLL_INTERVAL_MS = 250L
+        private const val POLL_INTERVAL_MS = 250L\n        private const val RETRY_DELAY_MS = 1_000L
         private val FACTORY_LOCK = Any()
         @Volatile private var factoryInitialized = false
     }

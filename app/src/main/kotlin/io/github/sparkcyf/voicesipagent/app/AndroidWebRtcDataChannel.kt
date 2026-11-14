@@ -17,7 +17,7 @@ internal class AndroidWebRtcDataChannel(
     private val observer = object : DataChannel.Observer {
         override fun onBufferedAmountChange(previousAmount: Long) = Unit
 
-        override fun onStateChange() = Unit
+        override fun onStateChange() { stateListener?.invoke(isOpen) }
 
         override fun onMessage(buffer: DataChannel.Buffer) {
             if (!buffer.binary) return
