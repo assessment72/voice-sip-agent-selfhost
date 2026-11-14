@@ -25,6 +25,7 @@ rootProject.name = "android-voice-sip-agent"
 include(":voice-api")
 include(":sip")
 include(":gateway")
+include(":webrtc")
 
 // Android modules
 include(":telephony")
