@@ -2,8 +2,6 @@ import {
   authenticatePeer, json, parseSignal, redis, requireMethod, SIGNAL_TTL,
 } from "../lib/server.js";
 
-export const config = { runtime: "nodejs" };
-
 export default async function handler(req, res) {
   if (!requireMethod(req, res, "POST")) return;
   try {

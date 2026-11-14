@@ -2,8 +2,6 @@ import {
   createRoom, json, requireMethod, verifyTelegramInitData,
 } from "../lib/server.js";
 
-export const config = { runtime: "nodejs" };
-
 export default async function handler(req, res) {
   if (!requireMethod(req, res, "POST")) return;
   try {
