@@ -1,7 +1,7 @@
 package io.github.sparkcyf.voicesipagent.app
 
 import io.github.sparkcyf.voicesipagent.webrtc.PcmDataChannel
-import org.webrtc.DataChannel
+import livekit.org.webrtc.DataChannel
 import java.nio.ByteBuffer
 
 /**
