@@ -8,7 +8,7 @@ Set the Vercel project **Root Directory** to `web`, then configure these server-
 
 - `TELEGRAM_BOT_TOKEN`: bot token used by the app and backend. Keep it server-side.
 - `TELEGRAM_OWNER_ID`: numeric Telegram user ID allowed to create calls.
-- `TELEGRAM_PRIVATE_CHAT_ID`: private chat where the Android gateway receives invitations.
+- `TELEGRAM_PRIVATE_CHAT_ID`: numeric private chat where the Android gateway receives invitations; it must match `TELEGRAM_OWNER_ID` for this single-owner build.
 - `UPSTASH_REDIS_REST_URL` and `UPSTASH_REDIS_REST_TOKEN`: shared Upstash Redis REST database.
 - `METERED_TURN_URLS`: comma-separated TURN URLs copied from the Metered dashboard, preferably the approved Saudi region.
 - `METERED_TURN_USERNAME` and `METERED_TURN_PASSWORD`: a newly rotated, short-lived or periodically rotated TURN credential.

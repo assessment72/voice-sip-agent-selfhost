@@ -17,6 +17,9 @@ export default async function handler(req, res) {
       process.env.TELEGRAM_OWNER_ID || "",
     );
     if (!user) return json(res, 401, { error: "telegram_auth_failed" });
+    if (String(process.env.TELEGRAM_PRIVATE_CHAT_ID || "") !== user.id) {
+      return json(res, 503, { error: "telegram_private_chat_must_match_owner" });
+    }
 
     const room = await createRoom();
     return json(res, 201, room);
