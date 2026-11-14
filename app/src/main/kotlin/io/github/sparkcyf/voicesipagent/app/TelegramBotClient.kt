@@ -105,9 +105,15 @@ class TelegramBotClient(
         }
     }
 
-    /** Sends an OGG/Opus recording as a Telegram voice message to the allowlisted private chat. */
+    /** Sends an OGG, MP3, or M4A recording as a Telegram voice message to the allowlisted private chat. */
     fun sendVoice(file: File, caption: String? = null) {
         require(file.isFile && file.length() in 1L..MAX_VOICE_BYTES) { "Audio file is missing or exceeds size limit" }
+        val (filename, contentType) = when (file.extension.lowercase()) {
+            "ogg" -> "voice.ogg" to "audio/ogg"
+            "mp3" -> "voice.mp3" to "audio/mpeg"
+            "m4a" -> "voice.m4a" to "audio/mp4"
+            else -> throw IllegalArgumentException("Voice recording must be OGG, MP3, or M4A")
+        }
         val boundary = "----VsaTelegram" + System.nanoTime()
         val connection = (URL("https://api.telegram.org/bot" + token + "/sendVoice").openConnection() as HttpURLConnection)
         connection.requestMethod = "POST"
@@ -126,8 +132,8 @@ class TelegramBotClient(
                 field("chat_id", allowedPrivateChatId)
                 caption?.takeIf { it.isNotBlank() }?.let { field("caption", it.take(900)) }
                 out.write(("--" + boundary + "\r\n").toByteArray())
-                out.write("Content-Disposition: form-data; name=\"voice\"; filename=\"voice.ogg\"\r\n".toByteArray())
-                out.write("Content-Type: audio/ogg\r\n\r\n".toByteArray())
+                out.write(("Content-Disposition: form-data; name=\"voice\"; filename=\"$filename\"\r\n").toByteArray())
+                out.write(("Content-Type: $contentType\r\n\r\n").toByteArray())
                 FileInputStream(file).use { it.copyTo(out) }
                 out.write(("\r\n--" + boundary + "--\r\n").toByteArray())
             }

@@ -1,10 +1,14 @@
 package io.github.sparkcyf.voicesipagent.app
 
+import android.Manifest
+import android.content.pm.PackageManager
 import android.os.Bundle
 import android.media.MediaPlayer
 import android.net.Uri
 import android.os.Build
 import androidx.activity.compose.setContent
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.FlowRow
@@ -38,16 +42,20 @@ import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.onDispose
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.platform.LocalContext
+import androidx.core.content.ContextCompat
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
@@ -59,6 +67,9 @@ import io.github.sparkcyf.voicesipagent.privileged.HealthKeys
 import io.github.sparkcyf.voicesipagent.privileged.AudioMethod
 import io.github.sparkcyf.voicesipagent.privileged.CallAccess
 import io.github.sparkcyf.voicesipagent.privileged.ShizukuConnector
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 class MainActivity : DialerRoleActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -286,6 +297,21 @@ private fun SettingsSection(rt: GatewayRuntime) {
     var telegramChatId by remember(cur) { mutableStateOf(cur.telegramPrivateChatId) }
     val context = LocalContext.current
     var telegramInbox by remember { mutableStateOf(emptyList<java.io.File>()) }
+    var isRecording by remember { mutableStateOf(false) }
+    var outgoingVoice by remember { mutableStateOf<java.io.File?>(null) }
+    var telegramActionStatus by remember { mutableStateOf("") }
+    val scope = rememberCoroutineScope()
+    val voiceRecorder = remember(context) { TelegramVoiceRecorder(context) }
+    fun beginVoiceRecording() {
+        runCatching { outgoingVoice = voiceRecorder.start(); isRecording = true; telegramActionStatus = "Recording…" }
+            .onFailure { telegramActionStatus = it.message ?: "Could not start recording" }
+    }
+    val microphonePermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+        if (granted) beginVoiceRecording() else telegramActionStatus = "Microphone permission is required"
+    }
+    DisposableEffect(voiceRecorder) {
+        onDispose { voiceRecorder.cancel() }
+    }
     val builtin = stack == SipStack.BUILTIN
     Section(t("Настройки", "Settings")) {
         // Core mode: this phone is its own SIP server, or it registers to an external PBX.
@@ -350,6 +376,42 @@ private fun SettingsSection(rt: GatewayRuntime) {
                 visualTransformation = PasswordVisualTransformation(), singleLine = true, modifier = Modifier.fillMaxWidth(),
             )
             Field(t("Private Chat ID", "Private Chat ID"), telegramChatId) { telegramChatId = it }
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                OutlinedButton(onClick = {
+                    if (isRecording) {
+                        runCatching { outgoingVoice = voiceRecorder.stop(); isRecording = false; telegramActionStatus = "Recording ready" }
+                            .onFailure { isRecording = false; telegramActionStatus = it.message ?: "Recording failed" }
+                    } else if (ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
+                        beginVoiceRecording()
+                    } else {
+                        microphonePermission.launch(Manifest.permission.RECORD_AUDIO)
+                    }
+                }) { Text(if (isRecording) t("إيقاف التسجيل", "Stop recording") else t("تسجيل رسالة صوتية", "Record voice message")) }
+                Button(onClick = {
+                    val file = outgoingVoice
+                    val token = telegramToken.trim()
+                    val chatId = telegramChatId.trim()
+                    if (file == null || token.isBlank() || chatId.isBlank()) {
+                        telegramActionStatus = "Record a message and configure the bot first"
+                    } else {
+                        scope.launch {
+                            telegramActionStatus = "Sending voice message…"
+                            val result = runCatching {
+                                withContext(Dispatchers.IO) { TelegramBotClient(token, chatId).sendVoice(file) }
+                            }
+                            if (result.isSuccess) {
+                                file.delete()
+                                outgoingVoice = null
+                                telegramActionStatus = "Voice message sent"
+                            } else {
+                                telegramActionStatus = result.exceptionOrNull()?.message ?: "Telegram send failed"
+                            }
+                        }
+                    }
+                }, enabled = outgoingVoice != null && !isRecording) { Text(t("إرسال إلى Telegram", "Send to Telegram")) }
+            }
+            outgoingVoice?.let { Text("Ready: ${it.name}", style = MaterialTheme.typography.bodySmall) }
+            if (telegramActionStatus.isNotBlank()) Text(telegramActionStatus, style = MaterialTheme.typography.bodySmall)
             Text(t("لا ترسل Token لأي شخص. احصل على Chat ID من محادثتك الخاصة مع البوت. سيُخزّن الرمز مشفراً بمفتاح Android Keystore.",
                 "Never share the token. Use the numeric ID of your private chat with the bot. The token is encrypted with an Android Keystore key."),
                 style = MaterialTheme.typography.bodySmall)
