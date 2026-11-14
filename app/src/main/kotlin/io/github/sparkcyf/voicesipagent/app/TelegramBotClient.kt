@@ -9,7 +9,7 @@ import java.net.HttpURLConnection
 import java.net.URL
 
 /**
- * Telegram Bot API transport for private voice-message fallback.
+ * Telegram Bot API transport for private voice messages and WebRTC room invitation callbacks.
  * Invoke from Dispatchers.IO. It does not modify SIP/RTP or the Shizuku audio pipeline.
  */
 class TelegramBotClient(
@@ -39,7 +39,7 @@ class TelegramBotClient(
         return response.getJSONObject("result").optString("username")
     }
 
-    /** Long-polls updates; accepts voice messages only from the configured private chat. */
+    /** Long-polls voice messages and WebRTC invitation callbacks from the configured private chat. */
     fun pollVoice(offset: Long, timeoutSeconds: Int = 20): PollResult {
         require(timeoutSeconds in 1..30)
         val body = JSONObject()

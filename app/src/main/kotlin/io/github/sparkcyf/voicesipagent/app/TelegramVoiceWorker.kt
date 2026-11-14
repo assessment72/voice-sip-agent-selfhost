@@ -9,11 +9,11 @@ import kotlinx.coroutines.Dispatchers
 import java.io.File
 
 /**
- * Receives Telegram voice messages while GatewayService is alive.
+ * Receives Telegram voice messages and one-time WebRTC peer invitations while GatewayService is alive.
  *
  * The bot is deliberately restricted to one configured private chat. Updates are acknowledged
  * only after all accepted voice files have been downloaded into app-private storage.
- * This is a recorded-message fallback, not a live Telegram call or a WebRTC media bridge.
+ * Recorded messages remain a fallback; live calls use the separately authenticated WebRTC DataChannel peer.
  */
 class TelegramVoiceWorker(context: Context) {
     private val app = context.applicationContext
