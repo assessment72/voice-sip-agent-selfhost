@@ -11,13 +11,15 @@ import java.nio.ByteBuffer
 internal class AndroidWebRtcDataChannel(
     private val delegate: DataChannel,
 ) : PcmDataChannel {
-    @Volatile
-    private var messageHandler: ((ByteArray) -> Unit)? = null
+    @Volatile private var messageHandler: ((ByteArray) -> Unit)? = null
+    @Volatile private var stateListener: ((Boolean) -> Unit)? = null
 
     private val observer = object : DataChannel.Observer {
         override fun onBufferedAmountChange(previousAmount: Long) = Unit
 
-        override fun onStateChange() { stateListener?.invoke(isOpen) }
+        override fun onStateChange() {
+            stateListener?.invoke(isOpen)
+        }
 
         override fun onMessage(buffer: DataChannel.Buffer) {
             if (!buffer.binary) return
@@ -44,9 +46,15 @@ internal class AndroidWebRtcDataChannel(
         messageHandler = handler
     }
 
-    /** Detaches the observer without taking ownership of closing the PeerConnection's channel. */
+    fun setStateListener(listener: ((Boolean) -> Unit)?) {
+        stateListener = listener
+        listener?.invoke(isOpen)
+    }
+
+    /** Detaches the observer without taking ownership of closing the underlying DataChannel. */
     fun dispose() {
         messageHandler = null
+        stateListener = null
         delegate.unregisterObserver()
     }
 }
