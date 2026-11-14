@@ -58,6 +58,8 @@ android {
 
 dependencies {
     implementation(project(":voice-api"))
+    implementation(project(":webrtc"))
+    implementation("io.github.webrtc-sdk:android:150.7871.04")
     implementation(project(":sip"))
     implementation(project(":gateway"))
     implementation(project(":telephony"))
