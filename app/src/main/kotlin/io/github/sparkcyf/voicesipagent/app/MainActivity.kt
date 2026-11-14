@@ -217,8 +217,7 @@ private fun Screen(rt: GatewayRuntime, modifier: Modifier, requestDialer: () -> 
             Section(t("Диагностика", "Diagnostics")) {
                 Text("Android ${Build.VERSION.RELEASE}, API ${Build.VERSION.SDK_INT}")
                 Text("requestedCallAccess=${cur.callAccess} effective=${h.effectiveCallAccess} audio=${cur.audioMethod}")
-                Text(h.privileged?.entries?.joinToString("
-") { "${it.key}=${it.value}" } ?: t("Ожидание помощника", "Waiting for helper"))
+                Text(h.privileged?.entries?.joinToString("\\n") { "${it.key}=${it.value}" } ?: t("Ожидание помощника", "Waiting for helper"))
                 Text(h.privilegedDetail)
                 Text(h.lastSetupLog)
                 Text(t("Счётчики звука не доказывают доставку. Проверяй обе стороны на слух.",

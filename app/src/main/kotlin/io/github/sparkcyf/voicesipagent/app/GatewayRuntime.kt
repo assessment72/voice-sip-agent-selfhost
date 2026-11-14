@@ -599,7 +599,7 @@ class GatewayRuntime private constructor(context: Context) {
     }
 
     /** Install or remove the authenticated WebRTC endpoint without interrupting an active call. */
-    fun setWebRtcEndpoint(endpoint: WebRtcCallEndpoint?) = worker.execute {
+    internal fun setWebRtcEndpoint(endpoint: WebRtcCallEndpoint?) = worker.execute {
         if (webRtcEndpoint === endpoint) return@execute
         webRtcEndpoint?.setIncomingCallHandler(null)
         webRtcEndpoint = endpoint
