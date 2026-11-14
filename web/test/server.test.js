@@ -49,7 +49,7 @@ test("rejects expired and future-dated Telegram initData", () => {
 });
 
 test("rejects tampered Telegram initData and malformed hashes", () => {
-  const tampered = signedInitData().replace("Owner", "Attacker");
+  const tampered = signedInitData().replace("AAEAAExample", "AAEAAOther");
   assert.equal(verifyTelegramInitData(tampered, BOT_TOKEN, OWNER_ID, NOW), null);
   assert.equal(
     verifyTelegramInitData("auth_date=1800000000&hash=not-a-hash", BOT_TOKEN, OWNER_ID, NOW),
