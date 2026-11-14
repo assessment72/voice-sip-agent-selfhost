@@ -34,10 +34,10 @@ internal class WebRtcGatewayWorker(
     private val app = context.applicationContext
     private val outgoing = LinkedBlockingQueue<JSONObject>()
     private val stopping = AtomicBoolean(false)
-    private var endpoint: WebRtcCallEndpoint? = null
-    private var channelAdapter: AndroidWebRtcDataChannel? = null
-    private var peer: PeerConnection? = null
-    private var remoteDescriptionSet = false
+    @Volatile private var endpoint: WebRtcCallEndpoint? = null
+    @Volatile private var channelAdapter: AndroidWebRtcDataChannel? = null
+    @Volatile private var peer: PeerConnection? = null
+    @Volatile private var remoteDescriptionSet = false
     private val pendingCandidates = mutableListOf<IceCandidate>()
 
     suspend fun run() {
@@ -150,7 +150,7 @@ internal class WebRtcGatewayWorker(
                     item.optInt("sdpMLineIndex"),
                     item.optString("candidate"),
                 )
-                if (remoteDescriptionSet) peer?.addIceCandidate(candidate) else pendingCandidates += candidate
+                if (remoteDescriptionSet) peer?.addIceCandidate(candidate) else synchronized(pendingCandidates) { pendingCandidates += candidate }
             }
             "dial", "accepted", "hangup", "error" -> endpoint?.onRemoteSignal(type, data)
         }

@@ -26,7 +26,7 @@
     return result;
   }
   function sendSignal(type, data = {}) {
-    signalChain = signalChain.then(() => request("/api/signal", {
+    signalChain = signalChain.catch(() => {}).then(() => request("/api/signal", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ type, data }),
@@ -156,7 +156,7 @@
   async function stop(message = "انتهت المكالمة.") {
     const wasActive = active;
     active = false;
-    if (wasActive && roomToken) sendSignal("hangup").catch(() => {});
+    if (wasActive && roomToken) { try { await sendSignal("hangup"); } catch {} }
     try { dataChannel?.close(); } catch {}
     try { peer?.close(); } catch {}
     try { microphone?.getTracks().forEach(track => track.stop()); } catch {}
