@@ -50,7 +50,7 @@ internal class WebRtcCallEndpoint(
             direction = LegDirection.OUTBOUND,
             remote = Party("telegram", "Telegram WebRTC"),
             target = null,
-            mediaPort = mediaPort,
+            media = mediaPort,
             signal = sendSignal,
             onEnded = ::clearActive,
         )
@@ -73,7 +73,7 @@ internal class WebRtcCallEndpoint(
                         direction = LegDirection.INBOUND,
                         remote = Party("telegram", "Telegram WebRTC"),
                         target = target,
-                        mediaPort = mediaPort,
+                        media = mediaPort,
                         signal = sendSignal,
                         onEnded = ::clearActive,
                     ).also { activeLeg = it }
@@ -96,7 +96,7 @@ internal class WebRtcCallEndpoint(
             direction = LegDirection.OUTBOUND,
             remote = Party("telegram", "Telegram WebRTC"),
             target = null,
-            mediaPort = mediaPort,
+            media = mediaPort,
             signal = sendSignal,
             onEnded = {},
         ).also { it.finish(cause) }
