@@ -166,8 +166,7 @@ private fun Screen(rt: GatewayRuntime, modifier: Modifier, requestDialer: () -> 
         }
         SettingsSection(rt)
         Section(t("Журнал", "Log")) {
-            Text(log.takeLast(60).reversed().joinToString("
-"), fontFamily = FontFamily.Monospace,
+            Text(log.takeLast(60).reversed().joinToString("\n"), fontFamily = FontFamily.Monospace,
                 fontSize = 11.sp, lineHeight = 14.sp)
         }
         var advanced by remember { mutableStateOf(false) }
