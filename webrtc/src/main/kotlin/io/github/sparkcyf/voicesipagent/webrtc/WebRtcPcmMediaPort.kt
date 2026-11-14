@@ -61,7 +61,7 @@ class WebRtcPcmMediaPort(
         if (next != null && next > expected) {
             val now = clockNanos()
             val gapStarted = gapStartedAtNanos ?: now.also { gapStartedAtNanos = it }
-            if (incoming.size >= prebufferFrames || now - gapStarted >= gapWaitNanos) {
+            if (now - gapStarted >= gapWaitNanos) {
                 expectedSequence = next + 1
                 gapStartedAtNanos = null
                 return@synchronized incoming.remove(next) ?: format.silence()
