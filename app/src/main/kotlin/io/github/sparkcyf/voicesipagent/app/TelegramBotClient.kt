@@ -107,7 +107,7 @@ class TelegramBotClient(
 
     /** Sends an OGG/Opus recording as a Telegram voice message to the allowlisted private chat. */
     fun sendVoice(file: File, caption: String? = null) {
-        require(file.isFile && file.length() in 1..MAX_VOICE_BYTES) { "Audio file is missing or exceeds size limit" }
+        require(file.isFile && file.length() in 1L..MAX_VOICE_BYTES) { "Audio file is missing or exceeds size limit" }
         val boundary = "----VsaTelegram" + System.nanoTime()
         val connection = (URL("https://api.telegram.org/bot" + token + "/sendVoice").openConnection() as HttpURLConnection)
         connection.requestMethod = "POST"
