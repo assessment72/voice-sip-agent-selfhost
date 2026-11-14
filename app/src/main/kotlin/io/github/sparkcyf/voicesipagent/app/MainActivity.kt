@@ -367,10 +367,10 @@ private fun SettingsSection(rt: GatewayRuntime) {
             busy = it
         }
         Section(t("Telegram — голосовые сообщения", "Telegram — voice messages")) {
-            Toggle(t("Включить голосовой резервный канал", "Enable voice-message fallback"), telegramEnabled,
+            Toggle(t("Включить Telegram для сообщений и звонков", "Enable Telegram voice messages and live calls"), telegramEnabled,
                 { telegramEnabled = it }, info = "telegram_voice") {
-                t("Бот принимает голосовые сообщения только из указанного личного чата и сохраняет их в закрытой папке приложения. Это не живой звонок.",
-                    "The bot accepts voice messages only from the configured private chat and stores them in app-private storage. This is not a live call.")
+                t("البوت يستقبل الرسائل الصوتية ودعوات المكالمات الحية من المحادثة الخاصة المحددة. يجب ضبط رابط خادم WebRTC أدناه.",
+                    "The bot receives voice messages and live-call invitations from the configured private chat. Set the WebRTC server URL below.")
             }
             OutlinedTextField(
                 value = telegramToken, onValueChange = { telegramToken = it },

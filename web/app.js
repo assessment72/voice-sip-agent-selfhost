@@ -58,6 +58,7 @@
     audioContext.createMediaStreamSource(microphone).connect(worklet);
     worklet.connect(audioContext.destination);
     await audioContext.resume();
+    callButton.disabled = false;
     show("الصوت جاهز. انتظر اتصال هاتف البوابة…");
   }
 
@@ -79,8 +80,12 @@
       if (peer.remoteDescription) await peer.addIceCandidate(message.data.candidate);
       else pendingRemoteCandidates.push(message.data.candidate);
     } else if (message.type === "ringing") {
-      answerButton.hidden = false;
-      show("هاتف البوابة يرن… اضغط قبول للرد.");
+      if (message.data?.target) {
+        answerButton.hidden = false;
+        show("مكالمة واردة من شريحة الهاتف. اضغط قبول للرد.");
+      } else {
+        show("جارٍ رنين الهاتف المطلوب عبر شريحة SIM…");
+      }
     } else if (message.type === "accepted") {
       answerButton.hidden = true;
       show("تم قبول المكالمة.");
@@ -140,8 +145,8 @@
       offerSent = true;
       for (const candidate of earlyCandidates.splice(0)) await sendSignal("ice-candidate", { candidate });
       hangupButton.hidden = false;
-      callButton.disabled = false;
-      show("أُرسلت الدعوة إلى هاتف البوابة. يمكنك الآن الاتصال عبر شريحة الهاتف.");
+      callButton.disabled = true;
+      show("أُرسلت الدعوة إلى هاتف البوابة. انتظر فتح قناة الصوت.");
     } catch (error) {
       await stop("تعذر بدء المكالمة: " + error.message);
       startButton.disabled = false;

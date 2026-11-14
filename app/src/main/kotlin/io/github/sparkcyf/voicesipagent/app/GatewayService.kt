@@ -79,8 +79,7 @@ class GatewayService : Service() {
             telegramVoiceJob = scope.launch(Dispatchers.IO) {
                 TelegramVoiceWorker(applicationContext).run { token ->
                     val baseUrl = SettingsStore(applicationContext).load().webRtcServerUrl
-                    if (baseUrl.isNotBlank()) {
-                        webRtcJob?.cancel()
+                    if (baseUrl.isNotBlank() && webRtcJob?.isActive != true) {
                         webRtcJob = scope.launch(Dispatchers.IO) {
                             WebRtcGatewayWorker(applicationContext, baseUrl, token) { endpoint ->
                                 GatewayRuntime.get(applicationContext).setWebRtcEndpoint(endpoint)

@@ -61,6 +61,8 @@ test("allows only the documented signaling message types", () => {
   assert.deepEqual(parseSignal({ type: "offer", data: { sdp: "v=0" } }), {
     type: "offer", data: { sdp: "v=0" },
   });
+  assert.deepEqual(parseSignal({ type: "dial", data: { target: "+967711234567" } }), { type: "dial", data: { target: "+967711234567" } });
+  assert.equal(parseSignal({ type: "dial", data: { target: "abc" } }), null);
   assert.equal(parseSignal({ type: "exec", data: {} }), null);
   assert.equal(parseSignal({ type: "ice-candidate", data: "not-an-object" }), null);
 });
