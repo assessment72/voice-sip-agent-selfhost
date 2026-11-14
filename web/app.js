@@ -35,11 +35,9 @@
   }
 
   async function startAudio() {
-    if (audioContext) return;
-    microphone = await navigator.mediaDevices.getUserMedia({
-      audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true }, video: false,
-    });
-    audioContext = new AudioContext();
+    if (worklet) return;
+    if (!microphone) throw new Error("لم يتم منح إذن الميكروفون");
+    if (!audioContext) audioContext = new AudioContext();
     await audioContext.audioWorklet.addModule("/audio-worklet.js");
     worklet = new AudioWorkletNode(audioContext, "voice-pcm", {
       numberOfInputs: 1, numberOfOutputs: 1, outputChannelCount: [1],
@@ -111,8 +109,17 @@
 
   async function start() {
     startButton.disabled = true;
-    show("جارٍ التحقق من Telegram وإنشاء غرفة الاتصال…");
+    active = true;
+    show("اطلب إذن الميكروفون لبدء المكالمة…");
     try {
+      // Create/resume AudioContext and request microphone directly from the user gesture.
+      audioContext = new AudioContext();
+      const audioResume = audioContext.resume();
+      microphone = await navigator.mediaDevices.getUserMedia({
+        audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true }, video: false,
+      });
+      await audioResume;
+      show("جارٍ التحقق من Telegram وإنشاء غرفة الاتصال…");
       const response = await fetch("/api/room", {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ initData: telegram.initData }),
@@ -138,7 +145,6 @@
       peer.onconnectionstatechange = () => {
         if (peer.connectionState === "failed") show("فشل WebRTC. تحقق من TURN والشبكة.");
       };
-      active = true;
       pollLoop();
       await peer.setLocalDescription(await peer.createOffer());
       await sendSignal("offer", { description: peer.localDescription });
