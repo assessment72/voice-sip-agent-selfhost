@@ -17,7 +17,7 @@ Do not add secrets to Git, browser code, Android source, or public `NEXT_PUBLIC_
 
 ## Endpoints
 
-- `POST /api/room`: validates Telegram Mini App `initData`, checks the configured owner ID, creates a 10-minute room, issues role-specific random peer tokens, and sends the Android token to the configured private Telegram chat.
+- `POST /api/room`: validates Telegram Mini App `initData`, checks the configured owner ID, creates a two-hour room, issues role-specific random peer tokens, and sends the Android token to the configured private Telegram chat.
 - `POST /api/signal`: authenticated, role-derived signaling relay. Message types are allowlisted and payloads are limited to 48 KiB.
 - `GET /api/poll`: authenticated bounded queue drain for the caller's role. Clients should poll at a modest interval; do not run multiple pollers for the same peer token.
 - `GET /api/ice`: returns the server-configured ICE server list only to a valid room peer.

@@ -1,6 +1,6 @@
 import { createHash, createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 
-const ROOM_TTL_SECONDS = 10 * 60;
+const ROOM_TTL_SECONDS = 2 * 60 * 60;
 const TOKEN_TTL_SECONDS = ROOM_TTL_SECONDS;
 const SIGNAL_TTL_SECONDS = ROOM_TTL_SECONDS;
 const ALLOWED_SIGNAL_TYPES = new Set([
