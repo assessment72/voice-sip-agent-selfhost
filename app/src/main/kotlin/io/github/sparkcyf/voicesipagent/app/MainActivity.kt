@@ -293,7 +293,7 @@ private fun SettingsSection(rt: GatewayRuntime) {
     var regPassword by remember(cur) { mutableStateOf(cur.registrarPassword) }
     var telegramEnabled by remember(cur) { mutableStateOf(cur.telegramVoiceEnabled) }
     var telegramToken by remember(cur) { mutableStateOf(cur.telegramBotToken) }
-    var telegramChatId by remember(cur) { mutableStateOf(cur.telegramPrivateChatId) }
+    var telegramChatId by remember(cur) { mutableStateOf(cur.telegramPrivateChatId) }\n    var webRtcServerUrl by remember(cur) { mutableStateOf(cur.webRtcServerUrl) }
     val context = LocalContext.current
     var telegramInbox by remember { mutableStateOf(emptyList<java.io.File>()) }
     var isRecording by remember { mutableStateOf(false) }
@@ -374,7 +374,7 @@ private fun SettingsSection(rt: GatewayRuntime) {
                 label = { Text(t("Bot Token", "Bot Token")) },
                 visualTransformation = PasswordVisualTransformation(), singleLine = true, modifier = Modifier.fillMaxWidth(),
             )
-            Field(t("Private Chat ID", "Private Chat ID"), telegramChatId) { telegramChatId = it }
+            Field(t("Private Chat ID", "Private Chat ID"), telegramChatId) { telegramChatId = it }\n            Field(t("عنوان خادم WebRTC على Vercel", "Vercel WebRTC server URL"), webRtcServerUrl) { webRtcServerUrl = it }
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
                 OutlinedButton(onClick = {
                     if (isRecording) {
@@ -442,7 +442,7 @@ private fun SettingsSection(rt: GatewayRuntime) {
                     registrarPassword = regPassword,
                     telegramVoiceEnabled = telegramEnabled,
                     telegramBotToken = telegramToken.trim(),
-                    telegramPrivateChatId = telegramChatId.trim(),
+                    telegramPrivateChatId = telegramChatId.trim(),\n                    webRtcServerUrl = webRtcServerUrl.trim().trimEnd('/'),
                     server = server, port = port.toIntOrNull() ?: transport.defaultPort, username = user, password = password,
                     inboundTarget = target, allowedPrefixes = prefixes, domain = domain,
                     sipStack = stack, sipTransport = transport.id, srtp = srtp.id, busyPolicy = busy,
