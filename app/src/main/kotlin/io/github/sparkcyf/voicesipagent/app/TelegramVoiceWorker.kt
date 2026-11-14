@@ -46,7 +46,7 @@ class TelegramVoiceWorker(context: Context) {
                 throw e
             } catch (e: Exception) {
                 // Do not log tokens, chat IDs, message text, or Telegram URLs.
-                AppLog.w("Telegram voice polling failed; will retry", e)
+                AppLog.w("Telegram voice polling failed; will retry")
                 delay(RETRY_DELAY_MS)
             }
         }
