@@ -86,7 +86,7 @@ internal class WebRtcGatewayWorker(
                 "onIceCandidate" -> {
                     val candidate = args?.getOrNull(0) as? IceCandidate
                     if (candidate != null) {
-                        enqueueSignal("ice-candidate", JSONObject()
+                        enqueueJsonSignal("ice-candidate", JSONObject()
                             .put("candidate", JSONObject()
                                 .put("sdpMid", candidate.sdpMid)
                                 .put("sdpMLineIndex", candidate.sdpMLineIndex)
@@ -125,6 +125,10 @@ internal class WebRtcGatewayWorker(
     private fun enqueueSignal(type: String, target: String?) {
         val data = JSONObject()
         if (target != null) data.put("target", target)
+        outgoing.offer(JSONObject().put("type", type).put("data", data))
+    }
+
+    private fun enqueueJsonSignal(type: String, data: JSONObject) {
         outgoing.offer(JSONObject().put("type", type).put("data", data))
     }
 
