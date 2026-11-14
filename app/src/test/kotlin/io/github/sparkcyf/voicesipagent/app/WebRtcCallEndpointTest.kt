@@ -14,7 +14,7 @@ import org.junit.Test
 class WebRtcCallEndpointTest {
     @Test
     fun outboundCellularCallRingsBrowserAndConnectsAfterAcceptance() {
-        val signals = mutableListOf<Pair<String, JSONObject>>()
+        val signals = mutableListOf<Pair<String, String?>>()
         val endpoint = WebRtcCallEndpoint(FakeMediaPort()) { type, target -> signals += type to target }
 
         val leg = endpoint.dial("phone", Party("123", "Cellular"))
