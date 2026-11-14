@@ -98,7 +98,8 @@ export function parseSignal(body) {
   if (!body || typeof body !== "object" || Array.isArray(body)) return null;
   if (!ALLOWED_SIGNAL_TYPES.has(body.type)) return null;
   if (body.data !== undefined && (body.data === null || typeof body.data !== "object")) return null;
-  if (body.type === "dial" && !/^\\+?[0-9*#]{3,32}$/.test(String(body.data?.target || ""))) return null;\n  const payload = JSON.stringify({ type: body.type, data: body.data ?? {} });
+  if (body.type === "dial" && !/^\+?[0-9*#]{3,32}$/.test(String(body.data?.target || ""))) return null;
+  const payload = JSON.stringify({ type: body.type, data: body.data ?? {} });
   if (Buffer.byteLength(payload, "utf8") > 48 * 1024) return null;
   return { type: body.type, data: body.data ?? {} };
 }
