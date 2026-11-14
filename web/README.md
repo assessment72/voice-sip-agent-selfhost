@@ -1,10 +1,10 @@
 # Voice SIP Agent — Telegram Mini App signaling backend
 
-This folder is a Vercel project root. It contains the server-side signaling API and a browser WebRTC Mini App. It is not yet a complete Android-to-cellular gateway integration.
+This folder is a Vercel project root. It contains the server-side signaling API and a browser WebRTC Mini App. The Android side now has a prototype peer and CallBridge endpoint; end-to-end operation still requires deployment and physical-device validation.
 
 ## Vercel setup
 
-Set the Vercel project **Root Directory** to `web`, then configure these server-side environment variables:
+Set the Vercel project **Root Directory** to `web`, choose the **Other** framework preset, leave the build command empty, and use `.` as the output directory. Then configure these server-side environment variables:
 
 - `TELEGRAM_BOT_TOKEN`: bot token used by the app and backend. Keep it server-side.
 - `TELEGRAM_OWNER_ID`: numeric Telegram user ID allowed to create calls.
@@ -34,8 +34,8 @@ The Mini App captures microphone audio with echo cancellation and noise suppress
 
 ## Current limitations
 
-- Android still needs to consume the one-time callback invitation and create its WebRTC `PeerConnection`.
-- The current Android `CallBridge` still connects cellular to SIP; WebRTC has not been inserted into that bridge.
+- The Android callback consumer, WebRTC `PeerConnection`, PCM DataChannel adapter, and CallBridge endpoint are implemented, but have not yet been validated on the target HONOR device.
+- Do not claim two-way cellular audio until both directions pass real call tests.
 - TURN credentials are supplied as Vercel environment variables and need an operational rotation procedure; they are not generated at call time.
 - Deploying this folder is not authorized or performed by this commit.
 
