@@ -111,7 +111,8 @@ export async function sendTelegramInvite(androidToken) {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       chat_id: chatId,
-      text: `مكالمة WebRTC واردة. افتح تطبيق Voice SIP Agent لاستلام الدعوة.\n/vsa_join ${androidToken}`,
+      text: "طلب اتصال WebRTC جديد. اضغط الزر لتوصيل هاتف بوابة SIP.",
+      reply_markup: { inline_keyboard: [[{ text: "توصيل بوابة SIP", callback_data: `vsa_join:${androidToken}` }]] },
       disable_web_page_preview: true,
     }),
   });

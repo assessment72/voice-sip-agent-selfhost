@@ -1,30 +1,20 @@
 (() => {
-  const app = window.Telegram?.WebApp;
-  const button = document.getElementById("start");
-  const hangupButton = document.getElementById("hangup");\n  const answerButton = document.getElementById("answer");\n  const callButton = document.getElementById("call-sim");\n  const targetInput = document.getElementById("target");
+  const telegram = window.Telegram?.WebApp;
+  const startButton = document.getElementById("start");
+  const hangupButton = document.getElementById("hangup");
+  const answerButton = document.getElementById("answer");
+  const callButton = document.getElementById("call-sim");
+  const targetInput = document.getElementById("target");
   const status = document.getElementById("status");
-  let active = false;
-  let peer = null;
-  let dataChannel = null;
-  let roomToken = null;
-  let pollTask = null;
-  let audioContext = null;
-  let microphone = null;
-  let worklet = null;
-  let sendSequence = 0n;
-  let signalChain = Promise.resolve();
-  let offerSent = false;
-  const earlyCandidates = [];
-  const pendingRemoteCandidates = [];
+  let active = false, peer = null, dataChannel = null, roomToken = null;
+  let audioContext = null, microphone = null, worklet = null;
+  let sendSequence = 0n, signalChain = Promise.resolve(), offerSent = false;
+  const earlyCandidates = [], pendingRemoteCandidates = [];
 
-  if (app) { app.ready(); app.expand(); }
-  else {
-    status.textContent = "افتح الصفحة من Telegram Mini App.";
-    button.disabled = true;
-  }
+  if (telegram) { telegram.ready(); telegram.expand(); }
+  else { status.textContent = "افتح الصفحة من Telegram Mini App."; startButton.disabled = true; }
 
-  function show(message) { status.textContent = message; }
-
+  const show = message => { status.textContent = message; };
   async function request(path, options = {}) {
     const response = await fetch(path, {
       ...options,
@@ -35,7 +25,6 @@
     if (!response.ok) throw new Error(result.error || "تعذر الاتصال بالخادم");
     return result;
   }
-
   function sendSignal(type, data = {}) {
     signalChain = signalChain.then(() => request("/api/signal", {
       method: "POST",
@@ -47,27 +36,22 @@
 
   async function startAudio() {
     if (audioContext) return;
-    show("تم فتح قناة الصوت. اطلب إذن الميكروفون…");
     microphone = await navigator.mediaDevices.getUserMedia({
-      audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
-      video: false,
+      audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true }, video: false,
     });
     audioContext = new AudioContext();
     await audioContext.audioWorklet.addModule("/audio-worklet.js");
     worklet = new AudioWorkletNode(audioContext, "voice-pcm", {
       numberOfInputs: 1, numberOfOutputs: 1, outputChannelCount: [1],
     });
-    worklet.port.onmessage = (event) => {
-      if (event.data?.type !== "pcm" || dataChannel?.readyState !== "open") return;
-      if (dataChannel.bufferedAmount > 96 * 1024) return;
-      const samples = event.data.samples;
-      if (!(samples instanceof Float32Array) || samples.length !== 160) return;
-      const packet = new ArrayBuffer(328);
-      const view = new DataView(packet);
+    worklet.port.onmessage = event => {
+      const samples = event.data?.samples;
+      if (event.data?.type !== "pcm" || dataChannel?.readyState !== "open" ||
+          !(samples instanceof Float32Array) || samples.length !== 160 || dataChannel.bufferedAmount > 96 * 1024) return;
+      const packet = new ArrayBuffer(328), view = new DataView(packet);
       view.setBigUint64(0, sendSequence++, false);
       for (let i = 0; i < 160; i++) {
-        const sample = Math.max(-1, Math.min(1, samples[i]));
-        view.setInt16(8 + i * 2, Math.round(sample * 32767), true);
+        view.setInt16(8 + i * 2, Math.round(Math.max(-1, Math.min(1, samples[i])) * 32767), true);
       }
       dataChannel.send(packet);
     };
@@ -79,12 +63,11 @@
 
   function acceptPcm(packet) {
     if (!(packet instanceof ArrayBuffer) || packet.byteLength !== 328 || !worklet) return;
-    const view = new DataView(packet);
-    const sequenceBig = view.getBigUint64(0, false);
-    if (sequenceBig > BigInt(Number.MAX_SAFE_INTEGER)) return;
+    const view = new DataView(packet), seq = view.getBigUint64(0, false);
+    if (seq > BigInt(Number.MAX_SAFE_INTEGER)) return;
     const samples = new Float32Array(160);
     for (let i = 0; i < 160; i++) samples[i] = view.getInt16(8 + i * 2, true) / 32768;
-    worklet.port.postMessage({ type: "remote", sequence: Number(sequenceBig), samples }, [samples.buffer]);
+    worklet.port.postMessage({ type: "remote", sequence: Number(seq), samples }, [samples.buffer]);
   }
 
   async function handleSignal(message) {
@@ -96,13 +79,15 @@
       if (peer.remoteDescription) await peer.addIceCandidate(message.data.candidate);
       else pendingRemoteCandidates.push(message.data.candidate);
     } else if (message.type === "ringing") {
-      show("هاتف البوابة يرن…");
+      answerButton.hidden = false;
+      show("هاتف البوابة يرن… اضغط قبول للرد.");
     } else if (message.type === "accepted") {
+      answerButton.hidden = true;
       show("تم قبول المكالمة.");
     } else if (message.type === "hangup") {
-      stop("أنهى الطرف الآخر المكالمة.");
+      await stop("أنهى الطرف الآخر المكالمة.");
     } else if (message.type === "error") {
-      stop("تعذر إكمال المكالمة.");
+      await stop("تعذر إكمال المكالمة.");
     }
   }
 
@@ -120,18 +105,15 @@
   }
 
   async function start() {
-    button.disabled = true;
+    startButton.disabled = true;
     show("جارٍ التحقق من Telegram وإنشاء غرفة الاتصال…");
     try {
-      const room = await fetch("/api/room", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ initData: app.initData }),
-      }).then(async response => {
-        const body = await response.json();
-        if (!response.ok) throw new Error(body.error || "فشل التحقق من Telegram");
-        return body;
+      const response = await fetch("/api/room", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ initData: telegram.initData }),
       });
+      const room = await response.json();
+      if (!response.ok) throw new Error(room.error || "فشل التحقق من Telegram");
       roomToken = room.browserToken;
       const ice = await request("/api/ice");
       peer = new RTCPeerConnection({ iceServers: ice.iceServers });
@@ -142,32 +124,27 @@
         if (event.data instanceof ArrayBuffer) acceptPcm(event.data);
         else if (event.data instanceof Blob) event.data.arrayBuffer().then(acceptPcm);
       };
-      dataChannel.onclose = () => show("أغلقت قناة الصوت.");
       peer.onicecandidate = event => {
         if (!event.candidate) return;
-        const send = () => sendSignal("ice-candidate", { candidate: event.candidate.toJSON() });
-        if (offerSent) send().catch(() => {});
-        else earlyCandidates.push(event.candidate.toJSON());
+        const candidate = event.candidate.toJSON();
+        if (offerSent) sendSignal("ice-candidate", { candidate }).catch(() => {});
+        else earlyCandidates.push(candidate);
       };
       peer.onconnectionstatechange = () => {
-        if (peer.connectionState === "failed" || peer.connectionState === "disconnected") {
-          show("تعذر إنشاء اتصال WebRTC. تحقق من TURN والشبكة.");
-        }
+        if (peer.connectionState === "failed") show("فشل WebRTC. تحقق من TURN والشبكة.");
       };
       active = true;
-      pollTask = pollLoop();
-      const offer = await peer.createOffer();
-      await peer.setLocalDescription(offer);
+      pollLoop();
+      await peer.setLocalDescription(await peer.createOffer());
       await sendSignal("offer", { description: peer.localDescription });
       offerSent = true;
-      for (const candidate of earlyCandidates.splice(0)) {
-        await sendSignal("ice-candidate", { candidate });
-      }
+      for (const candidate of earlyCandidates.splice(0)) await sendSignal("ice-candidate", { candidate });
       hangupButton.hidden = false;
-      show("أُرسلت الدعوة إلى هاتف البوابة. الغرفة صالحة لمدة 10 دقائق.");
+      callButton.disabled = false;
+      show("أُرسلت الدعوة إلى هاتف البوابة. يمكنك الآن الاتصال عبر شريحة الهاتف.");
     } catch (error) {
-      stop("تعذر بدء المكالمة: " + error.message);
-      button.disabled = false;
+      await stop("تعذر بدء المكالمة: " + error.message);
+      startButton.disabled = false;
     }
   }
 
@@ -180,16 +157,23 @@
     try { microphone?.getTracks().forEach(track => track.stop()); } catch {}
     try { await audioContext?.close(); } catch {}
     dataChannel = null; peer = null; microphone = null; worklet = null; audioContext = null;
-    roomToken = null;
-    hangupButton.hidden = true;
-    show(message);
-    button.disabled = false;
+    roomToken = null; hangupButton.hidden = true; answerButton.hidden = true; callButton.disabled = true;
+    show(message); startButton.disabled = false;
   }
 
-  button.addEventListener("click", start);
+  startButton.addEventListener("click", start);
   hangupButton.addEventListener("click", () => stop());
-  window.addEventListener("pagehide", () => {
-    if (active && roomToken) navigator.sendBeacon("/api/signal", new Blob([], { type: "application/json" }));
-    active = false;
+  answerButton.addEventListener("click", async () => {
+    answerButton.disabled = true;
+    try { await sendSignal("accepted"); answerButton.hidden = true; show("تم قبول المكالمة."); }
+    catch (error) { show("تعذر قبول المكالمة: " + error.message); answerButton.disabled = false; }
   });
+  callButton.addEventListener("click", async () => {
+    const target = targetInput.value.trim();
+    if (!/^\+?[0-9*#]{3,32}$/.test(target)) { show("أدخل رقم هاتف صحيحاً."); return; }
+    callButton.disabled = true;
+    try { await sendSignal("dial", { target }); show("جارٍ طلب الاتصال عبر شريحة الهاتف…"); }
+    catch (error) { show("تعذر إرسال طلب الاتصال: " + error.message); callButton.disabled = false; }
+  });
+  window.addEventListener("pagehide", () => { active = false; });
 })();
