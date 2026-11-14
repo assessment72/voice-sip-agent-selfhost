@@ -1,5 +1,5 @@
 import {
-  createRoom, json, requireMethod, verifyTelegramInitData,
+  configuredIceServers, createRoom, json, requireMethod, verifyTelegramInitData,
 } from "../lib/server.js";
 
 export default async function handler(req, res) {
@@ -21,6 +21,11 @@ export default async function handler(req, res) {
       return json(res, 503, { error: "telegram_private_chat_must_match_owner" });
     }
 
+    try {
+      await configuredIceServers();
+    } catch {
+      return json(res, 503, { error: "ice_configuration_unavailable" });
+    }
     const room = await createRoom();
     return json(res, 201, room);
   } catch {
