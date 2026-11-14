@@ -189,7 +189,7 @@ internal class WebRtcGatewayWorker(
                 peer?.setLocalDescription(object : SdpObserver {
                     override fun onCreateSuccess(desc: SessionDescription?) = Unit
                     override fun onSetSuccess() {
-                        enqueueSignal("answer", JSONObject().put("description",
+                        enqueueJsonSignal("answer", JSONObject().put("description",
                             JSONObject().put("type", "answer").put("sdp", description.description)))
                     }
                     override fun onCreateFailure(error: String?) { AppLog.w("WebRTC local answer failed") }
