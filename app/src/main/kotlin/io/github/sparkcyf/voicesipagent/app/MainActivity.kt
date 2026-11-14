@@ -278,6 +278,9 @@ private fun SettingsSection(rt: GatewayRuntime) {
     var busy by remember(cur) { mutableStateOf(cur.busyPolicy) }
     var lease by remember(cur) { mutableStateOf(cur.registrarLeaseSec.toString()) }
     var regPassword by remember(cur) { mutableStateOf(cur.registrarPassword) }
+    var telegramEnabled by remember(cur) { mutableStateOf(cur.telegramVoiceEnabled) }
+    var telegramToken by remember(cur) { mutableStateOf(cur.telegramBotToken) }
+    var telegramChatId by remember(cur) { mutableStateOf(cur.telegramPrivateChatId) }
     val builtin = stack == SipStack.BUILTIN
     Section(t("Настройки", "Settings")) {
         // Core mode: this phone is its own SIP server, or it registers to an external PBX.
@@ -330,6 +333,22 @@ private fun SettingsSection(rt: GatewayRuntime) {
             { when (it) { BusyPolicy.REJECT -> t("Отклонять", "Reject"); BusyPolicy.IGNORE -> t("Отдать звонилке", "Leave to phone") } }, info = "busy") {
             busy = it
         }
+        Section(t("Telegram — голосовые сообщения", "Telegram — voice messages")) {
+            Toggle(t("Включить голосовой резервный канал", "Enable voice-message fallback"), telegramEnabled,
+                { telegramEnabled = it }, info = "telegram_voice") {
+                t("Бот принимает голосовые сообщения только из указанного личного чата и сохраняет их в закрытой папке приложения. Это не живой звонок.",
+                    "The bot accepts voice messages only from the configured private chat and stores them in app-private storage. This is not a live call.")
+            }
+            OutlinedTextField(
+                value = telegramToken, onValueChange = { telegramToken = it },
+                label = { Text(t("Bot Token", "Bot Token")) },
+                visualTransformation = PasswordVisualTransformation(), singleLine = true, modifier = Modifier.fillMaxWidth(),
+            )
+            Field(t("Private Chat ID", "Private Chat ID"), telegramChatId) { telegramChatId = it }
+            Text(t("لا ترسل Token لأي شخص. احصل على Chat ID من محادثتك الخاصة مع البوت. سيُخزّن الرمز مشفراً بمفتاح Android Keystore.",
+                "Never share the token. Use the numeric ID of your private chat with the bot. The token is encrypted with an Android Keystore key."),
+                style = MaterialTheme.typography.bodySmall)
+        }
         Button(onClick = {
             rt.applySettings(
                 cur.copy(
@@ -337,6 +356,9 @@ private fun SettingsSection(rt: GatewayRuntime) {
                     localSipPort = localPort.toIntOrNull()?.takeIf { it in 1..65535 } ?: cur.localSipPort,
                     registrarLeaseSec = lease.toIntOrNull()?.takeIf { it in 30..86400 } ?: cur.registrarLeaseSec,
                     registrarPassword = regPassword,
+                    telegramVoiceEnabled = telegramEnabled,
+                    telegramBotToken = telegramToken.trim(),
+                    telegramPrivateChatId = telegramChatId.trim(),
                     server = server, port = port.toIntOrNull() ?: transport.defaultPort, username = user, password = password,
                     inboundTarget = target, allowedPrefixes = prefixes, domain = domain,
                     sipStack = stack, sipTransport = transport.id, srtp = srtp.id, busyPolicy = busy,
