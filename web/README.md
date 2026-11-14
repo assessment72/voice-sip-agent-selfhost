@@ -26,7 +26,7 @@ Redis is shared state; no Vercel function-instance memory is used for room or si
 
 ## Telegram bot configuration
 
-Configure the bot's Mini App URL in BotFather to point to the deployed HTTPS URL. The bot must be able to send a private message to the configured chat. The backend sends an inline one-time callback button. The Android worker must listen for Telegram `callback_query` updates, validate the configured private chat, and consume the token without exposing it in chat text.
+Configure the bot's Mini App URL in BotFather to point to the deployed HTTPS URL. The bot must be able to send a private message to the configured chat. The backend sends an inline one-time callback button. The Android worker listens for Telegram `callback_query` updates, validates both the private chat and sender ID, acknowledges the callback, and starts the authenticated Android peer without exposing the token in chat text.
 
 ## Browser audio transport
 
@@ -38,3 +38,23 @@ The Mini App captures microphone audio with echo cancellation and noise suppress
 - The current Android `CallBridge` still connects cellular to SIP; WebRTC has not been inserted into that bridge.
 - TURN credentials are supplied as Vercel environment variables and need an operational rotation procedure; they are not generated at call time.
 - Deploying this folder is not authorized or performed by this commit.
+
+
+## Android gateway configuration
+
+In the app's Telegram section:
+1. Enable Telegram integration (the existing bot polling service).
+2. Enter the same bot token and numeric private chat ID configured on Vercel.
+3. Enter the deployed HTTPS Vercel project URL in **Vercel WebRTC server URL**.
+4. Save settings. The foreground service polls for the one-time callback button and starts the WebRTC peer after it is pressed.
+
+The existing SIP registration and cellular audio implementation remain in place. When a WebRTC peer is ready, the gateway temporarily selects it as the other side of the existing cellular `CallBridge`. It switches back to SIP after the WebRTC session closes. Switching is deferred while a call is active.
+
+## Important pre-release checks
+
+- Revoke the previously exposed Metered TURN credential and set a newly issued credential in Vercel environment variables.
+- Configure Upstash and all Telegram/Metered environment variables before deploying the `web` directory.
+- Set the bot's Telegram Mini App URL to the deployed Vercel HTTPS URL.
+- The same Telegram bot must not have another active `getUpdates` poller; Telegram allows only one consumer for this bot token.
+- The 250 ms signaling poll interval is a prototype setting. Monitor Vercel invocations and Upstash usage before prolonged use.
+- A successful CI run validates compilation and unit tests only. A real call still needs testing on the target HONOR Android 16 device and a second client, on different networks, including TURN relay and both audio directions.
