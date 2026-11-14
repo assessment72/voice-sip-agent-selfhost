@@ -54,7 +54,8 @@ internal class WebRtcGatewayWorker(
                     flushOutgoing()
                     val messages = pollMessages()
                     for (message in messages) handleSignal(message)
-                    val connected = peer?.iceConnectionState()?.toString() in setOf("CONNECTED", "COMPLETED")\n                    delay(if (connected) CONNECTED_POLL_INTERVAL_MS else POLL_INTERVAL_MS)
+                    val connected = peer?.iceConnectionState()?.toString() in setOf("CONNECTED", "COMPLETED")
+                    delay(if (connected) CONNECTED_POLL_INTERVAL_MS else POLL_INTERVAL_MS)
                 } catch (e: SecurityException) {
                     throw e
                 } catch (e: Exception) {
@@ -272,7 +273,8 @@ internal class WebRtcGatewayWorker(
     }
 
     companion object {
-        private const val POLL_INTERVAL_MS = 250L\n        private const val CONNECTED_POLL_INTERVAL_MS = 1_000L
+        private const val POLL_INTERVAL_MS = 250L
+        private const val CONNECTED_POLL_INTERVAL_MS = 1_000L
         private const val RETRY_DELAY_MS = 1_000L
         private val FACTORY_LOCK = Any()
         @Volatile private var factoryInitialized = false

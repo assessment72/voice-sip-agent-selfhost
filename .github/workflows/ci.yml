@@ -25,5 +25,5 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      - run: node --check web/app.js && node --check web/audio-worklet.js
+      - run: node --check web/app.js && node --check web/audio-worklet.js && node --check web/api/room.js && node --check web/api/signal.js && node --check web/api/poll.js && node --check web/api/ice.js
       - run: node --test web/test/*.test.js
