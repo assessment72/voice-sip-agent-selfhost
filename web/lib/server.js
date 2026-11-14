@@ -53,17 +53,21 @@ export function tokenHash(token) {
   return createHash("sha256").update(token).digest("hex");
 }
 
-export async function authenticatePeer(req) {
+export function peerKeyFromRequest(req) {
   const header = req.headers.authorization || "";
   const match = /^Bearer ([A-Za-z0-9_-]{32,100})$/.exec(header);
-  if (!match) return null;
-  const record = await redis(["GET", `vsa:peer:${tokenHash(match[1])}`]);
+  return match ? `vsa:peer:${tokenHash(match[1])}` : null;
+}
+
+export async function authenticatePeer(req) {
+  const key = peerKeyFromRequest(req);
+  if (!key) return null;
+  const record = await redis(["GET", key]);
   if (!record) return null;
   try {
     const peer = JSON.parse(record);
     if (!peer.roomId || !["browser", "android"].includes(peer.role)) return null;
-    const room = await redis(["GET", `vsa:room:${peer.roomId}`]);
-    return room ? peer : null;
+    return peer;
   } catch {
     return null;
   }

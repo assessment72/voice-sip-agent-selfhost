@@ -105,7 +105,7 @@
         show("انقطع اتصال الإشارات مؤقتاً: " + error.message);
         await new Promise(resolve => setTimeout(resolve, 1200));
       }
-      await new Promise(resolve => setTimeout(resolve, 250));
+      await new Promise(resolve => setTimeout(resolve, peer?.connectionState === "connected" ? 1000 : 250));
     }
   }
 

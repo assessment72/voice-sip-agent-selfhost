@@ -56,5 +56,5 @@ The existing SIP registration and cellular audio implementation remain in place.
 - Configure Upstash and all Telegram/Metered environment variables before deploying the `web` directory.
 - Set the bot's Telegram Mini App URL to the deployed Vercel HTTPS URL.
 - The same Telegram bot must not have another active `getUpdates` poller; Telegram allows only one consumer for this bot token.
-- The 250 ms signaling poll interval is a prototype setting. Monitor Vercel invocations and Upstash usage before prolonged use.
+- Signaling polls at 250 ms while connecting and backs off to 1 second once ICE is connected; monitor Vercel invocations and Upstash usage before prolonged use. Monitor Vercel invocations and Upstash usage before prolonged use.
 - A successful CI run validates compilation and unit tests only. A real call still needs testing on the target HONOR Android 16 device and a second client, on different networks, including TURN relay and both audio directions.
