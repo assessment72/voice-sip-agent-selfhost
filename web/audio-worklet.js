@@ -1,8 +1,9 @@
 class VoicePcmProcessor extends AudioWorkletProcessor {
   constructor() {
     super();
-    this.inputIndex = 0;
-    this.nextInputIndex = 0;
+    this.inputPhase = 0;
+    this.inputSum = 0;
+    this.inputSamples = 0;
     this.inputFrame = new Float32Array(160);
     this.inputCount = 0;
     this.frames = new Map();
@@ -29,9 +30,16 @@ class VoicePcmProcessor extends AudioWorkletProcessor {
     const output = outputs[0]?.[0];
     if (input) {
       for (let i = 0; i < input.length; i++) {
-        if (this.inputIndex >= this.nextInputIndex) {
-          this.inputFrame[this.inputCount++] = input[i];
-          this.nextInputIndex += sampleRate / 8000;
+        // Box-filter before decimating to reduce aliasing in the 8 kHz voice band.
+        this.inputPhase += 8000;
+        this.inputSum += input[i];
+        this.inputSamples++;
+        if (this.inputPhase >= sampleRate) {
+          const downsampled = this.inputSum / this.inputSamples;
+          this.inputPhase -= sampleRate;
+          this.inputSum = 0;
+          this.inputSamples = 0;
+          this.inputFrame[this.inputCount++] = downsampled;
           if (this.inputCount === 160) {
             const frame = this.inputFrame;
             this.inputFrame = new Float32Array(160);
@@ -39,7 +47,6 @@ class VoicePcmProcessor extends AudioWorkletProcessor {
             this.port.postMessage({ type: "pcm", samples: frame }, [frame.buffer]);
           }
         }
-        this.inputIndex++;
       }
     }
 
