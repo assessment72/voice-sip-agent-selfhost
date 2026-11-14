@@ -266,7 +266,8 @@ internal class WebRtcGatewayWorker(
     }
 
     companion object {
-        private const val POLL_INTERVAL_MS = 250L\n        private const val RETRY_DELAY_MS = 1_000L
+        private const val POLL_INTERVAL_MS = 250L
+        private const val RETRY_DELAY_MS = 1_000L
         private val FACTORY_LOCK = Any()
         @Volatile private var factoryInitialized = false
     }
