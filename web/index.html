@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="ar" dir="rtl">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark light">
+  <title>Voice SIP Agent · مكالمة مباشرة</title>
+  <script src="https://telegram.org/js/telegram-web-app.js"></script>
+  <style>
+    body{font-family:system-ui,sans-serif;max-width:34rem;margin:2rem auto;padding:0 1rem;line-height:1.7}
+    main{border:1px solid #8886;border-radius:16px;padding:1.2rem}
+    button,input{font:inherit;padding:.7rem 1.1rem;border-radius:10px;border:1px solid #888;margin:.3rem}
+    button{cursor:pointer}#status{white-space:pre-wrap;overflow-wrap:anywhere}
+  </style>
+</head>
+<body>
+<main>
+  <h1>مكالمة Voice SIP Agent</h1>
+  <p>اتصال صوتي مباشر بين Telegram وهاتف بوابة SIP. لا تمر بيانات الصوت عبر خادم الإشارات.</p>
+  <button id="start">بدء المكالمة</button>
+  <button id="hangup" hidden>إنهاء المكالمة</button>
+  <button id="answer" hidden>قبول المكالمة</button>
+  <div><input id="target" inputmode="tel" placeholder="رقم الهاتف عبر الشريحة"><button id="call-sim" disabled>اتصال عبر SIM</button></div>
+  <p id="status">بانتظار فتح الصفحة من Telegram.</p>
+</main>
+<script src="/app.js" defer></script>
+</body>
+</html>

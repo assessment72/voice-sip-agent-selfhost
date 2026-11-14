@@ -16,4 +16,14 @@ jobs:
           distribution: temurin
           java-version: 17
       - uses: gradle/actions/setup-gradle@v4
-      - run: ./gradlew :sip:test :gateway:test
+      - run: ./gradlew :sip:test :gateway:test :webrtc:test :app:testDebugUnitTest
+
+  web-api-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: node --check web/app.js && node --check web/audio-worklet.js && node --check web/api/room.js && node --check web/api/signal.js && node --check web/api/poll.js && node --check web/api/ice.js
+      - run: node --test web/test/*.test.js
