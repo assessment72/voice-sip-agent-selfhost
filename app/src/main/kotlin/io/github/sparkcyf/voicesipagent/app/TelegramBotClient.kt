@@ -29,7 +29,9 @@ class TelegramBotClient(
         val fileSize: Long?,
     )
 
-    data class PollResult(val voices: List<VoiceUpdate>, val nextOffset: Long)
+    data class JoinInvite(val token: String, val callbackQueryId: String)
+
+    data class PollResult(val voices: List<VoiceUpdate>, val joinInvites: List<JoinInvite>, val nextOffset: Long)
 
     fun getBotUsername(): String {
         val response = apiJson("getMe")
@@ -43,16 +45,31 @@ class TelegramBotClient(
         val body = JSONObject()
             .put("offset", offset)
             .put("timeout", timeoutSeconds)
-            .put("allowed_updates", JSONArray().put("message"))
+            .put("allowed_updates", JSONArray().put("message").put("callback_query"))
         val response = apiJson("getUpdates", body, 10_000, (timeoutSeconds + 10) * 1_000)
         check(response.optBoolean("ok")) { "Telegram getUpdates failed" }
         val updates = response.getJSONArray("result")
         val voices = mutableListOf<VoiceUpdate>()
+        val joinInvites = mutableListOf<JoinInvite>()
         var next = offset
         for (i in 0 until updates.length()) {
             val update = updates.getJSONObject(i)
             val updateId = update.optLong("update_id", -1L)
             if (updateId >= 0) next = maxOf(next, updateId + 1)
+            val callback = update.optJSONObject("callback_query")
+            if (callback != null) {
+                val message = callback.optJSONObject("message")
+                val chat = message?.optJSONObject("chat")
+                val chatId = chat?.opt("id")?.toString()
+                val senderId = callback.optJSONObject("from")?.opt("id")?.toString()
+                val data = callback.optString("data")
+                val match = Regex("^vsa_join:([A-Za-z0-9_-]{32,100})$").matchEntire(data)
+                if (chat?.optString("type") == "private" && chatId == allowedPrivateChatId &&
+                    senderId == allowedPrivateChatId && match != null) {
+                    joinInvites += JoinInvite(match.groupValues[1], callback.optString("id"))
+                }
+                continue
+            }
             val message = update.optJSONObject("message") ?: continue
             val chat = message.optJSONObject("chat") ?: continue
             val chatId = chat.opt("id")?.toString() ?: continue
@@ -67,7 +84,13 @@ class TelegramBotClient(
                 fileSize = voice.optLong("file_size").takeIf { it > 0 },
             )
         }
-        return PollResult(voices, next)
+        return PollResult(voices, joinInvites, next)
+    }
+
+    fun answerCallbackQuery(callbackQueryId: String) {
+        require(callbackQueryId.isNotBlank())
+        val response = apiJson("answerCallbackQuery", JSONObject().put("callback_query_id", callbackQueryId))
+        check(response.optBoolean("ok")) { "Telegram callback acknowledgement failed" }
     }
 
     /** Downloads a received voice message into app-private storage. */

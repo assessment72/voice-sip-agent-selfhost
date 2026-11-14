@@ -32,6 +32,7 @@ class GatewayService : Service() {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
     private var statusJob: Job? = null
     private var telegramVoiceJob: Job? = null
+    private var webRtcJob: Job? = null
     private var foreground = false
     // Held while the gateway runs in the foreground, so Doze on an aggressive OEM (ZTE/Nubia,
     // Xiaomi, Transsion…) cannot suspend the SIP reader thread.  Without it the socket backs up
@@ -76,7 +77,17 @@ class GatewayService : Service() {
         runtime.onForegroundStarted(runtimeToken)
         if (telegramVoiceJob == null) {
             telegramVoiceJob = scope.launch(Dispatchers.IO) {
-                TelegramVoiceWorker(applicationContext).run()
+                TelegramVoiceWorker(applicationContext).run { token ->
+                    val baseUrl = SettingsStore(applicationContext).load().webRtcServerUrl
+                    if (baseUrl.isNotBlank()) {
+                        webRtcJob?.cancel()
+                        webRtcJob = scope.launch(Dispatchers.IO) {
+                            WebRtcGatewayWorker(applicationContext, baseUrl, token) { endpoint ->
+                                GatewayRuntime.get(applicationContext).setWebRtcEndpoint(endpoint)
+                            }.run()
+                        }
+                    }
+                }
             }
         }
         if (statusJob == null) {
@@ -114,6 +125,8 @@ class GatewayService : Service() {
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onDestroy() {
+        webRtcJob?.cancel()
+        GatewayRuntime.get(this).setWebRtcEndpoint(null)
         GatewayRuntime.get(this).onForegroundStopped(runtimeToken)
         unregisterReceiver(roleReceiver)
         scope.cancel()

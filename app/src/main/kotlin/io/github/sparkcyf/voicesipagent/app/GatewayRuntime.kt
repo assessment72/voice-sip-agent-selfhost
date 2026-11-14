@@ -114,6 +114,8 @@ class GatewayRuntime private constructor(context: Context) {
     )
     /** Built-in SIP user agent. */
     private var sip: CallEndpoint? = null
+    private var webRtcEndpoint: WebRtcCallEndpoint? = null
+    private var webRtcSwitchPending = false
     private var bridge: CallBridge? = null
     private var echo: EchoEndpoint? = null
     private var started = false
@@ -596,6 +598,22 @@ class GatewayRuntime private constructor(context: Context) {
         cm.registerDefaultNetworkCallback(callback)
     }
 
+    /** Install or remove the authenticated WebRTC endpoint without interrupting an active call. */
+    fun setWebRtcEndpoint(endpoint: WebRtcCallEndpoint?) = worker.execute {
+        if (webRtcEndpoint === endpoint) return@execute
+        webRtcEndpoint?.setIncomingCallHandler(null)
+        webRtcEndpoint = endpoint
+        endpoint?.addStatusListener { changed, _ ->
+            worker.execute {
+                if (webRtcEndpoint !== changed) return@execute
+                if (hasActiveWork()) webRtcSwitchPending = true else rebuildBridge()
+                updateReadiness()
+            }
+        }
+        if (hasActiveWork()) webRtcSwitchPending = true else rebuildBridge()
+        updateReadiness()
+    }
+
     // ------------------------------------------------------------ bridge
 
     private fun stopBridge() {
@@ -617,10 +635,14 @@ class GatewayRuntime private constructor(context: Context) {
             return
         }
         val loopback = _health.value.loopbackTest
-        val sideB: CallEndpoint? = if (loopback) EchoEndpoint(format = audioFormat()).also { echo = it } else sip
+        val sideB: CallEndpoint? = when {
+            loopback -> EchoEndpoint(format = audioFormat()).also { echo = it }
+            webRtcEndpoint?.status?.ready == true -> webRtcEndpoint
+            else -> sip
+        }
         if (sideB == null) {
             bridge = null
-            AppLog.i("bridge idle: SIP not configured")
+            AppLog.i("bridge idle: SIP and WebRTC are not ready")
             return
         }
         // In server mode the SIP side dials whichever phone is registered, so the target only has
@@ -755,6 +777,10 @@ class GatewayRuntime private constructor(context: Context) {
         if (queued != null) applySettings(queued.copy(takeover = settings.takeover))
         if (loopback != null) setLoopbackTest(loopback)
         if (restart) restartSip()
+        if (webRtcSwitchPending) {
+            webRtcSwitchPending = false
+            rebuildBridge()
+        }
         configureCallAccess()
         updateReadiness()
         if (setupPending || queued != null || _health.value.privileged == null ||

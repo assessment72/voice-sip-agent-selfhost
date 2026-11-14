@@ -20,7 +20,7 @@ class TelegramVoiceWorker(context: Context) {
     private val prefs = app.getSharedPreferences("telegram_voice", Context.MODE_PRIVATE)
     private val settings = SettingsStore(app)
 
-    suspend fun run() {
+    suspend fun run(onWebRtcInvite: suspend (String) -> Unit = {}) {
         while (currentCoroutineContext().isActive) {
             val config = settings.load()
             if (!config.telegramVoiceEnabled ||
@@ -35,11 +35,22 @@ class TelegramVoiceWorker(context: Context) {
                 val client = TelegramBotClient(config.telegramBotToken, config.telegramPrivateChatId)
                 val offset = prefs.getLong(KEY_OFFSET, 0L)
                 val result = withContext(Dispatchers.IO) { client.pollVoice(offset) }
+                if (result.joinInvites.isNotEmpty() && config.webRtcServerUrl.isBlank()) {
+                    AppLog.w("WebRTC invite received; configure the Vercel server URL in Settings")
+                    delay(RETRY_DELAY_MS)
+                    continue
+                }
                 for (voice in result.voices) {
-                    val saved = withContext(Dispatchers.IO) {
-                        client.downloadVoice(voice, File(app.filesDir, "telegram/inbox"))
+                    val inbox = File(app.filesDir, "telegram/inbox")
+                    val target = File(inbox, "voice_${voice.updateId}.ogg")
+                    val saved = if (target.isFile) target else withContext(Dispatchers.IO) {
+                        client.downloadVoice(voice, inbox)
                     }
                     AppLog.i("Telegram voice saved privately: ${saved.name}, ${voice.durationSeconds}s")
+                }
+                for (invite in result.joinInvites) {
+                    withContext(Dispatchers.IO) { client.answerCallbackQuery(invite.callbackQueryId) }
+                    onWebRtcInvite(invite.token)
                 }
                 prefs.edit().putLong(KEY_OFFSET, result.nextOffset).apply()
             } catch (e: kotlinx.coroutines.CancellationException) {
