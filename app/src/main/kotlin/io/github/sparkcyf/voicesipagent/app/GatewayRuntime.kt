@@ -389,11 +389,11 @@ class GatewayRuntime private constructor(context: Context) {
             !access -> requirements.problem!!
             h.shizuku != ShizukuConnector.State.CONNECTED -> "Shizuku not connected"
             !audio -> "Selected call audio unavailable: ${h.privilegedDetail}"
-            !h.loopbackTest && !h.sip.ready -> "SIP unavailable: ${h.sip.detail}"
+            !h.loopbackTest && !h.sip.ready && webRtcEndpoint?.status?.ready != true -> "SIP/WebRTC unavailable: ${h.sip.detail}"
             else -> "Gateway ready"
         }
         val ready = !h.dialerChangeRunning && gatewayEnabled && access && audio && h.shizuku == ShizukuConnector.State.CONNECTED &&
-            (h.loopbackTest || h.sip.ready)
+            (h.loopbackTest || h.sip.ready || webRtcEndpoint?.status?.ready == true)
         _health.update { it.copy(callAccessReady = access, audioReady = audio, cellularReady = ready, readinessDetail = detail) }
         cellular.setReadiness(ready, detail)
         syncForegroundService()
@@ -652,7 +652,7 @@ class GatewayRuntime private constructor(context: Context) {
             sideA = cellular,
             sideB = sideB,
             routeAtoB = { inboundTarget },
-            routeBtoA = { leg -> leg.target?.takeIf { it != s.username } },
+            routeBtoA = { leg -> leg.target?.takeIf { leg.kind == "telegram-webrtc" || it != s.username } },
             config = GatewayConfig(
                 cellularInboundTarget = inboundTarget,
                 busyPolicy = s.busyPolicy,
