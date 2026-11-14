@@ -1,7 +1,7 @@
 (() => {
   const app = window.Telegram?.WebApp;
   const button = document.getElementById("start");
-  const hangupButton = document.getElementById("hangup");
+  const hangupButton = document.getElementById("hangup");\n  const answerButton = document.getElementById("answer");\n  const callButton = document.getElementById("call-sim");\n  const targetInput = document.getElementById("target");
   const status = document.getElementById("status");
   let active = false;
   let peer = null;

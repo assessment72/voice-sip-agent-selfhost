@@ -26,7 +26,7 @@ Redis is shared state; no Vercel function-instance memory is used for room or si
 
 ## Telegram bot configuration
 
-Configure the bot's Mini App URL in BotFather to point to the deployed HTTPS URL. The bot must be able to send a private message to the configured chat. The Android worker still needs to recognize the one-time `/vsa_join <token>` message and create its PeerConnection before the Android invitation can be accepted.
+Configure the bot's Mini App URL in BotFather to point to the deployed HTTPS URL. The bot must be able to send a private message to the configured chat. The backend sends an inline one-time callback button. The Android worker must listen for Telegram `callback_query` updates, validate the configured private chat, and consume the token without exposing it in chat text.
 
 ## Browser audio transport
 
@@ -34,7 +34,7 @@ The Mini App captures microphone audio with echo cancellation and noise suppress
 
 ## Current limitations
 
-- Android does not yet consume `/vsa_join` or create a WebRTC `PeerConnection`.
+- Android still needs to consume the one-time callback invitation and create its WebRTC `PeerConnection`.
 - The current Android `CallBridge` still connects cellular to SIP; WebRTC has not been inserted into that bridge.
 - TURN credentials are supplied as Vercel environment variables and need an operational rotation procedure; they are not generated at call time.
 - Deploying this folder is not authorized or performed by this commit.
