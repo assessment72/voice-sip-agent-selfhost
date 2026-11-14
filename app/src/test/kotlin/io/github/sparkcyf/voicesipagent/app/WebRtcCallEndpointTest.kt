@@ -6,7 +6,6 @@ import io.github.sparkcyf.voicesipagent.voice.LegState
 import io.github.sparkcyf.voicesipagent.voice.MediaPort
 import io.github.sparkcyf.voicesipagent.voice.Party
 import io.github.sparkcyf.voicesipagent.voice.PcmFormat
-import org.json.JSONObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -16,13 +15,13 @@ class WebRtcCallEndpointTest {
     @Test
     fun outboundCellularCallRingsBrowserAndConnectsAfterAcceptance() {
         val signals = mutableListOf<Pair<String, JSONObject>>()
-        val endpoint = WebRtcCallEndpoint(FakeMediaPort()) { type, data -> signals += type to data }
+        val endpoint = WebRtcCallEndpoint(FakeMediaPort()) { type, target -> signals += type to target }
 
         val leg = endpoint.dial("phone", Party("123", "Cellular"))
         assertEquals(LegState.PROCEEDING, leg.state)
         assertEquals("ringing", signals.single().first)
 
-        endpoint.onRemoteSignal("accepted", JSONObject())
+        endpoint.onRemoteSignal("accepted")
         assertEquals(LegState.CONNECTED, leg.state)
         assertTrue(leg.media != null)
 
@@ -39,7 +38,7 @@ class WebRtcCallEndpointTest {
         var inbound: io.github.sparkcyf.voicesipagent.voice.CallLeg? = null
         endpoint.setIncomingCallHandler { inbound = it }
 
-        endpoint.onRemoteSignal("dial", JSONObject().put("target", "+967711234567"))
+        endpoint.onRemoteSignal("dial", "+967711234567")
 
         val leg = requireNotNull(inbound)
         assertEquals(LegState.PROCEEDING, leg.state)
@@ -48,7 +47,7 @@ class WebRtcCallEndpointTest {
         assertEquals(LegState.CONNECTED, leg.state)
         assertTrue("accepted" in signals)
 
-        endpoint.onRemoteSignal("hangup", JSONObject())
+        endpoint.onRemoteSignal("hangup")
         assertEquals(LegState.ENDED, leg.state)
         endpoint.close()
     }

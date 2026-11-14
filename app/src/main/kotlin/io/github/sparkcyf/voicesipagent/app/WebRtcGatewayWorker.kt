@@ -122,7 +122,9 @@ internal class WebRtcGatewayWorker(
         }
     }
 
-    private fun enqueueSignal(type: String, data: JSONObject) {
+    private fun enqueueSignal(type: String, target: String?) {
+        val data = JSONObject()
+        if (target != null) data.put("target", target)
         outgoing.offer(JSONObject().put("type", type).put("data", data))
     }
 
@@ -152,7 +154,7 @@ internal class WebRtcGatewayWorker(
                 )
                 if (remoteDescriptionSet) peer?.addIceCandidate(candidate) else synchronized(pendingCandidates) { pendingCandidates += candidate }
             }
-            "dial", "accepted", "hangup", "error" -> endpoint?.onRemoteSignal(type, data)
+            "dial", "accepted", "hangup", "error" -> endpoint?.onRemoteSignal(type, data.optString("target").takeIf { it.isNotBlank() })
         }
     }
 

@@ -10,7 +10,6 @@ import io.github.sparkcyf.voicesipagent.voice.LegDirection
 import io.github.sparkcyf.voicesipagent.voice.LegState
 import io.github.sparkcyf.voicesipagent.voice.MediaPort
 import io.github.sparkcyf.voicesipagent.voice.Party
-import org.json.JSONObject
 import java.util.concurrent.CopyOnWriteArrayList
 
 /**
@@ -19,7 +18,7 @@ import java.util.concurrent.CopyOnWriteArrayList
  */
 internal class WebRtcCallEndpoint(
     private val mediaPort: MediaPort,
-    private val sendSignal: (String, JSONObject) -> Unit,
+    private val sendSignal: (String, String?) -> Unit,
 ) : CallEndpoint, AutoCloseable {
     override val name: String = "telegram-webrtc"
     @Volatile private var currentStatus = EndpointStatus(true, "WebRTC data channel open")
@@ -55,17 +54,17 @@ internal class WebRtcCallEndpoint(
             onEnded = ::clearActive,
         )
         activeLeg = leg
-        sendSignal("ringing", JSONObject().put("target", target))
+        sendSignal("ringing", target)
         leg
     }
 
     /** Called by the signaling worker for messages received from the authenticated browser peer. */
-    fun onRemoteSignal(type: String, data: JSONObject) {
+    fun onRemoteSignal(type: String, target: String? = null) {
         when (type) {
             "dial" -> {
-                val target = data.optString("target")
+                val target = target.orEmpty()
                 if (!target.matches(Regex("^\\+?[0-9*#]{3,32}$"))) {
-                    sendSignal("error", JSONObject().put("reason", "invalid_target"))
+                    sendSignal("error", null)
                     return
                 }
                 val leg = synchronized(lock) {
@@ -79,7 +78,7 @@ internal class WebRtcCallEndpoint(
                     ).also { activeLeg = it }
                 }
                 if (leg == null) {
-                    sendSignal("error", JSONObject().put("reason", "busy"))
+                    sendSignal("error", null)
                 } else {
                     val handler = incomingHandler
                     if (handler == null) leg.hangup(HangupCause.UNAVAILABLE) else handler.onIncomingCall(leg)
@@ -120,7 +119,7 @@ internal class WebRtcCallEndpoint(
         override val remote: Party,
         override val target: String?,
         override val media: MediaPort?,
-        private val signal: (String, JSONObject) -> Unit,
+        private val signal: (String, String?) -> Unit,
         private val onEnded: (WebRtcCallLeg) -> Unit,
     ) : CallLeg {
         override val id: String = "webrtc-" + java.util.UUID.randomUUID().toString()
@@ -133,10 +132,10 @@ internal class WebRtcCallEndpoint(
 
         override fun addListener(listener: CallLeg.Listener) { listeners.addIfAbsent(listener) }
         override fun removeListener(listener: CallLeg.Listener) { listeners.remove(listener) }
-        override fun ring() { signal("ringing", JSONObject()) }
+        override fun ring() { signal("ringing", null) }
 
         override fun answer() {
-            if (connect()) signal("accepted", JSONObject())
+            if (connect()) signal("accepted", null)
         }
 
         fun connect(): Boolean {
@@ -149,7 +148,7 @@ internal class WebRtcCallEndpoint(
 
         override fun hangup(cause: HangupCause) {
             if (currentState == LegState.ENDED) return
-            signal("hangup", JSONObject())
+            signal("hangup", null)
             finish(cause)
         }
 
