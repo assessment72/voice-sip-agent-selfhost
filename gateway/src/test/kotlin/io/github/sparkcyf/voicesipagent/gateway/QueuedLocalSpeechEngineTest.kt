@@ -11,9 +11,9 @@ import java.util.concurrent.TimeUnit
 class QueuedLocalSpeechEngineTest {
     @Test fun workerProcessesFramesAndReturnsCopiedOutput() {
         val latch = CountDownLatch(1)
-        val engine = QueuedLocalSpeechEngine(LocalSpeechProcessor { frame ->
+        val engine = QueuedLocalSpeechEngine(processor {
             latch.countDown()
-            listOf(frame)
+            listOf(it)
         })
         try {
             val frame = ShortArray(160) { 42 }
@@ -36,7 +36,7 @@ class QueuedLocalSpeechEngineTest {
     @Test fun outputFramesAreBoundedAndOldestAreDroppedOnOverflow() {
         val release = CountDownLatch(1)
         val engine = QueuedLocalSpeechEngine(
-            processor = LocalSpeechProcessor {
+            processor = processor {
                 release.await(2, TimeUnit.SECONDS)
                 listOf(ShortArray(160) { 7 }, ShortArray(160) { 8 }, ShortArray(160) { 9 })
             },
@@ -57,17 +57,23 @@ class QueuedLocalSpeechEngineTest {
 
     @Test fun closeStopsAcceptingFramesAndClosesProcessor() {
         var processorClosed = false
-        val engine = QueuedLocalSpeechEngine(LocalSpeechProcessor {
-            emptyList()
-        }.let { delegate ->
-            object : LocalSpeechProcessor {
-                override fun processCallerFrame(frame: ShortArray) = delegate.processCallerFrame(frame)
-                override fun close() { processorClosed = true; delegate.close() }
+        val delegate = processor { emptyList() }
+        val wrapped = object : LocalSpeechProcessor {
+            override fun processCallerFrame(frame: ShortArray) = delegate.processCallerFrame(frame)
+            override fun close() {
+                processorClosed = true
+                delegate.close()
             }
-        })
+        }
+        val engine = QueuedLocalSpeechEngine(wrapped)
         engine.close()
         assertFalse(engine.isReady)
         assertFalse(engine.offerCallerFrame(ShortArray(160)))
         assertTrue(processorClosed)
+    }
+
+    private fun processor(block: (ShortArray) -> List<ShortArray>) = object : LocalSpeechProcessor {
+        override fun processCallerFrame(frame: ShortArray) = block(frame)
+        override fun close() {}
     }
 }
