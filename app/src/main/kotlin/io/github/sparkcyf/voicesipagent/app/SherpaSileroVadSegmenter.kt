@@ -79,8 +79,8 @@ class SherpaSileroVadSegmenter(
         }
     }
 
-    fun release() {
-        reset()
+    override fun close() {
+        completed.clear()
         vad.release()
     }
 
