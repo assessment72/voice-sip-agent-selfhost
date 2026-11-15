@@ -84,17 +84,20 @@ class EnergyVadSegmenter(
 }
 
 /** Native VAD adapters can replace EnergyVadSegmenter without changing the SIP pipeline. */
-fun interface OfflineSpeechRecognizer {
+fun interface OfflineSpeechRecognizer : AutoCloseable {
     fun transcribe(pcm16: ShortArray): String?
+    override fun close() {}
 }
 
-fun interface OfflineDialogueModel {
+fun interface OfflineDialogueModel : AutoCloseable {
     fun reply(userText: String): String?
+    override fun close() {}
 }
 
-fun interface OfflineSpeechSynthesizer {
+fun interface OfflineSpeechSynthesizer : AutoCloseable {
     /** Returns mono PCM16 20 ms frames at the SIP media rate. */
     fun synthesize(text: String): List<ShortArray>
+    override fun close() {}
 }
 
 /**
