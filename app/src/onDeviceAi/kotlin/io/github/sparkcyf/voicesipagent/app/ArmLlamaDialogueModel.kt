@@ -75,7 +75,11 @@ class ArmLlamaDialogueModel(
     override fun close() {
         if (closed) return
         closed = true
-        runCatching { engine.cleanUp() }
+        // Arm's API declares cleanUp() as suspend; finish it before destroying
+        // the native engine so teardown cannot race an in-flight coroutine.
+        runBlocking(Dispatchers.IO) {
+            runCatching { engine.cleanUp() }
+        }
         engine.destroy()
     }
 
