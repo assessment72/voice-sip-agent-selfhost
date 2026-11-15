@@ -48,7 +48,12 @@ Candidate references: sherpa-onnx Android/offline runtime (https://github.com/k2
 
 - Added LocalAiMediaPort as a non-blocking PCM boundary and unit tests for frame copying,
   silence-on-underrun, engine rejection accounting and lifecycle.
-- A concrete JNI/native engine, model packaging/downloader, VAD/ASR/LLM/TTS runtimes, UI controls,
-  and live SIP handset validation are not implemented yet.
+- Added a turn-based pipeline contract (energy VAD endpointing -> offline ASR -> offline dialogue ->
+  offline TTS) and tests. The energy VAD is only a bootstrap endpoint detector; production should
+  replace it with a neural VAD adapter. Stage implementations are interfaces, not bundled models.
+- The pipeline is turn-based, not yet barge-in/streaming dialogue. It currently waits for endpointing,
+  then performs ASR, dialogue and TTS on the dedicated worker.
+- A concrete JNI/native engine, model packaging/downloader, neural VAD/ASR/LLM/TTS runtimes,
+  UI controls, and live SIP handset validation are not implemented yet.
 - Do not mark the feature production-ready until native runtime tests and an on-device SIP loop test
   pass on the HONOR Android 16 handset.
