@@ -16,6 +16,8 @@ dependencyResolutionManagement {
     repositories {
         google()
         mavenCentral()
+        // sherpa-onnx Android AAR (pinned release; inference is local at runtime).
+        maven { url = uri("https://jitpack.io") }
     }
 }
 
