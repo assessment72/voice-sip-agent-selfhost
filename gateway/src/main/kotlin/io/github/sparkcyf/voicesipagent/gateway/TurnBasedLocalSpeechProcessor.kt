@@ -7,10 +7,11 @@ import kotlin.math.sqrt
  * A small energy-based endpoint detector for 20 ms mono PCM16 frames.
  * It is a bootstrap segmenter, not a replacement for a neural VAD.
  */
-interface LocalSpeechSegmenter {
+interface LocalSpeechSegmenter : AutoCloseable {
     val frameSamples: Int
     fun accept(frame: ShortArray): ShortArray?
     fun reset()
+    override fun close() = reset()
 }
 
 class EnergyVadSegmenter(
@@ -157,7 +158,7 @@ class TurnBasedLocalSpeechProcessor(
     override fun close() {
         if (closed) return
         closed = true
-        segmenter.reset()
+        runCatching { segmenter.close() }
         listOf(recognizer, dialogue, synthesizer).forEach { stage ->
             runCatching { (stage as? AutoCloseable)?.close() }
         }
