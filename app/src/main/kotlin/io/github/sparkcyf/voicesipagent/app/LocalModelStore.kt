@@ -7,6 +7,8 @@ import java.io.FileOutputStream
 import java.io.InputStream
 import java.security.MessageDigest
 import java.util.Locale
+import java.nio.file.Files
+import java.nio.file.StandardCopyOption
 
 data class InstalledLocalModel(
     val id: String,
@@ -87,8 +89,7 @@ internal object VerifiedModelInstaller {
 
             val actual = digest.digest().joinToString("") { "%02x".format(it) }
             require(actual == expectedSha256) { "Model SHA-256 mismatch" }
-            if (destination.exists()) check(destination.delete()) { "Cannot replace previous model" }
-            check(temporary.renameTo(destination)) { "Cannot atomically install model file" }
+            Files.move(temporary.toPath(), destination.toPath(), StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING)
             return Result(destination, actual, total)
         } catch (t: Throwable) {
             temporary.delete()
