@@ -64,6 +64,8 @@ dependencies {
     implementation(project(":gateway"))
     implementation(project(":telephony"))
     implementation(project(":privileged"))
+    // Native Android ASR/TTS runtime; model files remain user-imported and offline.
+    implementation("com.github.k2-fsa:sherpa-onnx:2.0.1")
     // Declared by this module's manifest; keep it on the app compile classpath for lint.
     implementation(libs.shizuku.provider)
 
