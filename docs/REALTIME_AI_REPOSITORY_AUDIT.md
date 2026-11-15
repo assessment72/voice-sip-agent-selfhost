@@ -1,44 +1,50 @@
-# تدقيق بنية المستودع قبل دمج Realtime AI
+# تدقيق مصدر الصوت وموضع دمج Local AI
 
-**المستودع:** `assessment72/voice-sip-agent-selfhost`  
-**الفرع:** `feat/realtime-ai-voice-integration-plan`  
-**الغرض:** توثيق ما تم التحقق منه من ملفات Gradle قبل لمس مسار الصوت.
+**المستودع:** assessment72/voice-sip-agent-selfhost
+**الفرع:** feat/realtime-ai-voice-integration-plan
 
-## ما تم التحقق منه
+## البنية المتحققة
 
-من `settings.gradle.kts` وملفات إعداد الوحدات:
+- :voice-api: عقود CallEndpoint وCallLeg وMediaPort وPcmFormat.
+- :sip: SipUserAgent وRtpSession وG711 PCMU/PCMA وJitterBuffer.
+- :gateway: CallBridge وMediaBridge.
+- :telephony و:privileged: مسار المكالمات الخلوية وShizuku؛ خارج نطاق ميزة SIP-only.
+- :app: Android Compose وتهيئة runtime.
+- التطبيق يستهدف arm64-v8a، Java 17، minSdk 30 وtargetSdk 36.
 
-| الوحدة | النوع | الاعتماد الأساسي |
-|---|---|---|
-| `:voice-api` | Kotlin/JVM | عقود مشتركة |
-| `:sip` | Kotlin/JVM | `:voice-api` |
-| `:gateway` | Kotlin/JVM | `:voice-api` |
-| `:webrtc` | Kotlin/JVM | `:voice-api` |
-| `:telephony` | Android library | `:voice-api` |
-| `:privileged` | Android library | Shizuku/صلاحيات |
-| `:app` | Android app + Compose | يربط الوحدات السابقة |
+## مسار SIP الصوتي المؤكد من المصدر
 
-التطبيق يستخدم Java 17، وAndroid minSdk 30، وarm64-v8a في إعداد البناء الحالي. التطبيق يربط وحدات SIP وGateway وTelephony وPrivileged وWebRTC من خلال Gradle.
+- RtpSession يفك G.711 إلى ShortArray PCM.
+- MediaPort الافتراضي هو PCM16 mono بمعدل 8 kHz؛ الإطار 20 ms.
+- MediaBridge يقرأ من كل منفذ ويكتب الإطار إلى المنفذ المقابل.
+- لذلك نقطة الدمج المناسبة هي MediaPort/CallEndpoint في :gateway، وليس التقاط صوت Android أو Shizuku أو تعديل G.711/RTP.
 
-## استنتاج أولي للتوزيع الصحيح
+## ملفات تمت مراجعتها
 
-- عقود الصوت/المزود يجب ألا تتسرب إلى كود SIP protocol نفسه.
-- وحدة `:voice-api` مرشح لتعريف واجهات محايدة مثل جلسة AI، إطار صوت، حالة اتصال، وأحداث المقاطعة، بعد مراجعة العقود الموجودة لتجنب التكرار.
-- وحدة `:telephony` مرشح لمصدر/وجهة صوت المكالمة الخلوية، لكن يجب تحديد موضع PCM الفعلي داخل التنفيذ قبل إضافة tap أو sink.
-- وحدة `:gateway` مرشح لإدارة ربط جلسة المكالمة بمسارها، بشرط أن يؤكد تدقيق المصدر أنها تملك دورة حياة المكالمة المناسبة.
-- وحدة `:app` مسؤولة عن الإعدادات وتفعيل وضع AI، ولا تحفظ مفتاح OpenAI.
-- خدمة وسيطة موثوقة على الخادم الداخلي تحتفظ بمفتاح OpenAI وتتصل بـ Realtime API. لا نضيف المفتاح إلى Android أو GitHub secrets غير الضرورية.
+- sip/src/main/kotlin/io/github/sparkcyf/voicesipagent/sip/media/RtpSession.kt
+- sip/src/main/kotlin/io/github/sparkcyf/voicesipagent/sip/media/G711.kt
+- voice-api/src/main/kotlin/io/github/sparkcyf/voicesipagent/voice/MediaPort.kt
+- voice-api/src/main/kotlin/io/github/sparkcyf/voicesipagent/voice/PcmFormat.kt
+- voice-api/src/main/kotlin/io/github/sparkcyf/voicesipagent/voice/CallEndpoint.kt
+- voice-api/src/main/kotlin/io/github/sparkcyf/voicesipagent/voice/CallLeg.kt
+- voice-api/src/main/kotlin/io/github/sparkcyf/voicesipagent/voice/AbstractCallLeg.kt
+- gateway/src/main/kotlin/io/github/sparkcyf/voicesipagent/gateway/MediaBridge.kt
+- gateway/src/main/kotlin/io/github/sparkcyf/voicesipagent/gateway/CallBridge.kt
 
-## ما لم يتم التحقق منه بعد
+## طبقة التنفيذ المضافة
 
-لم تُراجع بعد ملفات Kotlin التي تنفذ استقبال RTP وإرساله، أو التقاط TELEPHONY_TX/RX، أو مزج/تمرير إطارات الصوت. لذلك لا نحدد أسماء classes أو موضع patch نهائي قبل هذه المراجعة. البحث الآلي عن أسماء عامة لم يعط نتائج موثوقة كافية لتسمية موضع تعديل محدد.
+- gateway/.../LocalAiMediaPort.kt: واجهة PCM متزامنة مع ساعة الجسر، دون inference داخل callback.
+- gateway/.../LocalAiEndpoint.kt: طرف محلي يمكن أن يستقبله CallBridge كمكالمات SIP واردة ثم ينشئ محركاً مستقلاً لكل مكالمة.
+- اختبارات LocalAiMediaPortTest وLocalAiEndpointTest.
 
-## الخطوة البرمجية التالية
+## القيود المفتوحة
 
-1. استخراج قائمة ملفات Kotlin الفعلية في وحدات `:gateway` و`:sip` و`:telephony` و`:voice-api`.
-2. تتبع دورة حياة المكالمة من incoming cellular event حتى أول RTP، ثم تتبع الاتجاه العكسي.
-3. كتابة اختبار characterization لمسار الصوت الحالي قبل أي تعديل.
-4. إضافة adapter عند نقطة الصوت المحددة فقط.
-5. إثبات أن وضع AI معطّل لا يغير أي سلوك قائم.
+- LocalSpeechEngine عقد فقط؛ لا يوجد native backend بعد.
+- لم يتم تضمين whisper.cpp أو llama.cpp أو VAD أو TTS.
+- لم يتم توصيل LocalAiEndpoint في GatewayRuntime أو UI؛ لذلك الميزة غير مفعلة وغير جاهزة للمستخدم.
+- لم يتم تشغيل Gradle/CI بعد هذه التغييرات، ولم يتم إجراء اختبار SIP حي على HONOR MTN-NX1.
+- لا يثبت هذا التدقيق بعدُ استهلاك الذاكرة أو الأداء الحراري أو دعم جلسات متعددة.
 
-**حدود هذه الدفعة:** هذا تدقيق إعدادات Gradle وخطة توزيع أولية، وليس تدقيقاً كاملاً لمصدر الصوت، ولم يتغير كود التطبيق.
+## الخطوة التالية
+
+إضافة backend محلي قابل للبناء على Android ARM64، واختبار native lifecycle والذاكرة، ثم توصيل إعداد opt-in إلى مسار SIP فقط بعد نجاح اختبارات الوحدة.
