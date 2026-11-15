@@ -10,7 +10,7 @@ The existing SIP signalling, RTP, jitter buffer, G.711 codecs and call lifecycle
 
 - SIP RTP receives G.711 PCMU/PCMA and decodes it to mono PCM16, 8 kHz, 20 ms frames.
 - MediaBridge writes caller frames to LocalAiMediaPort.
-- The local engine performs VAD -> streaming ASR -> local dialogue model -> streaming TTS.
+- The local engine currently performs endpointed VAD -> offline ASR -> local dialogue model -> offline TTS (turn-based; not streaming).
 - LocalAiMediaPort.readFrame() supplies synthesized PCM16 frames back to MediaBridge.
 - MediaBridge and RtpSession encode and transmit the frames using the negotiated G.711 codec.
 - Missing TTS frames become silence; queue pressure is counted and must never block the RTP clock.
