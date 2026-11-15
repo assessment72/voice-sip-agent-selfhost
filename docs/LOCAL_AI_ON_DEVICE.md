@@ -57,3 +57,36 @@ Candidate references: sherpa-onnx Android/offline runtime (https://github.com/k2
   UI controls, and live SIP handset validation are not implemented yet.
 - Do not mark the feature production-ready until native runtime tests and an on-device SIP loop test
   pass on the HONOR Android 16 handset.
+
+
+## sherpa-onnx Android runtime integration
+
+The app now pins the official sherpa-onnx Android AAR through JitPack:
+`com.github.k2-fsa:sherpa-onnx:2.0.1`. The release provides a 47.2 MB AAR;
+the app's existing ABI filter packages only `arm64-v8a`. This is a build-time dependency
+fetch only. The inference adapters do not make network requests at runtime.
+
+Concrete adapters added:
+- `SherpaSileroVadSegmenter`: Silero neural VAD, receiving SIP 8 kHz PCM16 and
+  converting frames to 16 kHz float for sherpa-onnx.
+- `SherpaWhisperRecognizer`: local Whisper encoder/decoder/tokens files, configured for
+  Arabic by default, running CPU inference on the queued worker.
+- `SherpaOfflineTtsSynthesizer`: model-configurable sherpa offline TTS, resampling generated
+  audio to 8 kHz PCM16 and 20 ms frames for the SIP media port.
+
+The model files are not bundled. Import each file through `LocalModelStore`, verify its
+SHA-256, then pass the private installed file handles into the adapter constructors.
+Whisper requires encoder, decoder and tokens files. TTS requires a model-specific
+`OfflineTtsConfig` whose referenced files have all been imported.
+
+Still not implemented:
+- A local LLM/dialogue adapter. `OfflineDialogueModel` remains an injection point; no cloud
+  or network dialogue fallback is present.
+- A model catalogue/manifest for Arabic ASR/TTS, model license checks, and automatic
+  validation of multi-file model bundles.
+- UI/service wiring to instantiate these adapters and select SIP-AI mode.
+- Instrumented device tests and performance/thermal/RAM profiling on HONOR MTN-NX1.
+- Streaming partial transcripts, interruption/barge-in, and full-duplex conversational TTS.
+
+Do not start a SIP-AI call until the user imports a compatible model bundle, the app validates
+all model files, and on-device tests pass. The existing SIP/cellular bridge remains unchanged.
