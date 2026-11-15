@@ -5,7 +5,6 @@ import com.arm.aichat.AiChat
 import com.arm.aichat.InferenceEngine
 import io.github.sparkcyf.voicesipagent.gateway.OfflineDialogueModel
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.runBlocking
