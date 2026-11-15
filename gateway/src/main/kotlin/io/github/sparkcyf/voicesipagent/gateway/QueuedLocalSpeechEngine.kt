@@ -32,25 +32,32 @@ class QueuedLocalSpeechEngine(
     private val outputDropped = AtomicLong()
 
     private val worker = Thread({
-        while (running.get() || input.isNotEmpty()) {
-            try {
-                val frame = input.poll(100, TimeUnit.MILLISECONDS) ?: continue
-                val generated = processor.processCallerFrame(frame)
-                for (pcm in generated) {
-                    if (pcm.isEmpty()) continue
-                    val copy = pcm.copyOf()
-                    if (!output.offer(copy)) {
-                        output.poll()
-                        if (output.offer(copy)) outputDropped.incrementAndGet()
+        try {
+            while (running.get() || input.isNotEmpty()) {
+                try {
+                    val frame = input.poll(100, TimeUnit.MILLISECONDS) ?: continue
+                    val generated = processor.processCallerFrame(frame)
+                    if (!running.get()) break
+                    for (pcm in generated) {
+                        if (!running.get()) break
+                        if (pcm.isEmpty()) continue
+                        val copy = pcm.copyOf()
+                        if (!output.offer(copy)) {
+                            output.poll()
+                            if (output.offer(copy)) outputDropped.incrementAndGet()
+                        }
+                        produced.incrementAndGet()
                     }
-                    produced.incrementAndGet()
+                } catch (_: InterruptedException) {
+                    if (!running.get()) break
+                } catch (_: Throwable) {
+                    // A bad inference frame must not terminate the SIP media clock or worker.
+                    rejected.incrementAndGet()
                 }
-            } catch (_: InterruptedException) {
-                if (!running.get()) break
-            } catch (_: Throwable) {
-                // A bad inference frame must not terminate the SIP media clock or worker.
-                rejected.incrementAndGet()
             }
+        } finally {
+            // Release native contexts on the inference thread, never concurrently with inference.
+            runCatching { processor.close() }
         }
     }, threadName).apply { isDaemon = true; start() }
 
@@ -81,10 +88,9 @@ class QueuedLocalSpeechEngine(
 
     override fun close() {
         if (!running.compareAndSet(true, false)) return
-        worker.interrupt()
-        runCatching { worker.join(500) }
-        runCatching { processor.close() }
         input.clear()
         output.clear()
+        worker.interrupt()
+        runCatching { worker.join(500) }
     }
 }
