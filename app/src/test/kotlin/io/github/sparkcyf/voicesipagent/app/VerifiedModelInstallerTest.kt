@@ -26,6 +26,21 @@ class VerifiedModelInstallerTest {
         }
     }
 
+    @Test fun installsGgufModelWithVerifiedChecksum() {
+        val directory = Files.createTempDirectory("local-gguf-test").toFile()
+        val bytes = "gguf-offline-model".toByteArray()
+        try {
+            val result = VerifiedModelInstaller.install(
+                ByteArrayInputStream(bytes), directory, "assistant.gguf", sha256(bytes), 1024,
+            )
+            assertTrue(result.file.isFile)
+            assertEquals("assistant.gguf", result.file.name)
+            assertEquals(sha256(bytes), result.sha256)
+        } finally {
+            directory.deleteRecursively()
+        }
+    }
+
     @Test fun rejectsChecksumMismatchAndRemovesPartialFile() {
         val directory = Files.createTempDirectory("local-model-test").toFile()
         try {
