@@ -12,7 +12,7 @@ import java.util.concurrent.atomic.AtomicLong
  * queues are bounded; offer/poll never wait for inference. A processor may emit zero or more
  * 20 ms PCM frames for each caller frame.
  */
-fun interface LocalSpeechProcessor : AutoCloseable {
+interface LocalSpeechProcessor : AutoCloseable {
     fun processCallerFrame(frame: ShortArray): List<ShortArray>
     override fun close()
 }
