@@ -17,14 +17,12 @@ The existing SIP signalling, RTP, jitter buffer, G.711 codecs and call lifecycle
 
 ## Runtime components to embed
 
-1. VAD: lightweight local voice activity detector, with endpointing tuned for phone audio.
-2. ASR: whisper.cpp with a multilingual model; evaluate Arabic recognition on 8 kHz telephony audio.
-3. Dialogue: llama.cpp with a compact instruct model quantized for ARM64. Keep a strict context and
-   token budget; the dialogue engine must be streamable and interruptible.
-4. TTS: a fully offline Arabic-capable TTS runtime and voice. Verify Arabic text normalization,
-   dialect quality, voice licensing and ARM64 Android support before selecting model artifacts.
-5. Audio adapter: 8 kHz PCM16 narrowband boundary. Any model requiring 16 kHz/24 kHz must use an
-   explicit streaming resampler in the engine worker, never inside the RTP callback.
+1. VAD + Arabic TTS: sherpa-onnx is the leading candidate because it supports Android ARM64, offline VAD/TTS and Kotlin/Java APIs. Evaluate the Nabra-82M Arabic TTS model (including INT8/INT4 artifacts) for intelligibility and real-time factor on this handset.
+2. ASR: whisper.cpp with a multilingual model, starting with tiny/base quantized variants; evaluate Arabic recognition on 8 kHz telephony audio.
+3. Dialogue: llama.cpp with a compact instruct model quantized for ARM64. Keep a strict context and token budget; the dialogue engine must be streamable and interruptible.
+4. Audio adapter: 8 kHz PCM16 narrowband boundary. Any model requiring 16 kHz/24 kHz must use an explicit streaming resampler in the engine worker, never inside the RTP callback.
+
+Candidate references: sherpa-onnx Android/offline runtime (https://github.com/k2-fsa/sherpa-onnx), Nabra Arabic TTS model announcement (https://github.com/k2-fsa/sherpa-onnx/releases), whisper.cpp Android example (https://github.com/ggml-org/whisper.cpp/tree/master/examples/whisper.android), and llama.cpp Android build guide (https://github.com/ggml-org/llama.cpp/blob/master/docs/android.md). These are candidates, not yet vendored or compiled into this app.
 
 ## Device constraints
 
