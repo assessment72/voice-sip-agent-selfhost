@@ -101,18 +101,13 @@ class SherpaOfflineTtsSynthesizer(
             PcmAudio.resample(generated.samples, generated.sampleRate, outputSampleRate)
         )
         if (pcm.isEmpty()) return emptyList()
-        val frameSamples = outputSampleRate / 50
-        return pcm.asList().chunked(frameSamples).map { chunk ->
-            ShortArray(frameSamples).also { frame ->
-                chunk.forEachIndexed { index, sample -> frame[index] = sample }
-            }
-        }
+        return PcmAudio.toFixedFrames(pcm, outputSampleRate / 50)
     }
 
     override fun close() = tts.release()
 }
 
-private object PcmAudio {
+internal object PcmAudio {
     fun toFloat16k(input: ShortArray): FloatArray {
         val mono = FloatArray(input.size) { input[it] / 32768.0f }
         return resample(mono, 8000, MODEL_SAMPLE_RATE)
@@ -140,6 +135,20 @@ private object PcmAudio {
             (input[index].coerceIn(-1f, 1f) * 32767f).roundToInt()
                 .coerceIn(Short.MIN_VALUE.toInt(), Short.MAX_VALUE.toInt()).toShort()
         }
+
+    /** Split PCM into fixed-size SIP frames without boxing samples; pad only the last frame. */
+    fun toFixedFrames(pcm: ShortArray, frameSamples: Int): List<ShortArray> {
+        require(frameSamples > 0) { "Frame size must be positive" }
+        if (pcm.isEmpty()) return emptyList()
+        val frameCount = (pcm.size + frameSamples - 1) / frameSamples
+        return List(frameCount) { frameIndex ->
+            ShortArray(frameSamples).also { frame ->
+                val start = frameIndex * frameSamples
+                val count = minOf(frameSamples, pcm.size - start)
+                pcm.copyInto(frame, destinationOffset = 0, startIndex = start, endIndex = start + count)
+            }
+        }
+    }
 }
 
 private fun requireModel(file: File, label: String) {
