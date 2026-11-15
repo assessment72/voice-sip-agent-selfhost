@@ -7,6 +7,12 @@ import kotlin.math.sqrt
  * A small energy-based endpoint detector for 20 ms mono PCM16 frames.
  * It is a bootstrap segmenter, not a replacement for a neural VAD.
  */
+interface LocalSpeechSegmenter {
+    val frameSamples: Int
+    fun accept(frame: ShortArray): ShortArray?
+    fun reset()
+}
+
 class EnergyVadSegmenter(
     private val sampleRate: Int = 8000,
     private val speechRmsThreshold: Int = 500,
@@ -14,8 +20,8 @@ class EnergyVadSegmenter(
     private val hangoverFrames: Int = 18,
     private val maxUtteranceFrames: Int = 750,
     private val minUtteranceFrames: Int = 8,
-) {
-    val frameSamples: Int = sampleRate / 50
+) : LocalSpeechSegmenter {
+    override val frameSamples: Int = sampleRate / 50
 
     private val preRoll = ArrayDeque<ShortArray>()
     private val utterance = ArrayList<ShortArray>()
@@ -30,7 +36,7 @@ class EnergyVadSegmenter(
     }
 
     /** Returns a completed utterance as contiguous PCM16 samples, or null. */
-    fun accept(frame: ShortArray): ShortArray? {
+    override fun accept(frame: ShortArray): ShortArray? {
         require(frame.size == sampleRate / 50) { "Expected one 20 ms PCM frame" }
         val copy = frame.copyOf()
         val voiced = rms(copy) >= speechRmsThreshold
@@ -68,7 +74,7 @@ class EnergyVadSegmenter(
         return null
     }
 
-    fun reset() {
+    override fun reset() {
         preRoll.clear()
         utterance.clear()
         inSpeech = false
@@ -107,7 +113,7 @@ fun interface OfflineSpeechSynthesizer : AutoCloseable {
  * never on the SIP/RTP media callback. Native adapters must perform no network access.
  */
 class TurnBasedLocalSpeechProcessor(
-    private val segmenter: EnergyVadSegmenter,
+    private val segmenter: LocalSpeechSegmenter,
     private val recognizer: OfflineSpeechRecognizer,
     private val dialogue: OfflineDialogueModel,
     private val synthesizer: OfflineSpeechSynthesizer,
