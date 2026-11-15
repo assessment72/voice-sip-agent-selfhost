@@ -30,6 +30,22 @@ class LocalModelStore(context: Context) {
         modelId: String,
         expectedSha256: String,
         maxBytes: Long,
+    ): InstalledLocalModel = importWithExtension(uri, modelId, expectedSha256, maxBytes, "model")
+
+    /** Imports a local GGUF LLM file for llama.cpp; it is never fetched from the network. */
+    fun importGguf(
+        uri: Uri,
+        modelId: String,
+        expectedSha256: String,
+        maxBytes: Long,
+    ): InstalledLocalModel = importWithExtension(uri, modelId, expectedSha256, maxBytes, "gguf")
+
+    private fun importWithExtension(
+        uri: Uri,
+        modelId: String,
+        expectedSha256: String,
+        maxBytes: Long,
+        extension: String,
     ): InstalledLocalModel {
         require(modelId.matches(Regex("[a-zA-Z0-9._-]{1,80}"))) { "Invalid model ID" }
         require(expectedSha256.matches(Regex("[a-fA-F0-9]{64}"))) { "A SHA-256 checksum is required" }
@@ -39,7 +55,7 @@ class LocalModelStore(context: Context) {
             VerifiedModelInstaller.install(
                 input = it,
                 directory = modelDirectory,
-                fileName = "$modelId.model",
+                fileName = "$modelId.$extension",
                 expectedSha256 = expectedSha256.lowercase(Locale.ROOT),
                 maxBytes = maxBytes,
             )
@@ -47,8 +63,9 @@ class LocalModelStore(context: Context) {
     }
 
     fun installedModels(): List<File> =
-        modelDirectory.listFiles()?.filter { it.isFile && it.name.endsWith(".model") }?.sortedBy { it.name }
-            ?: emptyList()
+        modelDirectory.listFiles()?.filter {
+            it.isFile && (it.name.endsWith(".model") || it.name.endsWith(".gguf"))
+        }?.sortedBy { it.name } ?: emptyList()
 }
 
 internal object VerifiedModelInstaller {
@@ -61,7 +78,7 @@ internal object VerifiedModelInstaller {
         expectedSha256: String,
         maxBytes: Long,
     ): Result {
-        require(fileName.matches(Regex("[a-zA-Z0-9._-]{1,90}\\.model")))
+        require(fileName.matches(Regex("[a-zA-Z0-9._-]{1,80}\\.(model|gguf)")))
         require(expectedSha256.matches(Regex("[a-f0-9]{64}")))
         require(maxBytes > 0)
         check(directory.exists() || directory.mkdirs()) { "Cannot create private model directory" }
