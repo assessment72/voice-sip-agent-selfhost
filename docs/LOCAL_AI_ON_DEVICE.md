@@ -90,3 +90,25 @@ Still not implemented:
 
 Do not start a SIP-AI call until the user imports a compatible model bundle, the app validates
 all model files, and on-device tests pass. The existing SIP/cellular bridge remains unchanged.
+
+
+## llama.cpp local dialogue runtime (Arm AI Chat)
+
+The optional `onDeviceAi` Android product flavor now includes the official Arm AI Chat
+library from Maven Central (`com.arm:ai-chat:0.1.0`), which wraps llama.cpp and accepts
+local GGUF models. The `standard` flavor remains Android 11+ and does not package this
+runtime; the `onDeviceAi` flavor declares Android 13+ because the upstream library's
+minimum SDK is 33.
+
+`ArmLlamaDialogueModel` implements `OfflineDialogueModel`:
+- Loads only a readable, app-private GGUF file already imported and SHA-256 verified.
+- Waits for native runtime initialization, loads the model and sets an Arabic voice system prompt.
+- Runs inference from the queued local-AI worker, not from SIP/RTP callbacks.
+- Caps prompt size, generated tokens, reply characters, model file size and operation timeouts.
+- Uses no network API or cloud fallback.
+
+CI now tests both Android variants. The Arm library's upstream JNI implementation currently
+uses an 8192-token context by default; this can have a significant memory cost. Do not enable
+the LLM voice path on the handset until a small quantized model is loaded and RAM, thermal,
+latency and sustained-call behavior are measured on the HONOR MTN-NX1. If memory pressure
+is excessive, this upstream runtime needs a configurable smaller context before production use.
