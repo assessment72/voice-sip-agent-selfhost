@@ -83,7 +83,7 @@ class SherpaOfflineTtsSynthesizer(
     private val tts = OfflineTts(config = config)
 
     init {
-        require(outputSampleRate == SIP_SAMPLE_RATE || outputSampleRate == 16000)
+        require(outputSampleRate == SIP_SAMPLE_RATE) { "SIP TTS output must be 8 kHz PCM16" }
         require(maxOutputSeconds in 1..120)
         require(tts.sampleRate() > 0)
     }
