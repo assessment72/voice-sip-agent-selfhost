@@ -15,6 +15,8 @@ class EnergyVadSegmenter(
     private val maxUtteranceFrames: Int = 750,
     private val minUtteranceFrames: Int = 8,
 ) {
+    val frameSamples: Int = sampleRate / 50
+
     private val preRoll = ArrayDeque<ShortArray>()
     private val utterance = ArrayList<ShortArray>()
     private var inSpeech = false
@@ -117,7 +119,9 @@ class TurnBasedLocalSpeechProcessor(
     private var closed = false
 
     init {
-        require(frameSamples == 160 || frameSamples == 320)
+        require(frameSamples == segmenter.frameSamples) {
+            "SIP frame size must match the VAD sample rate"
+        }
         require(maxTranscriptChars > 0 && maxReplyChars > 0)
     }
 
