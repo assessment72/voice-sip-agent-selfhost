@@ -799,6 +799,7 @@ class GatewayRuntime private constructor(context: Context) {
             appendLine("privileged=${h.privileged} ${h.privilegedDetail}")
             appendLine("sip=${h.sip.detail} ready=${h.sip.ready} stack=builtin " +
                 "transport=${settings.sipTransport} srtp=${settings.srtp} debugLog=${settings.sipDebugLog}")
+            if (settings.serverMode) appendLine("externalPorts=UDP ${settings.localSipPort} SIP, UDP 10000-20000 RTP")
             appendLine("cellular=${cellular.status.detail} inCallServiceBound=${CellularEndpoint.isInCallServiceBound} " +
                 "service=${CellularEndpoint.boundServiceDescription ?: "none"}")
             val n = networkMetrics.value

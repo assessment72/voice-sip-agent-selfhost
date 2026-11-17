@@ -353,6 +353,14 @@ private fun SettingsSection(rt: GatewayRuntime) {
                 .replace("\$localPort", localPort),
             style = MaterialTheme.typography.bodySmall,
         )
+        if (serverMode) Text(
+            if (currentUiLang == UiLang.AR) {
+                "للوصول من خارج الشبكة: حوّل UDP ${localPort.ifBlank { "5062" }} إلى عنوان الهاتف، وحوّل UDP 10000–20000 للصوت RTP. لا يستطيع التطبيق إجبار الراوتر أو شركة الاتصالات على فتحها."
+            } else {
+                "For internet access: forward UDP ${localPort.ifBlank { "5062" }} to this phone and UDP 10000–20000 for RTP. The app cannot force a router or carrier to open ports."
+            },
+            style = MaterialTheme.typography.bodySmall,
+        )
         Field(t("Аренда регистрации (сек)", "Registration lease (sec)"), lease, KeyboardType.Number, info = "lease") { lease = it }
         if (serverMode) {
             OutlinedTextField(
