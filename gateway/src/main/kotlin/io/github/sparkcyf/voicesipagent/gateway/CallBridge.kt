@@ -5,6 +5,7 @@ import io.github.sparkcyf.voicesipagent.voice.CallLeg
 import io.github.sparkcyf.voicesipagent.voice.HangupCause
 import io.github.sparkcyf.voicesipagent.voice.LegState
 import io.github.sparkcyf.voicesipagent.voice.MediaPort
+import io.github.sparkcyf.voicesipagent.voice.Party
 import io.github.sparkcyf.voicesipagent.voice.redactNumber
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.ScheduledThreadPoolExecutor
@@ -85,6 +86,39 @@ class CallBridge(
 
     fun addListener(l: BridgeListener) = listeners.addIfAbsent(l)
     fun removeListener(l: BridgeListener) = listeners.remove(l)
+
+    /** Starts a call from one bridge side to the other (used by authenticated SIP commands). */
+    fun startOutgoing(from: CallEndpoint, fromTarget: String, to: CallEndpoint, toTarget: String, caller: Party): Boolean {
+        if (from !== sideA && from !== sideB) return false
+        if (to !== sideA && to !== sideB) return false
+        post {
+            if (session != null) {
+                log("cannot start outgoing call: bridge busy")
+                return@post
+            }
+            if (to === sideA) {
+                val veto = dialPolicyForA.check(toTarget)
+                    ?: if (config.allowedDialPrefixes.isNotEmpty() && config.allowedDialPrefixes.none(toTarget::startsWith)) HangupCause.FORBIDDEN else null
+                if (veto != null) {
+                    log("refusing outgoing call to ${redactNumber(toTarget)}: $veto")
+                    return@post
+                }
+            }
+            val inbound = from.dial(fromTarget, caller)
+            val s = BridgeSession(nextId++, from.name, inbound)
+            session = s
+            inbound.addListener(LegWatcher(s, inbound = true))
+            val outbound = to.dial(toTarget, caller)
+            s.outbound = outbound
+            outbound.addListener(LegWatcher(s, inbound = false))
+            s.answerTimer = executor.schedule({
+                if (session === s && s.connectedAtMs == null) endSession(s, HangupCause.NO_ANSWER)
+            }, config.answerTimeoutMs, TimeUnit.MILLISECONDS)
+            reevaluate(s)
+            notifyChanged(s)
+        }
+        return true
+    }
 
     /** Blocks until every task posted so far has run (tests). */
     internal fun drain() {

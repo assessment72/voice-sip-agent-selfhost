@@ -2,6 +2,8 @@ package io.github.sparkcyf.voicesipagent.app
 
 import android.os.Bundle
 import android.os.Build
+import android.Manifest
+import android.content.pm.PackageManager
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -61,9 +63,20 @@ import io.github.sparkcyf.voicesipagent.privileged.CallAccess
 import io.github.sparkcyf.voicesipagent.privileged.ShizukuConnector
 
 class MainActivity : DialerRoleActivity() {
+    private val smsPermissionRequest = registerForActivityResult(
+        androidx.activity.result.contract.ActivityResultContracts.RequestMultiplePermissions()
+    ) { granted ->
+        if (granted[Manifest.permission.SEND_SMS] == true) {
+            GatewayRuntime.get(this).showDialerMessage("SMS sending enabled.")
+        }
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         requestPhoneStateAccessIfNeeded()
+        val missingSms = arrayOf(Manifest.permission.RECEIVE_SMS, Manifest.permission.SEND_SMS)
+            .filter { checkSelfPermission(it) != PackageManager.PERMISSION_GRANTED }
+        if (missingSms.isNotEmpty()) smsPermissionRequest.launch(missingSms.toTypedArray())
         val runtime = GatewayRuntime.get(this)
         GatewayService.start(this)
         setContent {

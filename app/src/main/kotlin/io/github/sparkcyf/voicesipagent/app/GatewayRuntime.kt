@@ -33,6 +33,7 @@ import io.github.sparkcyf.voicesipagent.voice.EndpointStatus
 import io.github.sparkcyf.voicesipagent.voice.HangupCause
 import io.github.sparkcyf.voicesipagent.voice.LegState
 import io.github.sparkcyf.voicesipagent.voice.PcmFormat
+import io.github.sparkcyf.voicesipagent.voice.Party
 import io.github.sparkcyf.voicesipagent.voice.redactNumber
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -552,6 +553,7 @@ class GatewayRuntime private constructor(context: Context) {
                 sipLog,
             ).also { ua ->
                 ua.addStatusListener { ep, st -> sipStatus(ep, st) }
+                ua.setMessageHandler { from, text -> worker.execute { handleSipCommand(from, text) } }
                 ua.start()
             }
             sip = ep
@@ -630,7 +632,17 @@ class GatewayRuntime private constructor(context: Context) {
             sideA = cellular,
             sideB = sideB,
             routeAtoB = { inboundTarget },
-            routeBtoA = { leg -> leg.target?.takeIf { it != s.username } },
+            // With SIP2SIP, the proxy commonly keeps the registered AoR in the
+            // Request-URI (for example sip:9665...@sip2sip.info). In that case
+            // the user part is also the cellular number to dial. Do not discard
+            // it merely because it equals our registered username; only apply
+            // this fallback when the username is dialable, so an alphanumeric
+            // SIP account cannot accidentally become a cellular destination.
+            routeBtoA = { leg ->
+                leg.target?.trim()?.takeIf { target ->
+                    target != s.username || target.isCellularDialTarget()
+                }
+            },
             config = GatewayConfig(
                 cellularInboundTarget = inboundTarget,
                 busyPolicy = s.busyPolicy,
@@ -652,6 +664,9 @@ class GatewayRuntime private constructor(context: Context) {
         b.start()
         AppLog.i("bridge ready: cellular <-> ${sideB.name}")
     }
+
+    private fun String.isCellularDialTarget(): Boolean =
+        isNotEmpty() && all { it.isDigit() || it == '+' || it == '*' || it == '#' }
 
     private fun describe(s: BridgeSession): String? {
         if (s.endedAtMs != null) return null
@@ -788,6 +803,38 @@ class GatewayRuntime private constructor(context: Context) {
             AppLog.i("SMS forwarded to the registered phone")
         } else {
             AppLog.w("SMS not forwarded: no phone registered")
+        }
+    }
+
+    /** Handles authenticated text commands sent by the registered SIP phone. */
+    private fun handleSipCommand(from: String?, raw: String) {
+        val command = raw.trim()
+        when {
+            command.startsWith("SMS:", ignoreCase = true) -> {
+                val payload = command.substringAfter(':')
+                val split = payload.indexOf('|')
+                if (split <= 0 || split == payload.lastIndex) {
+                    (sip as? SipUserAgent)?.sendMessage(null, "ERROR SMS_FORMAT")
+                    return
+                }
+                val number = payload.substring(0, split).trim()
+                val text = payload.substring(split + 1).trim()
+                val ok = cellular.sendSms(number, text)
+                (sip as? SipUserAgent)?.sendMessage(null, if (ok) "OK SMS_SENT" else "ERROR SMS_FAILED")
+                AppLog.i("SIP SMS command from ${from ?: "unknown"}: ${if (ok) "sent" else "failed"}")
+            }
+            command.startsWith("CALL:", ignoreCase = true) -> {
+                val number = command.substringAfter(':').trim()
+                val endpoint = sip
+                val activeBridge = bridge
+                val ok = number.isNotEmpty() && endpoint != null && activeBridge != null &&
+                    activeBridge.startOutgoing(endpoint, "phone", cellular, number, Party(number))
+                (sip as? SipUserAgent)?.sendMessage(null, if (ok) "OK CALLING:$number" else "ERROR CALL_FAILED")
+                AppLog.i("SIP CALL command from ${from ?: "unknown"}: ${if (ok) "started" else "failed"}")
+            }
+            command.equals("STATUS", ignoreCase = true) ->
+                (sip as? SipUserAgent)?.sendMessage(null, "OK ${statusReport().replace('\n', ' ')}")
+            else -> (sip as? SipUserAgent)?.sendMessage(null, "ERROR UNKNOWN_COMMAND")
         }
     }
 

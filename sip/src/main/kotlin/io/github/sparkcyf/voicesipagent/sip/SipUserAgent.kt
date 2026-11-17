@@ -50,6 +50,7 @@ class SipUserAgent(
 
     private val statusListeners = CopyOnWriteArrayList<EndpointStatusListener>()
     @Volatile private var incomingHandler: IncomingCallHandler? = null
+    @Volatile private var messageHandler: ((String?, String) -> Unit)? = null
     @Volatile override var status: EndpointStatus = EndpointStatus(false, "stopped")
         private set
 
@@ -135,6 +136,11 @@ class SipUserAgent(
 
     override fun setIncomingCallHandler(handler: IncomingCallHandler?) {
         incomingHandler = handler
+    }
+
+    /** Receives authenticated out-of-dialog text messages in registrar mode. */
+    fun setMessageHandler(handler: ((fromUser: String?, text: String) -> Unit)?) {
+        messageHandler = handler
     }
 
     override fun addStatusListener(listener: EndpointStatusListener) {
@@ -315,6 +321,7 @@ class SipUserAgent(
                     call.onCancel(inviteTx)
                 }
             }
+            req.method == "MESSAGE" -> onMessageRequest(req, tx, from)
             call != null && (toTag != null || req.method == "INVITE") -> call.onInDialogRequest(req, tx)
             toTag != null -> tx.respond(buildResponse(req, 481))
             req.method == "INVITE" -> onNewInvite(req, tx, from)
@@ -350,6 +357,19 @@ class SipUserAgent(
         if (!call.acceptOffer(req, tx)) return
         calls[call.callId] = call
         handler.onIncomingCall(call)
+    }
+
+    private fun onMessageRequest(req: SipRequest, tx: ServerTransaction, from: InetSocketAddress) {
+        if (config.serverMode && !messageAuthPassed(req, from, tx)) return
+        if (req.contentType != null && req.contentType != "text/plain") {
+            tx.respond(buildResponse(req, 415, toTag = newTag()))
+            return
+        }
+        tx.respond(buildResponse(req, 200, toTag = newTag()))
+        val fromUser = req.from?.sipUri?.user
+        val text = req.bodyText.trim()
+        if (text.isNotEmpty()) messageHandler?.invoke(fromUser, text)
+        log.info("MESSAGE received from ${redactNumber(fromUser)} (${text.length} chars)")
     }
 
     // Registrar auth tuning: how long an issued nonce is accepted, and the brute-force ban policy.
@@ -397,6 +417,29 @@ class SipUserAgent(
             return false
         }
         return when (val o = digestCheck(req, ip, "INVITE")) {
+            AuthOutcome.PASS -> true
+            AuthOutcome.DROP -> {
+                tx.respond(buildResponse(req, 403, toTag = newTag()))
+                false
+            }
+            is AuthOutcome.Challenge -> {
+                val resp = buildResponse(req, 401, toTag = newTag())
+                resp.headers.add("WWW-Authenticate", DigestAuth.challengeHeader(config.registrarRealm, o.nonce))
+                tx.respond(resp)
+                false
+            }
+        }
+    }
+
+    /** MESSAGE can trigger a paid SMS or cellular call, so it is authenticated separately. */
+    private fun messageAuthPassed(req: SipRequest, from: InetSocketAddress, tx: ServerTransaction): Boolean {
+        val ip = from.address?.hostAddress ?: ""
+        if (config.registrarPassword.isEmpty()) {
+            tx.respond(buildResponse(req, 403, toTag = newTag()))
+            log.warn("MESSAGE from $ip refused: set a registrar password to allow commands")
+            return false
+        }
+        return when (val o = digestCheck(req, ip, "MESSAGE")) {
             AuthOutcome.PASS -> true
             AuthOutcome.DROP -> {
                 tx.respond(buildResponse(req, 403, toTag = newTag()))

@@ -13,6 +13,7 @@ import android.telecom.Call
 import android.telecom.TelecomManager
 import android.telephony.TelephonyManager
 import android.telephony.SubscriptionManager
+import android.telephony.SmsManager
 import io.github.sparkcyf.voicesipagent.voice.CallEndpoint
 import io.github.sparkcyf.voicesipagent.voice.CallLeg
 import io.github.sparkcyf.voicesipagent.voice.EndpointStatus
@@ -108,6 +109,30 @@ class CellularEndpoint(
     } catch (e: Exception) {
         // Fail closed: if we cannot tell, treat it as emergency and refuse to dial.
         true
+    }
+
+    /** Sends an SMS through the active SIM 2 subscription. Returns false on local failure. */
+    fun sendSms(number: String, text: String): Boolean {
+        if (app.checkSelfPermission(Manifest.permission.SEND_SMS) != PackageManager.PERMISSION_GRANTED) {
+            log("SEND_SMS not granted")
+            return false
+        }
+        val digits = number.trim()
+        if (digits.isEmpty() || text.isEmpty()) return false
+        return try {
+            val subscriptions = app.getSystemService(SubscriptionManager::class.java)
+            val sim2 = subscriptions.getActiveSubscriptionInfoForSimSlotIndex(SIM2_SLOT_INDEX)
+                ?: return false.also { log("SIM 2 is not active; refusing SMS") }
+            val sms = SmsManager.getSmsManagerForSubscriptionId(sim2.subscriptionId)
+            val parts = sms.divideMessage(text)
+            if (parts.size == 1) sms.sendTextMessage(digits, null, text, null, null)
+            else sms.sendMultipartTextMessage(digits, null, parts, null, null)
+            log("SMS sent via SIM 2 to ${redactNumber(digits)}")
+            true
+        } catch (e: Exception) {
+            log("SMS send failed: ${e.javaClass.simpleName}")
+            false
+        }
     }
 
     override fun dial(target: String, caller: Party): CallLeg {
