@@ -585,6 +585,15 @@ class GatewayRuntime private constructor(context: Context) {
         val cm = app.getSystemService(ConnectivityManager::class.java)
         val callback = object : ConnectivityManager.NetworkCallback() {
             private var lastAddrs: String? = null
+            override fun onAvailable(network: Network) {
+                if (networkCallback === this) networkMonitor.onNetworkAvailable(network)
+            }
+            override fun onCapabilitiesChanged(network: Network, caps: android.net.NetworkCapabilities) {
+                if (networkCallback === this) networkMonitor.onCapabilitiesChanged(caps)
+            }
+            override fun onLost(network: Network) {
+                if (networkCallback === this) networkMonitor.onNetworkLost()
+            }
             override fun onLinkPropertiesChanged(network: Network, lp: LinkProperties) {
                 if (networkCallback !== this) return
                 val addrs = lp.linkAddresses.joinToString { it.address.hostAddress.orEmpty() }

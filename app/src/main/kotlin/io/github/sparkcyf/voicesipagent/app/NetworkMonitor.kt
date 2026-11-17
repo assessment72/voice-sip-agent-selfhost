@@ -58,7 +58,6 @@ class NetworkMonitor(context: Context) {
     }
     private val _metrics = MutableStateFlow(NetworkMetrics())
     val metrics: StateFlow<NetworkMetrics> = _metrics
-    private var networkCallback: ConnectivityManager.NetworkCallback? = null
     private var sim2: TelephonyManager? = null
     private var telephonyCallback: TelephonyCallback? = null
     private var legacyListener: PhoneStateListener? = null
@@ -68,7 +67,7 @@ class NetworkMonitor(context: Context) {
     fun start() {
         if (running) return
         running = true
-        registerNetwork()
+        cm.activeNetwork?.let { network -> cm.getNetworkCapabilities(network)?.let(::onCapabilitiesChanged) }
         registerSim2()
         speedJob = probeExecutor.scheduleWithFixedDelay(::measureSpeed, 5, 30, TimeUnit.MINUTES)
         measureSpeed()
@@ -79,8 +78,6 @@ class NetworkMonitor(context: Context) {
         running = false
         speedJob?.cancel(false)
         speedJob = null
-        networkCallback?.let { runCatching { cm.unregisterNetworkCallback(it) } }
-        networkCallback = null
         sim2?.let { manager ->
             if (Build.VERSION.SDK_INT >= 31) {
                 telephonyCallback?.let { callback -> runCatching { manager.unregisterTelephonyCallback(callback) } }
@@ -101,28 +98,13 @@ class NetworkMonitor(context: Context) {
         telephonyExecutor.shutdownNow()
     }
 
-    private fun registerNetwork() {
-        val callback = object : ConnectivityManager.NetworkCallback() {
-            override fun onAvailable(network: Network) = refreshNetwork(network)
-            override fun onCapabilitiesChanged(network: Network, caps: NetworkCapabilities) = updateNetwork(caps)
-            override fun onLost(network: Network) {
-                if (networkCallback === this) _metrics.update {
-                    it.copy(internetConnected = false, internetTransport = "none", downstreamKbps = 0, upstreamKbps = 0,
-                        detail = "internet unavailable")
-                }
-            }
-        }
-        networkCallback = callback
-        runCatching { cm.registerDefaultNetworkCallback(callback) }
-            .onFailure { _metrics.update { it.copy(detail = "network callback failed") } }
-        cm.activeNetwork?.let(::refreshNetwork)
+    /** Called by GatewayRuntime's single default-network callback. */
+    fun onNetworkAvailable(network: Network) {
+        cm.getNetworkCapabilities(network)?.let(::onCapabilitiesChanged)
     }
 
-    private fun refreshNetwork(network: Network) {
-        cm.getNetworkCapabilities(network)?.let(::updateNetwork)
-    }
-
-    private fun updateNetwork(caps: NetworkCapabilities) {
+    /** Called by GatewayRuntime when the default network capabilities change. */
+    fun onCapabilitiesChanged(caps: NetworkCapabilities) {
         val transport = when {
             caps.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) -> "cellular"
             caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) -> "Wi-Fi"
@@ -141,6 +123,12 @@ class NetworkMonitor(context: Context) {
                 detail = if (connected) "internet connected" else "network has no validated internet",
             )
         }
+    }
+
+    /** Called by GatewayRuntime when the default network is lost. */
+    fun onNetworkLost() = _metrics.update {
+        it.copy(internetConnected = false, internetTransport = "none", downstreamKbps = 0, upstreamKbps = 0,
+            detail = "internet unavailable")
     }
 
     private fun registerSim2() {
