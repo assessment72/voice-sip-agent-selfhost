@@ -4,6 +4,8 @@ import android.os.Bundle
 import android.os.Build
 import android.Manifest
 import android.content.pm.PackageManager
+import android.content.Intent
+import android.provider.Settings
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -93,6 +95,7 @@ class MainActivity : DialerRoleActivity() {
 private fun Screen(rt: GatewayRuntime, modifier: Modifier, requestDialer: () -> Unit, switchDialer: () -> Unit,
     chooseDialer: () -> Unit, cancelDialer: () -> Unit, setTakeover: (Boolean) -> Unit, roleMessage: String) {
     val h by rt.health.collectAsState()
+    val net by rt.networkMetrics.collectAsState()
     val log by AppLog.tail.collectAsState()
     val cur by rt.settingsFlow.collectAsState()
     currentUiLang = UiLang.of(cur.uiLanguage)
@@ -139,6 +142,11 @@ private fun Screen(rt: GatewayRuntime, modifier: Modifier, requestDialer: () -> 
                 if (h.effectiveCallAccess == CallAccess.DIALER) t("Звонилка по умолчанию", "Default dialer") else t("Рядом со звонилкой", "Alongside your dialer"))
             Check(t("Доступ к звуку вызова", "Call audio access"), h.audioReady)
             Check(t("Исключён из экономии батареи", "Doze allowlisted"), p?.get(HealthKeys.DOZE_ALLOWLISTED) == true)
+            if (p?.get(HealthKeys.DOZE_ALLOWLISTED) != true) {
+                OutlinedButton(onClick = {
+                    runCatching { startActivity(Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS)) }
+                }) { Text(if (currentUiLang == UiLang.AR) "إعدادات البطارية" else "Open battery settings") }
+            }
             Check(t("Регистрация SIP", "SIP registration"), h.sip.ready, h.sip.detail)
             Text(h.readinessDetail, style = MaterialTheme.typography.bodySmall)
             if (h.effectiveCallAccess == CallAccess.DIALER && !h.holdsDialer) {
@@ -166,6 +174,35 @@ private fun Screen(rt: GatewayRuntime, modifier: Modifier, requestDialer: () -> 
                 OutlinedButton(onClick = { rt.runSetup() }) { Text(t("Перенастроить", "Re-run setup")) }
                 OutlinedButton(onClick = { rt.restartSip() }) { Text(t("Перерегистрация", "Re-register")) }
             }
+        }
+        Section(if (currentUiLang == UiLang.AR) "الشبكة والإنترنت" else "Network and internet") {
+            Check(
+                if (currentUiLang == UiLang.AR) "SIM 2" else "SIM 2",
+                net.sim2Active,
+                "${net.sim2Network} · ${if (net.sim2Dbm != null) "${net.sim2Dbm} dBm" else "signal ${net.sim2SignalLevel}/4"}",
+            )
+            Text(if (currentUiLang == UiLang.AR) {
+                "الإشارة: ${net.sim2SignalLevel.coerceAtLeast(0)}/4${net.sim2Dbm?.let { " · $it dBm" } ?: ""} · الشبكة: ${net.sim2Network}"
+            } else {
+                "SIM 2 signal: ${net.sim2SignalLevel.coerceAtLeast(0)}/4${net.sim2Dbm?.let { " · $it dBm" } ?: ""} · radio: ${net.sim2Network}"
+            })
+            Text(if (currentUiLang == UiLang.AR) {
+                "الإنترنت: ${if (net.internetConnected) "متصل" else "غير متصل"} · ${net.internetTransport}"
+            } else {
+                "Internet: ${if (net.internetConnected) "connected" else "unavailable"} · ${net.internetTransport}"
+            })
+            Text(if (currentUiLang == UiLang.AR) {
+                "تقدير الرابط: تنزيل ${net.downstreamKbps / 1000.0} Mbps · رفع ${net.upstreamKbps / 1000.0} Mbps"
+            } else {
+                "Link estimate: ${net.downstreamKbps / 1000.0} Mbps down · ${net.upstreamKbps / 1000.0} Mbps up"
+            })
+            Text(if (currentUiLang == UiLang.AR) {
+                "اختبار تنزيل خفيف: ${net.measuredDownloadMbps?.let { "%.2f Mbps".format(it) } ?: "لم يكتمل بعد"}"
+            } else {
+                "Light download test: ${net.measuredDownloadMbps?.let { "%.2f Mbps".format(it) } ?: "not completed yet"}"
+            }, style = MaterialTheme.typography.bodySmall)
+            Text(if (currentUiLang == UiLang.AR) "تعمل المراقبة أثناء تشغيل الخدمة الأمامية." else "Monitoring runs while the foreground gateway service is active.",
+                style = MaterialTheme.typography.bodySmall)
         }
         Section(t("Звонок", "Call")) {
             Text(h.calls.summary)

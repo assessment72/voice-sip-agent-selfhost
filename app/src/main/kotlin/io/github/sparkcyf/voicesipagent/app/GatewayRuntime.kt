@@ -102,6 +102,7 @@ class GatewayRuntime private constructor(context: Context) {
             effectiveCallAccess = CallAccess.effective(settings.callAccess, Build.VERSION.SDK_INT, holds))
     })
     val health: StateFlow<HealthState> = _health
+    val networkMetrics: StateFlow<NetworkMetrics> get() = networkMonitor.metrics
     private val _dialerMessage = MutableStateFlow("")
     val dialerMessage: StateFlow<String> = _dialerMessage
 
@@ -113,6 +114,8 @@ class GatewayRuntime private constructor(context: Context) {
         PrivilegedAudioOpener(shizuku, { settings.audioMethod }, { settings.muteEarpiece }, ::audioFormat),
         logger = { AppLog.i(it) },
     )
+    /** SIM 2 signal and default-network monitor; it is active only while the gateway service runs. */
+    private val networkMonitor = NetworkMonitor(app)
     /** Built-in SIP user agent. */
     private var sip: CallEndpoint? = null
     private var bridge: CallBridge? = null
@@ -248,6 +251,7 @@ class GatewayRuntime private constructor(context: Context) {
         worker.allowCoreThreadTimeOut(false)
         shizuku.start()
         watchNetwork()
+        networkMonitor.start()
         // Telecom or Shizuku restarts can disrupt call access. Recheck health and repair companion
         // setup while idle if access is unavailable; a missing override alone does not trigger setup.
         healthCheck = worker.scheduleWithFixedDelay(::periodicCheck, 60, 60, TimeUnit.SECONDS)
@@ -263,6 +267,7 @@ class GatewayRuntime private constructor(context: Context) {
         if (callback != null) runCatching {
             app.getSystemService(ConnectivityManager::class.java).unregisterNetworkCallback(callback)
         }.onFailure { AppLog.w("network callback cleanup failed", it) }
+        networkMonitor.stop()
         setupPending = false
         worker.allowCoreThreadTimeOut(true)
     }
@@ -787,6 +792,10 @@ class GatewayRuntime private constructor(context: Context) {
                 "transport=${settings.sipTransport} srtp=${settings.srtp} debugLog=${settings.sipDebugLog}")
             appendLine("cellular=${cellular.status.detail} inCallServiceBound=${CellularEndpoint.isInCallServiceBound} " +
                 "service=${CellularEndpoint.boundServiceDescription ?: "none"}")
+            val n = networkMetrics.value
+            appendLine("sim2=${n.sim2Active} signal=${n.sim2SignalLevel} level dbm=${n.sim2Dbm ?: "?"} " +
+                "radio=${n.sim2Network} internet=${n.internetConnected} transport=${n.internetTransport} " +
+                "down=${n.downstreamKbps}kbps up=${n.upstreamKbps}kbps measured=${n.measuredDownloadMbps ?: "?"}Mbps")
             appendLine("sdk=${Build.VERSION.SDK_INT} callAccess=${settings.callAccess} effective=${h.effectiveCallAccess} " +
                 "defaultDialer=${h.holdsDialer} audioMethod=${settings.audioMethod} audioReady=${h.audioReady}")
             appendLine("dialerChangePending=${h.dialerChangePending} running=${h.dialerChangeRunning} ${_dialerMessage.value}")
