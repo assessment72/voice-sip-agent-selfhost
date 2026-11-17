@@ -804,7 +804,7 @@ class GatewayRuntime private constructor(context: Context) {
             val n = networkMetrics.value
             appendLine("sim2=${n.sim2Active} signal=${n.sim2SignalLevel} level dbm=${n.sim2Dbm ?: "?"} " +
                 "radio=${n.sim2Network} internet=${n.internetConnected} transport=${n.internetTransport} " +
-                "down=${n.downstreamKbps}kbps up=${n.upstreamKbps}kbps measured=${n.measuredDownloadMbps ?: "?"}Mbps")
+                "down=${n.downstreamKbps}kbps up=${n.upstreamKbps}kbps source=android-local")
             appendLine("sdk=${Build.VERSION.SDK_INT} callAccess=${settings.callAccess} effective=${h.effectiveCallAccess} " +
                 "defaultDialer=${h.holdsDialer} audioMethod=${settings.audioMethod} audioReady=${h.audioReady}")
             appendLine("dialerChangePending=${h.dialerChangePending} running=${h.dialerChangeRunning} ${_dialerMessage.value}")

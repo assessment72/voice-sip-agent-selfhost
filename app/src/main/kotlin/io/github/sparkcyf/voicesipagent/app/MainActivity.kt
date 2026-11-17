@@ -199,9 +199,9 @@ private fun Screen(rt: GatewayRuntime, modifier: Modifier, requestDialer: () -> 
                 "Link estimate: ${net.downstreamKbps / 1000.0} Mbps down · ${net.upstreamKbps / 1000.0} Mbps up"
             })
             Text(if (currentUiLang == UiLang.AR) {
-                "اختبار تنزيل خفيف: ${net.measuredDownloadMbps?.let { "%.2f Mbps".format(it) } ?: "لم يكتمل بعد"}"
+                "القياس محلي من Android فقط؛ لا يتم الاتصال بخادم اختبار سرعة أو خدمة تتبع."
             } else {
-                "Light download test: ${net.measuredDownloadMbps?.let { "%.2f Mbps".format(it) } ?: "not completed yet"}"
+                "Measured locally from Android only; no speed-test or tracking server is contacted."
             }, style = MaterialTheme.typography.bodySmall)
             Text(if (currentUiLang == UiLang.AR) "تعمل المراقبة أثناء تشغيل الخدمة الأمامية." else "Monitoring runs while the foreground gateway service is active.",
                 style = MaterialTheme.typography.bodySmall)

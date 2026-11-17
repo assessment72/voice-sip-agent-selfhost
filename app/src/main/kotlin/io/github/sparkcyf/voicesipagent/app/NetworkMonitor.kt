@@ -17,12 +17,6 @@ import android.telephony.TelephonyManager
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.update
-import java.net.HttpURLConnection
-import java.net.URL
-import java.util.concurrent.Executors
-import java.util.concurrent.ScheduledExecutorService
-import java.util.concurrent.ScheduledFuture
-import java.util.concurrent.TimeUnit
 
 /** Snapshot of the network conditions relevant to a long-running SIP gateway. */
 data class NetworkMetrics(
@@ -35,33 +29,23 @@ data class NetworkMetrics(
     /** Android's link bandwidth estimate, in kbps. */
     val downstreamKbps: Int = 0,
     val upstreamKbps: Int = 0,
-    /** Lightweight HTTPS download measurement, in Mbps. */
-    val measuredDownloadMbps: Double? = null,
-    val speedTestAtMs: Long? = null,
     val detail: String = "network monitor stopped",
 )
 
 /**
  * Watches SIM 2 and the default network without keeping an Activity alive.
- * The speed probe is intentionally small and infrequent so 24-hour operation does not consume
- * significant data; the continuous bandwidth values come from NetworkCapabilities.
+ * No external speed-test or analytics endpoint is contacted. Bandwidth values are the local
+ * estimate supplied by Android's NetworkCapabilities.
  */
 class NetworkMonitor(context: Context) {
     private val app = context.applicationContext
     private val cm = app.getSystemService(ConnectivityManager::class.java)
     private val subscriptions = app.getSystemService(SubscriptionManager::class.java)
-    private val telephonyExecutor = Executors.newSingleThreadExecutor { r ->
-        Thread(r, "network-monitor").apply { isDaemon = true }
-    }
-    private val probeExecutor: ScheduledExecutorService = Executors.newSingleThreadScheduledExecutor { r ->
-        Thread(r, "network-speed-probe").apply { isDaemon = true }
-    }
     private val _metrics = MutableStateFlow(NetworkMetrics())
     val metrics: StateFlow<NetworkMetrics> = _metrics
     private var sim2: TelephonyManager? = null
     private var telephonyCallback: TelephonyCallback? = null
     private var legacyListener: PhoneStateListener? = null
-    private var speedJob: ScheduledFuture<*>? = null
     private var running = false
 
     fun start() {
@@ -69,15 +53,11 @@ class NetworkMonitor(context: Context) {
         running = true
         cm.activeNetwork?.let { network -> cm.getNetworkCapabilities(network)?.let(::onCapabilitiesChanged) }
         registerSim2()
-        speedJob = probeExecutor.scheduleWithFixedDelay(::measureSpeed, 5, 30, TimeUnit.MINUTES)
-        measureSpeed()
     }
 
     fun stop() {
         if (!running) return
         running = false
-        speedJob?.cancel(false)
-        speedJob = null
         sim2?.let { manager ->
             if (Build.VERSION.SDK_INT >= 31) {
                 telephonyCallback?.let { callback -> runCatching { manager.unregisterTelephonyCallback(callback) } }
@@ -94,8 +74,6 @@ class NetworkMonitor(context: Context) {
 
     fun close() {
         stop()
-        probeExecutor.shutdownNow()
-        telephonyExecutor.shutdownNow()
     }
 
     /** Called by GatewayRuntime's single default-network callback. */
@@ -194,35 +172,4 @@ class NetworkMonitor(context: Context) {
         else -> if (type == 0) "unknown" else "mobile-$type"
     }
 
-    private fun measureSpeed() {
-        if (!running || !_metrics.value.internetConnected) return
-        telephonyExecutor.execute {
-            val started = System.nanoTime()
-            var connection: HttpURLConnection? = null
-            try {
-                connection = (URL("https://speed.cloudflare.com/__down?bytes=262144").openConnection() as HttpURLConnection).apply {
-                    connectTimeout = 8_000
-                    readTimeout = 12_000
-                    useCaches = false
-                }
-                var bytes = 0L
-                connection.inputStream.use { input ->
-                    val buffer = ByteArray(16 * 1024)
-                    while (bytes < 262_144) {
-                        val n = input.read(buffer)
-                        if (n <= 0) break
-                        bytes += n
-                    }
-                }
-                val seconds = (System.nanoTime() - started) / 1_000_000_000.0
-                if (bytes > 0 && seconds > 0) _metrics.update {
-                    it.copy(measuredDownloadMbps = bytes * 8.0 / seconds / 1_000_000.0, speedTestAtMs = System.currentTimeMillis())
-                }
-            } catch (_: Exception) {
-                _metrics.update { it.copy(measuredDownloadMbps = null, speedTestAtMs = System.currentTimeMillis()) }
-            } finally {
-                connection?.disconnect()
-            }
-        }
-    }
 }
