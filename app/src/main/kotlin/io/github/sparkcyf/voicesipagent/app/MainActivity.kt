@@ -52,6 +52,7 @@ import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalUriHandler
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
@@ -96,6 +97,7 @@ private fun Screen(rt: GatewayRuntime, modifier: Modifier, requestDialer: () -> 
     chooseDialer: () -> Unit, cancelDialer: () -> Unit, setTakeover: (Boolean) -> Unit, roleMessage: String) {
     val h by rt.health.collectAsState()
     val net by rt.networkMetrics.collectAsState()
+    val context = LocalContext.current
     val log by AppLog.tail.collectAsState()
     val cur by rt.settingsFlow.collectAsState()
     currentUiLang = UiLang.of(cur.uiLanguage)
@@ -144,7 +146,7 @@ private fun Screen(rt: GatewayRuntime, modifier: Modifier, requestDialer: () -> 
             Check(t("Исключён из экономии батареи", "Doze allowlisted"), p?.get(HealthKeys.DOZE_ALLOWLISTED) == true)
             if (p?.get(HealthKeys.DOZE_ALLOWLISTED) != true) {
                 OutlinedButton(onClick = {
-                    runCatching { startActivity(Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS)) }
+                    runCatching { context.startActivity(Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS)) }
                 }) { Text(if (currentUiLang == UiLang.AR) "إعدادات البطارية" else "Open battery settings") }
             }
             Check(t("Регистрация SIP", "SIP registration"), h.sip.ready, h.sip.detail)

@@ -82,7 +82,7 @@ class GatewayService : Service() {
                 }
             }
             networkJob = scope.launch {
-                runtime.networkMetrics.distinctUntilChanged().collect { metrics ->
+                runtime.networkMetrics.collect { metrics ->
                     if (foreground && runtime.health.value.needsForegroundService) {
                         nm.notify(NOTIFICATION_ID, build(summary(runtime.health.value, metrics)))
                     }

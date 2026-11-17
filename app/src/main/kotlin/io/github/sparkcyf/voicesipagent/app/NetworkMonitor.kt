@@ -162,7 +162,7 @@ class NetworkMonitor(context: Context) {
                 TelephonyCallback.DisplayInfoListener, TelephonyCallback.ServiceStateListener {
                 override fun onSignalStrengthsChanged(signalStrength: SignalStrength) = updateSignal(signalStrength)
                 override fun onDisplayInfoChanged(info: TelephonyDisplayInfo) {
-                    _metrics.update { it.copy(sim2Network = TelephonyManager.getNetworkTypeName(info.networkType)) }
+                    _metrics.update { it.copy(sim2Network = networkTypeName(info.networkType)) }
                 }
                 override fun onServiceStateChanged(serviceState: ServiceState) {
                     _metrics.update { it.copy(sim2Active = serviceState.state == ServiceState.STATE_IN_SERVICE) }
@@ -190,9 +190,21 @@ class NetworkMonitor(context: Context) {
         _metrics.update { it.copy(sim2SignalLevel = signal.level, sim2Dbm = dbm, sim2Active = true) }
     }
 
-    private fun networkName(manager: TelephonyManager): String = runCatching {
-        TelephonyManager.getNetworkTypeName(manager.dataNetworkType)
-    }.getOrDefault("unknown")
+    private fun networkName(manager: TelephonyManager): String = networkTypeName(runCatching { manager.dataNetworkType }.getOrDefault(0))
+
+    private fun networkTypeName(type: Int): String = when (type) {
+        TelephonyManager.NETWORK_TYPE_GPRS, TelephonyManager.NETWORK_TYPE_EDGE,
+        TelephonyManager.NETWORK_TYPE_CDMA, TelephonyManager.NETWORK_TYPE_1xRTT,
+        TelephonyManager.NETWORK_TYPE_IDEN -> "2G"
+        TelephonyManager.NETWORK_TYPE_UMTS, TelephonyManager.NETWORK_TYPE_EVDO_0,
+        TelephonyManager.NETWORK_TYPE_EVDO_A, TelephonyManager.NETWORK_TYPE_HSDPA,
+        TelephonyManager.NETWORK_TYPE_HSUPA, TelephonyManager.NETWORK_TYPE_HSPA,
+        TelephonyManager.NETWORK_TYPE_EVDO_B, TelephonyManager.NETWORK_TYPE_EHRPD,
+        TelephonyManager.NETWORK_TYPE_HSPAP -> "3G"
+        TelephonyManager.NETWORK_TYPE_LTE -> "LTE"
+        TelephonyManager.NETWORK_TYPE_NR -> "5G"
+        else -> if (type == 0) "unknown" else "mobile-$type"
+    }
 
     private fun measureSpeed() {
         if (!running || !_metrics.value.internetConnected) return
