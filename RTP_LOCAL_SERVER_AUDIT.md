@@ -62,22 +62,42 @@
 
 ## نتائج الاختبارات
 
-تم تشغيل:
+تم تجهيز Android SDK 36 وJDK 17 محلياً، ثم تشغيل اختبارات وحدات JVM المستقلة بنجاح:
 
 ```bash
-./gradlew test --no-daemon --stacktrace
+./gradlew --no-daemon --no-configuration-cache :sip:test
+./gradlew --no-daemon --no-configuration-cache :gateway:test
 ```
 
-النتيجة: **لم يبدأ الاختبار فعلياً** لأن بيئة التنفيذ لا تحتوي Android SDK:
+النتيجة:
 
 ```text
-SDK location not found
-ANDROID_HOME is not set
-ANDROID_SDK_ROOT is not set
-No local.properties with sdk.dir was present
+:sip:test       BUILD SUCCESSFUL
+:gateway:test   BUILD SUCCESSFUL
 ```
 
-لذلك لا يمكن اعتبار نتيجة Gradle دليلاً على نجاح أو فشل اختبارات Kotlin؛ الفشل بيئي قبل التجميع. يلزم تشغيل الاختبارات على جهاز/CI يحتوي Android SDK المتوافق مع المشروع، ثم تنفيذ:
+وهذا يشمل اختبارات RTP وSDP الجديدة في وحدة `sip`.
+
+تمت أيضاً محاولة تشغيل اختبارات Android الكاملة:
+
+```bash
+./gradlew --no-daemon --no-configuration-cache testDebugUnitTest --stacktrace
+```
+
+لكنها توقفت عند مهمة `:privileged:compileDebugAidl` لأن الساندبوكس ARM64، بينما أداة `aidl` التي يوفرها Android SDK الرسمي هي ملف x86-64:
+
+```text
+Exec format error
+```
+
+هذا عائق بنية للبيئة، وليس فشل اختبار أو خطأ ترجمة في ملفات المشروع. يلزم تشغيل Android unit tests و`assembleDebug` على CI أو جهاز x86-64 يحتوي Android SDK متوافقاً.
+
+على جهاز/CI متوافق، نفّذ:
+
+```bash
+./gradlew --no-daemon --no-configuration-cache testDebugUnitTest
+./gradlew --no-daemon --no-configuration-cache :app:assembleDebug
+```
 
 ```bash
 ./gradlew --no-daemon --no-configuration-cache testDebugUnitTest
