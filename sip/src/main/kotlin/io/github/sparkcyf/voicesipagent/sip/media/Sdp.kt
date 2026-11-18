@@ -75,25 +75,27 @@ object Sdp {
             when (line[0]) {
                 'm' -> {
                     if (seenAudio) { inAudio = false; continue }
-                    val parts = v.split(' ')
+                    val parts = v.trim().split(Regex("\\s+"))
                     val mediaPort = parts.getOrNull(1)?.substringBefore('/')?.toIntOrNull()
                     inAudio = parts[0] == "audio" && parts.size >= 4 && mediaPort != null && mediaPort in 0..65535
                     if (inAudio) {
                         seenAudio = true
                         port = mediaPort!!
-                        pts = parts.drop(3).mapNotNull { it.toIntOrNull() }
+                        pts = parts.drop(3).mapNotNull { it.toIntOrNull()?.takeIf { pt -> pt in 0..127 } }
                     }
                 }
                 'c' -> {
-                    val addr = v.split(' ').getOrNull(2)?.substringBefore('/')
+                    val addr = v.trim().split(Regex("\\s+")).getOrNull(2)?.substringBefore('/')
                     if (inAudio) mediaConn = addr else if (!seenAudio) sessionConn = addr
                 }
                 'a' -> {
                     if (seenAudio && !inAudio) continue
                     when {
                         v.startsWith("rtpmap:") -> {
-                            val pt = v.substring(7).substringBefore(' ').toIntOrNull()
-                            if (pt != null) rtpmap[pt] = v.substringAfter(' ').trim()
+                            val parts = v.substringAfter(':').trim().split(Regex("\\s+"), limit = 2)
+                            val pt = parts.getOrNull(0)?.toIntOrNull()
+                            val codec = parts.getOrNull(1)
+                            if (pt != null && pt in 0..127 && codec != null) rtpmap[pt] = codec
                         }
                         v == "sendrecv" || v == "sendonly" || v == "recvonly" || v == "inactive" -> direction = v
                     }

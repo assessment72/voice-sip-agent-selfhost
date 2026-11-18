@@ -55,7 +55,10 @@
   - يتأكد من أن المنفذ زوجي وداخل النطاق.
   - يتأكد من رفض النطاق المعكوس.
   - يتأكد من الإبلاغ عن نطاق لا يحتوي منفذاً زوجياً صالحاً.
-- اختبار `sdpRejectsInvalidMediaPort` في `MediaTest.kt`.
+  - يتحقق من قبول حزمة RTP من المنفذ المعلن ورفض حزمة من منفذ مختلف.
+- اختبارات `sdpRejectsInvalidMediaPort` و`sdpToleratesWhitespaceAndDropsInvalidPayloadType` في `MediaTest.kt`.
+
+كما تم تحسين `Sdp.parse` لتحمل المسافات المتعددة في أسطر `m=`, `c=` و`a=rtpmap`، مع إسقاط payload types خارج نطاق RTP الديناميكي/الثابت `0..127`.
 
 ## نتائج الاختبارات
 
