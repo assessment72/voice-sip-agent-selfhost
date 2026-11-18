@@ -76,10 +76,11 @@ object Sdp {
                 'm' -> {
                     if (seenAudio) { inAudio = false; continue }
                     val parts = v.split(' ')
-                    inAudio = parts[0] == "audio" && parts.size >= 4 && parts[1].substringBefore('/').toIntOrNull() != null
+                    val mediaPort = parts.getOrNull(1)?.substringBefore('/')?.toIntOrNull()
+                    inAudio = parts[0] == "audio" && parts.size >= 4 && mediaPort != null && mediaPort in 0..65535
                     if (inAudio) {
                         seenAudio = true
-                        port = parts[1].substringBefore('/').toInt()
+                        port = mediaPort!!
                         pts = parts.drop(3).mapNotNull { it.toIntOrNull() }
                     }
                 }
