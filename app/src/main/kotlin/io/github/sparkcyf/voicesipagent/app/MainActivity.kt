@@ -5,6 +5,8 @@ import android.os.Build
 import android.Manifest
 import android.content.pm.PackageManager
 import android.content.Intent
+import android.content.ClipData
+import android.content.ClipboardManager
 import android.provider.Settings
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.layout.Arrangement
@@ -60,6 +62,8 @@ import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import io.github.sparkcyf.voicesipagent.gateway.BusyPolicy
+import io.github.sparkcyf.voicesipagent.gateway.CallCenterEmployee
+import io.github.sparkcyf.voicesipagent.gateway.EmployeeDestination
 import io.github.sparkcyf.voicesipagent.privileged.HealthKeys
 import io.github.sparkcyf.voicesipagent.privileged.AudioMethod
 import io.github.sparkcyf.voicesipagent.privileged.CallAccess
@@ -69,6 +73,9 @@ class MainActivity : DialerRoleActivity() {
     private val smsPermissionRequest = registerForActivityResult(
         androidx.activity.result.contract.ActivityResultContracts.RequestMultiplePermissions()
     ) { granted ->
+        if (granted[Manifest.permission.READ_PHONE_STATE] == true) {
+            GatewayRuntime.get(this).refreshCallAccess()
+        }
         if (granted[Manifest.permission.SEND_SMS] == true) {
             GatewayRuntime.get(this).showDialerMessage("SMS sending enabled.")
         }
@@ -76,12 +83,7 @@ class MainActivity : DialerRoleActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        requestPhoneStateAccessIfNeeded()
-        val missingSms = arrayOf(Manifest.permission.RECEIVE_SMS, Manifest.permission.SEND_SMS)
-            .filter { checkSelfPermission(it) != PackageManager.PERMISSION_GRANTED }
-        if (missingSms.isNotEmpty()) smsPermissionRequest.launch(missingSms.toTypedArray())
         val runtime = GatewayRuntime.get(this)
-        GatewayService.start(this)
         setContent {
             MaterialTheme(colorScheme = if (isSystemInDarkTheme()) darkColorScheme() else lightColorScheme()) {
                 val message by roleMessage.collectAsState()
@@ -89,6 +91,16 @@ class MainActivity : DialerRoleActivity() {
                     ::chooseDialerInSettings, ::cancelDialerChange, ::setTakeoverFromUi, message) }
             }
         }
+        // Let Compose draw the first screen before Android displays permission sheets. Request
+        // related permissions through one launcher instead of launching two sheets concurrently.
+        window.decorView.postDelayed({
+            val missing = arrayOf(
+                Manifest.permission.READ_PHONE_STATE,
+                Manifest.permission.RECEIVE_SMS,
+                Manifest.permission.SEND_SMS,
+            ).filter { checkSelfPermission(it) != PackageManager.PERMISSION_GRANTED }
+            if (missing.isNotEmpty()) smsPermissionRequest.launch(missing.toTypedArray())
+        }, 500L)
     }
 }
 
@@ -99,6 +111,7 @@ private fun Screen(rt: GatewayRuntime, modifier: Modifier, requestDialer: () -> 
     val net by rt.networkMetrics.collectAsState()
     val context = LocalContext.current
     val log by AppLog.tail.collectAsState()
+    var logActionMessage by remember { mutableStateOf("") }
     val cur by rt.settingsFlow.collectAsState()
     currentUiLang = UiLang.of(cur.uiLanguage)
     CompositionLocalProvider(LocalLayoutDirection provides
@@ -210,8 +223,33 @@ private fun Screen(rt: GatewayRuntime, modifier: Modifier, requestDialer: () -> 
             Text(h.calls.summary)
             Text(h.session ?: t("Нет активной сессии", "No active session"))
         }
+        ClinicRoutingSection(rt)
         SettingsSection(rt)
         Section(t("Журнал", "Log")) {
+            val sharedLog = remember(log) { LogShareSanitizer.sanitize(log.takeLast(200).joinToString("\n")) }
+            Text(t("تُخفى كلمات المرور وبيانات اعتماد SIP المعروفة تلقائيًا؛ راجع المحتوى قبل مشاركته.",
+                "Known passwords and SIP credentials are masked automatically; review before sharing."),
+                style = MaterialTheme.typography.bodySmall)
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedButton(onClick = {
+                    val copied = runCatching {
+                        context.getSystemService(ClipboardManager::class.java)
+                            .setPrimaryClip(ClipData.newPlainText("Voice SIP Agent log", sharedLog))
+                    }.isSuccess
+                    logActionMessage = if (copied) t("تم نسخ السجل المنقّى", "Sanitized log copied")
+                        else t("تعذر نسخ السجل", "Could not copy log")
+                }) { Text(t("نسخ السجل", "Copy log")) }
+                OutlinedButton(onClick = {
+                    val send = Intent(Intent.ACTION_SEND).apply {
+                        type = "text/plain"
+                        putExtra(Intent.EXTRA_SUBJECT, t("سجل Voice SIP Agent", "Voice SIP Agent log"))
+                        putExtra(Intent.EXTRA_TEXT, sharedLog)
+                    }
+                    runCatching { context.startActivity(Intent.createChooser(send, t("مشاركة السجل", "Share log"))) }
+                        .onFailure { logActionMessage = t("تعذر فتح المشاركة", "Could not open sharing") }
+                }) { Text(t("مشاركة السجل", "Share log")) }
+            }
+            if (logActionMessage.isNotBlank()) Text(logActionMessage, style = MaterialTheme.typography.bodySmall)
             Text(log.takeLast(60).reversed().joinToString("\n"), fontFamily = FontFamily.Monospace,
                 fontSize = 11.sp, lineHeight = 14.sp)
         }
@@ -240,8 +278,8 @@ private fun Screen(rt: GatewayRuntime, modifier: Modifier, requestDialer: () -> 
                     enabled = { it != AudioMethod.OFFICIAL || Build.VERSION.SDK_INT >= 33 }, info = "audio_method") {
                     rt.applySettings(cur.copy(audioMethod = it))
                 }
-                Text(t("★ Если звонок соединился, но никого не слышно — переключай именно этот параметр (подробно в ⓘ).",
-                        "★ If a call connects but nobody is heard, switch this very setting (details in ⓘ)."),
+                Text(t("إذا اتصلت المكالمة ولم يسمع المتصل القائمة، جرّب طريقة صوت أخرى عند عدم وجود مكالمة، ثم راجع سجل IVR وCall audio بعد إنهاء الاختبار.",
+                        "If the call connects but the caller cannot hear the menu, try another audio method while idle, then inspect IVR and Call audio logs after the test call."),
                     style = MaterialTheme.typography.bodySmall)
                 Toggle(t("Глушить динамик шлюза", "Mute local call output"), cur.muteEarpiece, { rt.setMuteEarpiece(it) }, info = "mute_earpiece") {
                     val backendAvailable = when (cur.audioMethod) {
@@ -329,7 +367,6 @@ private fun SettingsSection(rt: GatewayRuntime) {
     var port by remember(cur) { mutableStateOf(cur.port.toString()) }
     var user by remember(cur) { mutableStateOf(cur.username) }
     var password by remember(cur) { mutableStateOf(cur.password) }
-    var target by remember(cur) { mutableStateOf(cur.inboundTarget) }
     var prefixes by remember(cur) { mutableStateOf(cur.allowedPrefixes) }
     var domain by remember(cur) { mutableStateOf(cur.domain) }
     var stack by remember(cur) { mutableStateOf(cur.sipStack) }
@@ -395,7 +432,10 @@ private fun SettingsSection(rt: GatewayRuntime) {
             value = password, onValueChange = { password = it }, label = { Text(t("Пароль", "Password")) },
             visualTransformation = PasswordVisualTransformation(), singleLine = true, modifier = Modifier.fillMaxWidth(),
         )
-        Field(t("Куда переводить входящие (пусто = логин)", "Cellular inbound -> SIP target (blank = username)"), target, info = "inbound_target") { target = it }
+        Text(
+            t("مكالمات SIM الواردة تستخدم القائمة المحلية: 1 للطبيب و2 للاستقبال.", "Incoming SIM calls use the local IVR: 1 = doctor, 2 = reception."),
+            style = MaterialTheme.typography.bodySmall,
+        )
         Field(t("Префиксы для исходящих (через запятую, пусто = любой)", "Allowed dial-out prefixes (comma separated, empty = any)"), prefixes, info = "prefixes") { prefixes = it }
         Choice(t("Второй звонок при занятости", "Second call while busy"), BusyPolicy.entries, busy,
             { when (it) { BusyPolicy.REJECT -> t("Отклонять", "Reject"); BusyPolicy.IGNORE -> t("Отдать звонилке", "Leave to phone") } }, info = "busy") {
@@ -409,11 +449,118 @@ private fun SettingsSection(rt: GatewayRuntime) {
                     registrarLeaseSec = lease.toIntOrNull()?.takeIf { it in 30..86400 } ?: cur.registrarLeaseSec,
                     registrarPassword = regPassword,
                     server = server, port = port.toIntOrNull() ?: transport.defaultPort, username = user, password = password,
-                    inboundTarget = target, allowedPrefixes = prefixes, domain = domain,
+                    allowedPrefixes = prefixes, domain = domain,
                     sipStack = stack, sipTransport = transport.id, srtp = srtp.id, busyPolicy = busy,
                 ),
             )
         }) { Text(t("Сохранить и применить", "Save & apply")) }
+    }
+}
+
+@Composable
+private fun ClinicRoutingSection(rt: GatewayRuntime) {
+    val store = rt.clinicEmployeeStore
+    var employees by remember { mutableStateOf(store.list()) }
+    var editingId by remember { mutableStateOf<String?>(null) }
+    var name by remember { mutableStateOf("") }
+    var extension by remember { mutableStateOf("1") }
+    var kind by remember { mutableStateOf("sip") }
+    var destination by remember { mutableStateOf("") }
+    var message by remember { mutableStateOf("") }
+
+    fun clearForm() {
+        editingId = null
+        name = ""
+        extension = if (employees.none { it.extension == "1" }) "1" else "2"
+        kind = "sip"
+        destination = ""
+        message = ""
+    }
+
+    Section(t("تحويلات الموظفين", "Employee routing")) {
+        Text(t("المتصل يضغط 1 للطبيب أو 2 للاستقبال. احفظ وجهة SIP لكل تحويلة.",
+            "Caller presses 1 for the doctor or 2 for reception. Save a SIP destination for each."),
+            style = MaterialTheme.typography.bodySmall)
+        Choice(t("التحويلة", "Extension"), listOf("1", "2"), extension,
+            { if (it == "1") t("1 — الطبيب", "1 — Doctor") else t("2 — الاستقبال", "2 — Reception") }) {
+            extension = it
+        }
+        Choice(t("نوع الوجهة", "Destination type"), listOf("sip", "mobile"), kind,
+            { if (it == "sip") "SIP" else t("رقم جوال عبر SIP", "Mobile via SIP trunk") }) { kind = it }
+        Field(t("اسم الموظف", "Employee name"), name) { name = it }
+        Field(
+            if (kind == "sip") t("وجهة SIP (مثال: sip:doctor@host)", "SIP destination (e.g. sip:doctor@host)")
+            else t("رقم دولي بصيغة +966…", "International number in +966… format"),
+            destination,
+            if (kind == "mobile") KeyboardType.Phone else KeyboardType.Uri,
+        ) { destination = it }
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Button(
+                onClick = {
+                    val wasEditing = editingId != null
+                    try {
+                        store.upsert(name, kind, destination, priority = extension.toInt(),
+                            extension = extension, id = editingId)
+                        employees = store.list()
+                        message = if (wasEditing) t("تم تحديث الموظف", "Employee updated") else t("تمت إضافة الموظف", "Employee added")
+                        editingId = null
+                        name = ""
+                        destination = ""
+                        extension = if (employees.none { it.extension == "1" }) "1" else "2"
+                    } catch (e: Exception) {
+                        message = if (e.message?.contains("duplicate extension") == true)
+                            t("هذه التحويلة مستخدمة بالفعل؛ اختر التحويلة الأخرى.", "That extension is already in use; choose the other one.")
+                        else t("تعذر الحفظ. تحقق من الاسم ووجهة SIP أو رقم الجوال.", "Could not save. Check the name and SIP destination or mobile number.")
+                    }
+                },
+                enabled = name.isNotBlank() && destination.isNotBlank(),
+            ) { Text(if (editingId == null) t("إضافة الموظف", "Add employee") else t("حفظ التعديل", "Save changes")) }
+            if (editingId != null) OutlinedButton(onClick = ::clearForm) { Text(t("إلغاء", "Cancel")) }
+        }
+        if (message.isNotBlank()) Text(message, style = MaterialTheme.typography.bodySmall)
+        if (employees.isEmpty()) Text(t("لم تُضف وجهات بعد. أضف الطبيب على 1 والاستقبال على 2.",
+            "No destinations yet. Add the doctor on 1 and reception on 2."))
+        employees.sortedBy { it.extension }.forEach { employee ->
+            EmployeeRouteRow(employee, onEdit = {
+                editingId = employee.id
+                name = employee.displayName
+                extension = employee.extension.ifBlank { "1" }
+                kind = when (employee.destination) {
+                    is EmployeeDestination.Sip -> "sip"
+                    is EmployeeDestination.Mobile -> "mobile"
+                }
+                destination = when (val d = employee.destination) {
+                    is EmployeeDestination.Sip -> d.uri
+                    is EmployeeDestination.Mobile -> d.e164
+                }
+                message = ""
+            }, onDelete = {
+                store.delete(employee.id)
+                employees = store.list()
+                if (editingId == employee.id) clearForm()
+            })
+        }
+    }
+}
+
+@Composable
+private fun EmployeeRouteRow(employee: CallCenterEmployee, onEdit: () -> Unit, onDelete: () -> Unit) {
+    val role = when (employee.extension) {
+        "1" -> t("الطبيب (1)", "Doctor (1)")
+        "2" -> t("الاستقبال (2)", "Reception (2)")
+        else -> t("تحويلة ${employee.extension}", "Extension ${employee.extension}")
+    }
+    Column(Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
+        Text("$role — ${employee.displayName}", style = MaterialTheme.typography.titleSmall)
+        val target = when (val d = employee.destination) {
+            is EmployeeDestination.Sip -> d.uri
+            is EmployeeDestination.Mobile -> d.e164
+        }
+        Text(target, style = MaterialTheme.typography.bodySmall)
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            TextButton(onClick = onEdit) { Text(t("تعديل", "Edit")) }
+            TextButton(onClick = onDelete) { Text(t("حذف", "Delete")) }
+        }
     }
 }
 

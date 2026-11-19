@@ -6,38 +6,32 @@ import io.github.sparkcyf.voicesipagent.voice.PcmFormat
 import java.io.File
 import java.io.RandomAccessFile
 
-/** Pure call-flow state machine; audio playback and CallLeg wiring are supplied by the app layer. */
-class ClinicIvrSession(private val policy: RecordingPolicy = RecordingPolicy()) {
-    enum class State { ANNOUNCEMENT, MENU, QUEUED, CONNECTING, RECORDING_MESSAGE, COMPLETE }
+/** Side-effect-free IVR state machine; playback and dialing are wired by [CallBridge]. */
+class ClinicIvrSession {
+    enum class State { ANNOUNCEMENT, MENU, CONNECTING, COMPLETE }
     sealed interface Action {
-        data object PlayAnnouncement : Action
-        data object PlayMenu : Action
-        data object QueueCaller : Action
-        data object ConnectNextEmployee : Action
-        data object StartMessageRecording : Action
-        data object HangUp : Action
+        data class ConnectEmployee(val extension: String) : Action
         data class InvalidDigit(val digit: Char) : Action
     }
 
     var state: State = State.ANNOUNCEMENT
         private set
 
-    fun announcementFinished(): Action = when (state) {
-        State.ANNOUNCEMENT -> { state = State.MENU; Action.PlayMenu }
-        else -> Action.InvalidDigit('#')
+    fun announcementFinished() {
+        if (state == State.ANNOUNCEMENT) state = State.MENU
     }
 
+    /** Accept digits while the prompt is playing too, in case the caller presses early. */
     fun digitReceived(digit: Char): Action {
-        if (state != State.MENU) return Action.InvalidDigit(digit)
-        return when (digit) {
-            '1' -> { state = State.QUEUED; Action.QueueCaller }
-            '0' -> { state = State.CONNECTING; Action.ConnectNextEmployee }
-            '2' -> {
-                state = State.RECORDING_MESSAGE
-                if (policy.mayStartRecording(announcementPlayed = true)) Action.StartMessageRecording else Action.HangUp
-            }
-            else -> Action.InvalidDigit(digit)
-        }
+        if (state != State.ANNOUNCEMENT && state != State.MENU) return Action.InvalidDigit(digit)
+        return if (digit == '1' || digit == '2') {
+            state = State.CONNECTING
+            Action.ConnectEmployee(digit.toString())
+        } else Action.InvalidDigit(digit)
+    }
+
+    fun retry() {
+        if (state != State.COMPLETE) state = State.ANNOUNCEMENT
     }
 
     fun complete() { state = State.COMPLETE }

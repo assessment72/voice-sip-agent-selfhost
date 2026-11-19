@@ -91,17 +91,28 @@ class GatewayRuntime private constructor(context: Context) {
     private val app = context.applicationContext
     private val worker = newWorker()
     val settingsStore = SettingsStore(app)
+    val clinicEmployeeStore = ClinicEmployeeStore(app)
+    private val ivrMenuPcm: ShortArray by lazy(LazyThreadSafetyMode.SYNCHRONIZED) {
+        val bytes = app.resources.openRawResource(R.raw.ivr_menu).use { it.readBytes() }
+        require(bytes.size % 2 == 0) { "IVR prompt PCM has an incomplete sample" }
+        ShortArray(bytes.size / 2) { i ->
+            val lo = bytes[i * 2].toInt() and 0xff
+            val hi = bytes[i * 2 + 1].toInt()
+            ((hi shl 8) or lo).toShort()
+        }
+    }
     private val _settings = MutableStateFlow(settingsStore.load())
     val settingsFlow: StateFlow<GatewaySettings> = _settings
     val settings: GatewaySettings get() = _settings.value
 
-    // Service entry points can run before the worker initializes. Use the actual saved switch and
-    // role immediately so opening the app or receiving BOOT_COMPLETED cannot flash an idle notification.
-    private val _health = MutableStateFlow(run {
-        val holds = holdsDialer()
-        HealthState(takeover = settings.takeover, holdsDialer = holds,
-            effectiveCallAccess = CallAccess.effective(settings.callAccess, Build.VERSION.SDK_INT, holds))
-    })
+    // Keep construction free of synchronous Telecom binder calls. The actual dialer role is
+    // refreshed on the worker in start()/configureCallAccess before readiness is reported.
+    private val _health = MutableStateFlow(
+        HealthState(
+            takeover = settings.takeover,
+            effectiveCallAccess = CallAccess.effective(settings.callAccess, Build.VERSION.SDK_INT, false),
+        ),
+    )
     val health: StateFlow<HealthState> = _health
     val networkMetrics: StateFlow<NetworkMetrics> get() = networkMonitor.metrics
     private val _dialerMessage = MutableStateFlow("")
@@ -666,6 +677,9 @@ class GatewayRuntime private constructor(context: Context) {
             dialPolicyForA = { n -> if (cellular.isEmergencyNumber(n)) HangupCause.FORBIDDEN else null },
             recordingDirectory = File(app.filesDir, "clinic-recordings"),
             log = { AppLog.i("bridge: $it") },
+            localCellularIvr = !loopback,
+            ivrEmployees = clinicEmployeeStore::list,
+            ivrPromptSamples = { ivrMenuPcm },
         )
         b.addListener { session ->
             val description = describe(session)
@@ -703,7 +717,7 @@ class GatewayRuntime private constructor(context: Context) {
         val old = settings
         settingsStore.save(new)
         _settings.value = new
-        AppLog.i("settings saved ($new)")
+        AppLog.i("settings saved (serverMode=${new.serverMode}, takeover=${new.takeover}, audioMethod=${new.audioMethod}, callAccess=${new.callAccess}; SIP credentials and addresses omitted)")
         val platformOnly = old.copy(audioMethod = new.audioMethod, callAccess = new.callAccess,
             muteEarpiece = new.muteEarpiece, sipDebugLog = new.sipDebugLog,
             keepDefaultDialer = new.keepDefaultDialer) == new

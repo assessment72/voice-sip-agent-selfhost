@@ -6,6 +6,7 @@ import io.github.sparkcyf.voicesipagent.voice.HangupCause
 import io.github.sparkcyf.voicesipagent.voice.LegState
 import io.github.sparkcyf.voicesipagent.voice.MediaPort
 import io.github.sparkcyf.voicesipagent.voice.Party
+import io.github.sparkcyf.voicesipagent.voice.PcmFormat
 import io.github.sparkcyf.voicesipagent.voice.redactNumber
 import java.io.File
 import java.util.concurrent.CopyOnWriteArrayList
@@ -35,6 +36,14 @@ class BridgeSession internal constructor(
     internal var mediaTimer: ScheduledFuture<*>? = null
     internal val recordings = mutableListOf<PcmWavRecorder>()
     val ivr = ClinicIvrSession()
+    internal var localIvr = false
+    internal var ivrPromptSamples: ShortArray? = null
+    internal var ivrEmployees: List<CallCenterEmployee> = emptyList()
+    internal var ivrPromptAttempts = 0
+    internal var ivrInputTimer: ScheduledFuture<*>? = null
+    internal var ivrPlayback: MediaBridge? = null
+    internal var ivrPort: IvrMediaPort? = null
+    internal var recordedInboundPort: MediaPort? = null
 
     override fun toString() =
         "session#$id[$origin ${inbound.kind}:${inbound.state} -> ${outbound?.kind}:${outbound?.state}]"
@@ -63,6 +72,10 @@ class CallBridge(
     private val dialPolicyForA: DialPolicy = DialPolicy { null },
     private val recordingDirectory: File? = null,
     private val log: (String) -> Unit = {},
+    private val localCellularIvr: Boolean = false,
+    private val ivrEmployees: () -> List<CallCenterEmployee> = { emptyList() },
+    private val ivrPromptSamples: () -> ShortArray? = { null },
+    private val ivrInputTimeoutMs: Long = 10_000,
 ) {
     private val executor: ScheduledExecutorService =
         ScheduledThreadPoolExecutor(1) { r -> Thread(r, "call-bridge").apply { isDaemon = true } }.apply {
@@ -147,26 +160,52 @@ class CallBridge(
             if (config.busyPolicy == BusyPolicy.REJECT || from === sideB) leg.hangup(HangupCause.BUSY)
             return
         }
-        val target = route.targetFor(leg)
-        if (target.isNullOrEmpty()) {
+        val useLocalIvr = localCellularIvr && from === sideA && from.name == "cellular"
+        val target = if (useLocalIvr) null else route.targetFor(leg)
+        if (!useLocalIvr && target.isNullOrEmpty()) {
             log("no route for ${from.name} call to ${redactNumber(leg.target)}")
             leg.hangup(HangupCause.NOT_FOUND)
             return
         }
-        if (to === sideA) {
-            val veto = dialPolicyForA.check(target)
-                ?: if (config.allowedDialPrefixes.isNotEmpty() && config.allowedDialPrefixes.none(target::startsWith)) HangupCause.FORBIDDEN else null
+        if (!useLocalIvr && to === sideA) {
+            val dialTarget = target!!
+            val veto = dialPolicyForA.check(dialTarget)
+                ?: if (config.allowedDialPrefixes.isNotEmpty() && config.allowedDialPrefixes.none(dialTarget::startsWith)) HangupCause.FORBIDDEN else null
             if (veto != null) {
-                log("refusing to dial ${redactNumber(target)} on ${to.name}: $veto")
+                log("refusing to dial ${redactNumber(dialTarget)} on ${to.name}: $veto")
                 leg.hangup(veto)
                 return
             }
         }
+        val prompt = if (useLocalIvr) runCatching { ivrPromptSamples() }.getOrNull() else null
+        val employees = if (useLocalIvr) runCatching { ivrEmployees() }.getOrDefault(emptyList()).filter { it.enabled } else emptyList()
+        if (useLocalIvr && (prompt == null || prompt.isEmpty() || employees.none { it.extension == "1" } || employees.none { it.extension == "2" } ||
+                runCatching { CallCenterPolicy(employees) }.isFailure)) {
+            log("local IVR not ready: configure enabled employees on extensions 1 and 2 and verify prompt audio")
+            leg.hangup(HangupCause.UNAVAILABLE)
+            return
+        }
         val s = BridgeSession(nextId++, from.name, leg)
         session = s
+        s.localIvr = useLocalIvr
+        if (useLocalIvr) {
+            s.ivrPromptSamples = prompt
+            s.ivrEmployees = employees
+        }
         leg.addListener(LegWatcher(s, inbound = true))
+        if (useLocalIvr) {
+            log("$s: answering cellular caller for local IVR")
+            s.inboundAnswerRequested = true
+            s.answerTimer = executor.schedule({
+                if (session === s && s.outbound == null) endSession(s, HangupCause.NO_ANSWER)
+            }, config.answerTimeoutMs, TimeUnit.MILLISECONDS)
+            leg.answer()
+            reevaluate(s)
+            notifyChanged(s)
+            return
+        }
         log("$s: ${from.name} ${redactNumber(leg.remote.number)} -> ${to.name} ${redactNumber(target)}")
-        val out = to.dial(target, leg.remote)
+        val out = to.dial(target!!, leg.remote)
         s.outbound = out
         out.addListener(LegWatcher(s, inbound = false))
         s.answerTimer = executor.schedule({
@@ -184,8 +223,10 @@ class CallBridge(
         override fun onStateChanged(leg: CallLeg, state: LegState) = post { reevaluate(s); notifyChanged(s) }
         override fun onMediaChanged(leg: CallLeg, media: MediaPort?) = post { reevaluate(s) }
         override fun onDtmf(leg: CallLeg, digit: Char, durationMs: Int) = post {
-            val ivrAction = s.ivr.digitReceived(digit)
-            if (ivrAction !is ClinicIvrSession.Action.InvalidDigit) log("$s: IVR action=$ivrAction")
+            if (s.localIvr && s.outbound == null) {
+                handleIvrDigit(s, digit)
+                return@post
+            }
             val other = if (inbound) s.outbound else s.inbound
             if (other?.state == LegState.CONNECTED) other.sendDtmf(digit, durationMs)
         }
@@ -195,17 +236,26 @@ class CallBridge(
     private fun reevaluate(s: BridgeSession) {
         if (session !== s) return
         val a = s.inbound
-        val b = s.outbound ?: return
-
-        if (a.state == LegState.ENDED || b.state == LegState.ENDED) {
+        val b = s.outbound
+        if (a.state == LegState.ENDED || b?.state == LegState.ENDED) {
             val cause = if (a.state == LegState.ENDED) {
                 if (s.connectedAtMs == null) HangupCause.CANCELLED else HangupCause.NORMAL
             } else {
-                if (s.connectedAtMs == null) b.endCause ?: HangupCause.UNAVAILABLE else HangupCause.NORMAL
+                if (s.connectedAtMs == null) b?.endCause ?: HangupCause.UNAVAILABLE else HangupCause.NORMAL
             }
             endSession(s, cause)
             return
         }
+        if (s.localIvr && b == null) {
+            if (a.state == LegState.CONNECTED && a.media != null && s.ivrPlayback == null) startIvrPlayback(s)
+            if (a.media == null && s.ivrPlayback != null) {
+                s.ivrPlayback?.stop()
+                s.ivrPlayback = null
+                s.ivrPort = null
+            }
+            return
+        }
+        if (b == null) return
         if ((b.state == LegState.PROCEEDING || b.state == LegState.RINGING) && a.state == LegState.PROCEEDING) a.ring()
         if (b.state == LegState.CONNECTED && a.state < LegState.CONNECTED && !s.inboundAnswerRequested) {
             // Answer is asynchronous: media callbacks can arrive before acceptance is confirmed.
@@ -232,7 +282,7 @@ class CallBridge(
                     endSession(s, HangupCause.INTERNAL_ERROR)
                     return
                 }
-                val recordedA = recordingPort(s, ma, "inbound")
+                val recordedA = s.recordedInboundPort ?: recordingPort(s, ma, "inbound").also { s.recordedInboundPort = it }
                 val recordedB = recordingPort(s, mb, "outbound")
                 s.media = MediaBridge(recordedA, recordedB).also { it.start() }
                 s.mediaTimer?.cancel(false)
@@ -244,12 +294,123 @@ class CallBridge(
         }
     }
 
+    private fun startIvrPlayback(s: BridgeSession) {
+        if (session !== s || !s.localIvr || s.outbound != null) return
+        val callerPort = s.inbound.media ?: return
+        val prompt = s.ivrPromptSamples ?: return endSession(s, HangupCause.UNAVAILABLE)
+        if (callerPort.format != promptFormat) {
+            log("$s: cellular media format ${callerPort.format} is incompatible with IVR prompt $promptFormat")
+            endSession(s, HangupCause.INTERNAL_ERROR)
+            return
+        }
+        s.answerTimer?.cancel(false)
+        s.answerTimer = null
+        s.ivrInputTimer?.cancel(false)
+        s.ivrInputTimer = null
+        s.ivrPromptAttempts++
+        s.ivr.retry()
+        val playbackPort = IvrMediaPort(
+            prompt = prompt,
+            onDigit = { digit -> post { handleIvrDigit(s, digit) } },
+            onPromptFinished = { post { onIvrPromptFinished(s) } },
+        )
+        s.ivrPort = playbackPort
+        val recorded = s.recordedInboundPort ?: recordingPort(s, callerPort, "inbound").also { s.recordedInboundPort = it }
+        s.ivrPlayback = try {
+            MediaBridge(recorded, playbackPort).also { it.start() }
+        } catch (e: Exception) {
+            log("$s: IVR media failed: ${e.message}")
+            endSession(s, HangupCause.INTERNAL_ERROR)
+            return
+        }
+        log("$s: IVR prompt attempt ${s.ivrPromptAttempts} started")
+    }
+
+    private fun onIvrPromptFinished(s: BridgeSession) {
+        if (session !== s || !s.localIvr || s.outbound != null) return
+        s.ivr.announcementFinished()
+        val playback = s.ivrPlayback
+        log("$s: IVR prompt ended; frames=${playback?.frames ?: 0}, promptPeak=${playback?.peakB ?: 0} (remote audibility not verified)")
+        s.ivrInputTimer?.cancel(false)
+        s.ivrInputTimer = executor.schedule({
+            if (session === s && s.outbound == null) retryIvr(s, "no extension entered")
+        }, ivrInputTimeoutMs, TimeUnit.MILLISECONDS)
+    }
+
+    private fun handleIvrDigit(s: BridgeSession, digit: Char) {
+        if (session !== s || !s.localIvr || s.outbound != null) return
+        when (val action = s.ivr.digitReceived(digit)) {
+            is ClinicIvrSession.Action.InvalidDigit -> {
+                log("$s: invalid IVR digit ${action.digit}")
+                retryIvr(s, "invalid extension")
+            }
+            is ClinicIvrSession.Action.ConnectEmployee -> {
+                s.ivrInputTimer?.cancel(false)
+                s.ivrInputTimer = null
+                val decision = runCatching { ClinicCallRouter(CallCenterPolicy(s.ivrEmployees)).route(digit) }
+                    .getOrNull()
+                val employeeId = (decision as? RouteDecision.Connect)?.employeeId
+                val employee = employeeId?.let { id -> s.ivrEmployees.firstOrNull { it.id == id } }
+                if (employee == null) {
+                    log("$s: no enabled employee for extension ${action.extension}")
+                    retryIvr(s, "extension unavailable")
+                    return
+                }
+                s.ivr.complete()
+                stopIvrPlayback(s)
+                val target = when (val destination = employee.destination) {
+                    is EmployeeDestination.Sip -> destination.uri
+                    is EmployeeDestination.Mobile -> destination.e164
+                }
+                val outbound = runCatching { sideB.dial(target, s.inbound.remote) }.getOrElse {
+                    log("$s: employee dial failed: ${it.javaClass.simpleName}")
+                    endSession(s, HangupCause.UNAVAILABLE)
+                    return
+                }
+                s.outbound = outbound
+                outbound.addListener(LegWatcher(s, inbound = false))
+                s.answerTimer?.cancel(false)
+                s.answerTimer = executor.schedule({
+                    if (session === s && s.connectedAtMs == null) {
+                        log("$s: employee ${employee.id} did not answer")
+                        endSession(s, HangupCause.NO_ANSWER)
+                    }
+                }, employee.ringSeconds.toLong(), TimeUnit.SECONDS)
+                log("$s: extension ${action.extension} -> employee ${employee.id}, dialing ${sideB.name}")
+                reevaluate(s)
+                notifyChanged(s)
+            }
+        }
+    }
+
+    private fun retryIvr(s: BridgeSession, reason: String) {
+        if (session !== s || s.outbound != null) return
+        s.ivrInputTimer?.cancel(false)
+        s.ivrInputTimer = null
+        if (s.ivrPromptAttempts >= MAX_IVR_PROMPTS) {
+            log("$s: IVR ended after $reason")
+            endSession(s, HangupCause.NO_ANSWER)
+            return
+        }
+        stopIvrPlayback(s)
+        startIvrPlayback(s)
+    }
+
+    private fun stopIvrPlayback(s: BridgeSession) {
+        s.ivrPlayback?.stop()
+        s.ivrPlayback = null
+        s.ivrPort = null
+    }
+
     private fun endSession(s: BridgeSession, cause: HangupCause) {
         if (session !== s) return
         session = null
         s.endedAtMs = System.currentTimeMillis()
         s.answerTimer?.cancel(false)
         s.mediaTimer?.cancel(false)
+        s.ivrInputTimer?.cancel(false)
+        s.ivrInputTimer = null
+        stopIvrPlayback(s)
         s.media?.stop()
         s.media = null
         s.recordings.toList().forEach { runCatching { it.close() } }
@@ -269,5 +430,10 @@ class CallBridge(
         val recorder = PcmWavRecorder(file, port.format.sampleRate)
         s.recordings += recorder
         return RecordingMediaPort(port, recorder)
+    }
+
+    private companion object {
+        val promptFormat = PcmFormat.NARROWBAND
+        const val MAX_IVR_PROMPTS = 2
     }
 }

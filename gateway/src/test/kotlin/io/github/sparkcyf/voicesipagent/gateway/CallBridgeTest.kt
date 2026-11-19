@@ -31,6 +31,26 @@ class CallBridgeTest {
     @Before fun setUp() = build()
     @After fun tearDown() = bridge.stop()
 
+    private fun buildLocalIvr(inputTimeoutMs: Long = 10_000) {
+        bridge = CallBridge(
+            sideA = cell,
+            sideB = sip,
+            routeAtoB = { "legacy-target" },
+            routeBtoA = { it.target },
+            config = GatewayConfig(cellularInboundTarget = "legacy-target"),
+            localCellularIvr = true,
+            ivrEmployees = {
+                listOf(
+                    CallCenterEmployee("doctor", "Doctor", EmployeeDestination.Sip("sip:doctor@example.invalid"), extension = "1"),
+                    CallCenterEmployee("reception", "Reception", EmployeeDestination.Sip("sip:reception@example.invalid"), extension = "2"),
+                )
+            },
+            ivrPromptSamples = { ShortArray(160) { 700 } },
+            ivrInputTimeoutMs = inputTimeoutMs,
+        )
+        bridge.start()
+    }
+
     /** Waits for the bridge thread to drain, including tasks posted by the tasks it ran. */
     private fun settle() = repeat(3) { bridge.drain() }
 
@@ -60,6 +80,47 @@ class CallBridgeTest {
         assertEquals(LegState.ENDED, a.state)
         assertNull(bridge.session)
         assertNull("clock detached", cellPort.clock)
+    }
+
+    @Test
+    fun localIvrAnswersCellularBeforeDialingAndRoutesOneToDoctor() {
+        bridge.stop(); buildLocalIvr()
+        val caller = cell.incoming("+966500000001")
+        settle()
+        assertEquals(LegState.CONNECTED, caller.state)
+        assertTrue("employee must not be dialed before caller chooses", sip.dialed.isEmpty())
+
+        val cellPort = FakePort(isClockSource = true, fill = 0)
+        caller.mediaUp(cellPort); settle()
+        assertNotNull(bridge.session?.ivrPlayback)
+        caller.remoteDtmf('1'); settle()
+        assertEquals("sip:doctor@example.invalid", sip.dialed.single().target)
+        assertNull(bridge.session?.ivrPlayback)
+    }
+
+    @Test
+    fun localIvrRoutesTwoToReception() {
+        bridge.stop(); buildLocalIvr()
+        val caller = cell.incoming("+966500000002"); settle()
+        caller.mediaUp(FakePort(isClockSource = true, fill = 0)); settle()
+        caller.remoteDtmf('2'); settle()
+        assertEquals("sip:reception@example.invalid", sip.dialed.single().target)
+    }
+
+    @Test
+    fun localIvrRepeatsPromptOnceThenHangsUpAfterNoInput() {
+        bridge.stop(); buildLocalIvr(inputTimeoutMs = 30)
+        val caller = cell.incoming("+966500000003"); settle()
+        val cellPort = FakePort(isClockSource = true, fill = 0)
+        caller.mediaUp(cellPort); settle()
+        cellPort.clock!!.onFrame(); settle()
+        Thread.sleep(70); settle()
+        assertEquals(2, bridge.session?.ivrPromptAttempts)
+        cellPort.clock!!.onFrame(); settle()
+        Thread.sleep(70); settle()
+        assertNull(bridge.session)
+        assertEquals(HangupCause.NO_ANSWER, caller.endCause)
+        assertTrue(sip.dialed.isEmpty())
     }
 
     @Test

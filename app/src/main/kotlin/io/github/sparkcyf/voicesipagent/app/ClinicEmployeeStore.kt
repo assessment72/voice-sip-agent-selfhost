@@ -13,15 +13,33 @@ class ClinicEmployeeStore(context: Context) {
 
     @Synchronized fun list(): List<CallCenterEmployee> = runCatching {
         val array = JSONArray(prefs.getString(KEY_EMPLOYEES, "[]") ?: "[]")
-        buildList {
+        val ordered = buildList {
             for (i in 0 until array.length()) parse(array.optJSONObject(i))?.let(::add)
         }.sortedWith(compareBy<CallCenterEmployee> { it.priority }.thenBy { it.displayName.lowercase() })
+        val used = ordered.mapNotNull { it.extension.takeIf(String::isNotEmpty) }.toMutableSet()
+        ordered.map { employee ->
+            if (employee.extension.isNotEmpty()) employee else {
+                val next = generateSequence(1) { it + 1 }.map(Int::toString).first { it !in used }
+                used += next
+                employee.copy(extension = next)
+            }
+        }
     }.getOrDefault(emptyList())
 
-    @Synchronized fun upsert(name: String, kind: String, destination: String, priority: Int, enabled: Boolean = true): CallCenterEmployee {
-        val employee = parseEmployee(UUID.randomUUID().toString(), name, kind, destination, priority, enabled)
+    @Synchronized fun upsert(name: String, kind: String, destination: String, priority: Int,
+        enabled: Boolean = true, extension: String = "", id: String? = null): CallCenterEmployee {
+        val current = list()
+        val existing = id?.let { key -> current.firstOrNull { it.id == key } ?: error("employee not found") }
+        val normalizedExtension = extension.trim().ifEmpty {
+            generateSequence(1) { it + 1 }.map(Int::toString).first { candidate ->
+                current.none { it.id != existing?.id && it.extension == candidate }
+            }
+        }
+        require(current.none { it.id != existing?.id && it.extension == normalizedExtension }) { "duplicate extension" }
+        val employee = parseEmployee(existing?.id ?: UUID.randomUUID().toString(), name, kind, destination,
+            priority, enabled, 20, normalizedExtension)
             ?: error("invalid employee")
-        save(list().filterNot { it.id == employee.id } + employee)
+        save(current.filterNot { it.id == employee.id } + employee)
         return employee
     }
 
@@ -43,7 +61,7 @@ class ClinicEmployeeStore(context: Context) {
             array.put(JSONObject().apply {
                 put("id", e.id); put("name", e.displayName); put("kind", kindAndValue.first)
                 put("destination", kindAndValue.second); put("priority", e.priority)
-                put("enabled", e.enabled); put("ringSeconds", e.ringSeconds)
+                put("enabled", e.enabled); put("ringSeconds", e.ringSeconds); put("extension", e.extension)
             })
         }
         prefs.edit().putString(KEY_EMPLOYEES, array.toString()).apply()
@@ -52,17 +70,17 @@ class ClinicEmployeeStore(context: Context) {
     private fun parse(item: JSONObject?): CallCenterEmployee? = item?.let {
         parseEmployee(it.optString("id"), it.optString("name"), it.optString("kind"),
             it.optString("destination"), it.optInt("priority", 0), it.optBoolean("enabled", true),
-            it.optInt("ringSeconds", 20))
+            it.optInt("ringSeconds", 20), it.optString("extension", ""))
     }
 
     private fun parseEmployee(id: String, name: String, kind: String, destination: String,
-        priority: Int, enabled: Boolean, ringSeconds: Int = 20): CallCenterEmployee? = runCatching {
+        priority: Int, enabled: Boolean, ringSeconds: Int = 20, extension: String = ""): CallCenterEmployee? = runCatching {
         val target = when (kind.lowercase()) {
             "sip" -> EmployeeDestination.Sip(destination.trim())
             "mobile" -> EmployeeDestination.Mobile(destination.trim())
             else -> return null
         }
-        CallCenterEmployee(id.trim(), name.trim(), target, priority, enabled, ringSeconds)
+        CallCenterEmployee(id.trim(), name.trim(), target, priority, enabled, ringSeconds, extension.trim())
     }.getOrNull()
 
     companion object { private const val KEY_EMPLOYEES = "employees" }

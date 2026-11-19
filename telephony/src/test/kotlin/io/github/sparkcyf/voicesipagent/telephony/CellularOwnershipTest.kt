@@ -279,14 +279,38 @@ class CellularOwnershipTest {
         assertEquals(LegState.ENDED, leg.state)
     }
 
-    @Test fun holdStopsOwnedCallAndCancelsAudio() {
+    @Test fun holdSuspendsAudioAndRequestsResumeWithoutDisconnectingCall() {
         active(); open()
         state(call, Call.STATE_HOLDING)
-        assertEquals(LegState.ENDED, leg.state)
+        assertEquals(LegState.CONNECTED, leg.state)
         assertEquals(1, opened!!.closes)
         assertNull(leg.media)
-        verify(call).disconnect()
+        verify(call).unhold()
+        verify(call, never()).disconnect()
         verify(service).setMuted(false)
+    }
+
+    @Test fun resumedHeldCallReopensAudio() {
+        active(); open()
+        state(call, Call.STATE_HOLDING)
+        state(call, Call.STATE_ACTIVE)
+        assertEquals(LegState.CONNECTED, leg.state)
+        assertEquals(1, opened!!.closes)
+        assertEquals(1, audioTasks.size)
+        open()
+        assertEquals(2, openCount)
+        assertNotNull(leg.media)
+        verify(call).unhold()
+        verify(call, never()).disconnect()
+    }
+
+    @Test fun repeatedHoldRetriesResumeWithoutDroppingLeg() {
+        active(); open()
+        state(call, Call.STATE_HOLDING)
+        repeat(4) { delayedTasks.removeFirst().run() }
+        assertEquals(LegState.CONNECTED, leg.state)
+        verify(call, times(4)).unhold()
+        verify(call, never()).disconnect()
     }
 
     @Test fun exhaustedRetriesEndCallAndRestoreMute() {

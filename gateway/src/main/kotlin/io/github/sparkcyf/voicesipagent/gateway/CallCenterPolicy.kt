@@ -14,12 +14,17 @@ data class CallCenterEmployee(
     val priority: Int = 0,
     val enabled: Boolean = true,
     val ringSeconds: Int = 20,
+    /** Caller-facing DTMF extension, such as "1" for the doctor or "2" for reception. */
+    val extension: String = "",
 ) {
     init {
         require(id.isNotBlank()) { "employee id must not be blank" }
         require(displayName.isNotBlank()) { "employee display name must not be blank" }
         require(priority >= 0) { "priority must not be negative" }
         require(ringSeconds in 5..120) { "ringSeconds must be between 5 and 120" }
+        require(extension.isEmpty() || extension.matches(Regex("[0-9]{1,4}"))) {
+            "extension must be empty or contain 1 to 4 digits"
+        }
         when (destination) {
             is EmployeeDestination.Sip -> require(destination.uri.isNotBlank() && !destination.uri.any(Char::isWhitespace)) {
                 "SIP URI must be non-blank and contain no whitespace"
@@ -65,6 +70,8 @@ class CallCenterPolicy(
     init {
         require(maxAttempts in 1..2) { "the initial policy supports at most two attempts" }
         require(orderedEmployees.map { it.id }.toSet().size == orderedEmployees.size) { "employee ids must be unique" }
+        val extensions = orderedEmployees.map { it.extension }.filter { it.isNotEmpty() }
+        require(extensions.toSet().size == extensions.size) { "employee extensions must be unique" }
     }
 
     fun nextEmployees(): List<CallCenterEmployee> = orderedEmployees.filter { it.enabled }.take(maxAttempts)

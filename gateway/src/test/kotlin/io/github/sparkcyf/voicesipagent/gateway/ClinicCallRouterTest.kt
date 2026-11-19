@@ -43,9 +43,17 @@ class ClinicCallRouterTest {
     }
 
     @Test
-    fun unavailableSlotReturnsNoAvailableEmployee() {
+    fun explicitExtensionsRouteDoctorAndReceptionRegardlessOfPriority() {
+        val doctor = primary.copy(displayName = "Doctor", extension = "1", priority = 9)
+        val reception = mobile.copy(displayName = "Reception", extension = "2", priority = 0)
+        val explicitRouter = ClinicCallRouter(CallCenterPolicy(listOf(doctor, reception)))
+        assertEquals(RouteDecision.Connect("primary", doctor.destination), explicitRouter.route('1'))
+        assertEquals(RouteDecision.Connect("mobile", reception.destination), explicitRouter.route('2'))
+    }
+
+    @Test
+    fun zeroReturnsNoAvailableEmployeeWhenAllEmployeesWereAttempted() {
         assertEquals(RouteDecision.NoAvailableEmployee, router.route('0', setOf("primary", "mobile")))
-        assertEquals(RouteDecision.NoAvailableEmployee, router.route('2'))
     }
 
     @Test

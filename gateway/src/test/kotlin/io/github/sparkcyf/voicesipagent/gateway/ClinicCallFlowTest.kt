@@ -6,20 +6,28 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class ClinicCallFlowTest {
-    @Test fun ivrRequiresAnnouncementBeforeMenu() {
+    @Test fun menuRoutesOnlyDoctorAndReceptionExtensions() {
         val ivr = ClinicIvrSession()
-        assertEquals(ClinicIvrSession.Action.PlayMenu, ivr.announcementFinished())
+        ivr.announcementFinished()
         assertEquals(ClinicIvrSession.State.MENU, ivr.state)
-        assertEquals(ClinicIvrSession.Action.QueueCaller, ivr.digitReceived('1'))
-        assertEquals(ClinicIvrSession.State.QUEUED, ivr.state)
+        assertEquals(ClinicIvrSession.Action.ConnectEmployee("1"), ivr.digitReceived('1'))
+        assertEquals(ClinicIvrSession.State.CONNECTING, ivr.state)
+
+        val retry = ClinicIvrSession()
+        retry.announcementFinished()
+        assertEquals(ClinicIvrSession.Action.ConnectEmployee("2"), retry.digitReceived('2'))
     }
 
-    @Test fun ivrStartsMessageRecordingOnlyFromMenu() {
+    @Test fun invalidDigitsAreIgnoredAndRetryReturnsToAnnouncement() {
         val ivr = ClinicIvrSession()
-        assertTrue(ivr.digitReceived('2') is ClinicIvrSession.Action.InvalidDigit)
         ivr.announcementFinished()
-        assertEquals(ClinicIvrSession.Action.StartMessageRecording, ivr.digitReceived('2'))
-        assertEquals(ClinicIvrSession.State.RECORDING_MESSAGE, ivr.state)
+        assertEquals(ClinicIvrSession.Action.InvalidDigit('9'), ivr.digitReceived('9'))
+        ivr.retry()
+        assertEquals(ClinicIvrSession.State.ANNOUNCEMENT, ivr.state)
+        ivr.announcementFinished()
+        ivr.digitReceived('1')
+        ivr.retry()
+        assertEquals(ClinicIvrSession.State.ANNOUNCEMENT, ivr.state)
     }
 
     @Test fun wavRecorderWritesPcm16MonoHeader() {
