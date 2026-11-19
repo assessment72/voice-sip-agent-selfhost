@@ -1,0 +1,35 @@
+package io.github.sparkcyf.voicesipagent.gateway
+
+import java.nio.file.Files
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
+import org.junit.Test
+
+class ClinicCallFlowTest {
+    @Test fun ivrRequiresAnnouncementBeforeMenu() {
+        val ivr = ClinicIvrSession()
+        assertEquals(ClinicIvrSession.Action.PlayMenu, ivr.announcementFinished())
+        assertEquals(ClinicIvrSession.State.MENU, ivr.state)
+        assertEquals(ClinicIvrSession.Action.QueueCaller, ivr.digitReceived('1'))
+        assertEquals(ClinicIvrSession.State.QUEUED, ivr.state)
+    }
+
+    @Test fun ivrStartsMessageRecordingOnlyFromMenu() {
+        val ivr = ClinicIvrSession()
+        assertTrue(ivr.digitReceived('2') is ClinicIvrSession.Action.InvalidDigit)
+        ivr.announcementFinished()
+        assertEquals(ClinicIvrSession.Action.StartMessageRecording, ivr.digitReceived('2'))
+        assertEquals(ClinicIvrSession.State.RECORDING_MESSAGE, ivr.state)
+    }
+
+    @Test fun wavRecorderWritesPcm16MonoHeader() {
+        val file = Files.createTempFile("clinic-call-", ".wav").toFile()
+        PcmWavRecorder(file).use { it.writeFrame(shortArrayOf(0, 1000, -1000, 0)) }
+        val bytes = file.readBytes()
+        assertEquals("RIFF", bytes.copyOfRange(0, 4).toString(Charsets.US_ASCII))
+        assertEquals("WAVE", bytes.copyOfRange(8, 12).toString(Charsets.US_ASCII))
+        assertEquals("data", bytes.copyOfRange(36, 40).toString(Charsets.US_ASCII))
+        assertEquals(52, bytes.size)
+        file.delete()
+    }
+}

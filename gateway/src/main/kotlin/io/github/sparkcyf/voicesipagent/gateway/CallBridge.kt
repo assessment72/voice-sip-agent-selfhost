@@ -7,6 +7,7 @@ import io.github.sparkcyf.voicesipagent.voice.LegState
 import io.github.sparkcyf.voicesipagent.voice.MediaPort
 import io.github.sparkcyf.voicesipagent.voice.Party
 import io.github.sparkcyf.voicesipagent.voice.redactNumber
+import java.io.File
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.ScheduledThreadPoolExecutor
 import java.util.concurrent.ScheduledExecutorService
@@ -32,6 +33,8 @@ class BridgeSession internal constructor(
     internal var answerTimer: ScheduledFuture<*>? = null
     internal var inboundAnswerRequested = false
     internal var mediaTimer: ScheduledFuture<*>? = null
+    internal val recordings = mutableListOf<PcmWavRecorder>()
+    val ivr = ClinicIvrSession()
 
     override fun toString() =
         "session#$id[$origin ${inbound.kind}:${inbound.state} -> ${outbound?.kind}:${outbound?.state}]"
@@ -58,6 +61,7 @@ class CallBridge(
     private val routeBtoA: RouteTarget,
     private val config: GatewayConfig,
     private val dialPolicyForA: DialPolicy = DialPolicy { null },
+    private val recordingDirectory: File? = null,
     private val log: (String) -> Unit = {},
 ) {
     private val executor: ScheduledExecutorService =
@@ -180,6 +184,8 @@ class CallBridge(
         override fun onStateChanged(leg: CallLeg, state: LegState) = post { reevaluate(s); notifyChanged(s) }
         override fun onMediaChanged(leg: CallLeg, media: MediaPort?) = post { reevaluate(s) }
         override fun onDtmf(leg: CallLeg, digit: Char, durationMs: Int) = post {
+            val ivrAction = s.ivr.digitReceived(digit)
+            if (ivrAction !is ClinicIvrSession.Action.InvalidDigit) log("$s: IVR action=$ivrAction")
             val other = if (inbound) s.outbound else s.inbound
             if (other?.state == LegState.CONNECTED) other.sendDtmf(digit, durationMs)
         }
@@ -226,7 +232,9 @@ class CallBridge(
                     endSession(s, HangupCause.INTERNAL_ERROR)
                     return
                 }
-                s.media = MediaBridge(ma, mb).also { it.start() }
+                val recordedA = recordingPort(s, ma, "inbound")
+                val recordedB = recordingPort(s, mb, "outbound")
+                s.media = MediaBridge(recordedA, recordedB).also { it.start() }
                 s.mediaTimer?.cancel(false)
                 log("$s: media bridged")
             } else if (s.media != null && (ma == null || mb == null)) {
@@ -244,6 +252,8 @@ class CallBridge(
         s.mediaTimer?.cancel(false)
         s.media?.stop()
         s.media = null
+        s.recordings.toList().forEach { runCatching { it.close() } }
+        s.recordings.clear()
         if (s.inbound.state != LegState.ENDED) s.inbound.hangup(cause)
         s.outbound?.let { if (it.state != LegState.ENDED) it.hangup(if (cause == HangupCause.CANCELLED) HangupCause.CANCELLED else cause) }
         log("$s ended: $cause")
@@ -251,4 +261,13 @@ class CallBridge(
     }
 
     private fun notifyChanged(s: BridgeSession) = listeners.forEach { it.onSessionChanged(s) }
+
+    private fun recordingPort(s: BridgeSession, port: MediaPort, direction: String): MediaPort {
+        val dir = recordingDirectory ?: return port
+        dir.mkdirs()
+        val file = File(dir, "call-${s.id}-$direction-${s.startedAtMs}.wav")
+        val recorder = PcmWavRecorder(file, port.format.sampleRate)
+        s.recordings += recorder
+        return RecordingMediaPort(port, recorder)
+    }
 }

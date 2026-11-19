@@ -257,6 +257,24 @@ Full step-by-step (direct access, the registrar password, security) -
 
 ## Diagnostics (adb)
 
+## Browser control page
+
+The app also starts a small HTTP control page on the gateway phone at port `8787`.
+Find the phone's Wi-Fi address and open `http://PHONE_IP:8787/` from a browser on the same
+LAN, for example:
+
+```bash
+adb shell "ip -4 addr show wlan0 | grep -o 'inet [0-9.]*'"
+# then open http://192.168.1.50:8787/
+```
+
+The page shows SIP, internet, cellular-signal and network status. It provides buttons to turn the
+gateway on or off, restart SIP, copy the current status, view the recent in-memory application log,
+toggle SIP debug logging, mute the handset earpiece, and keep or release the default-dialer role.
+The browser asks for username `admin` and the same **Registrar password** configured in the app. A
+blank Registrar password disables browser access. Keep port `8787` behind HTTPS or a private VPN;
+plain HTTP exposes the password while it is being sent.
+
 ```bash
 R=io.github.sparkcyf.voicesipagent/io.github.sparkcyf.voicesipagent.app.AdbControlReceiver
 adb shell am broadcast -n $R --es op status                       # state summary to the log
