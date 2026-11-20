@@ -2,7 +2,7 @@ name: Android build and tests
 
 on:
   push:
-    branches: [audit/rtp-local-server-hardening]
+    branches: [audit/rtp-local-server-hardening, fix/proxy-to-yemen-target]
   pull_request:
     branches: [main, fix/proxy-to-yemen-target]
   workflow_dispatch:
