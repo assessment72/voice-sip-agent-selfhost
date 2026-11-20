@@ -10,9 +10,9 @@ class SipCallerIdPolicyTest {
     private val caller = Party("+967712345678", "Caller")
 
     @Test fun normalModePreservesCallerIdentity() {
-        val from = SipCallerIdPolicy.from(caller, "gateway", CallerIdMode.NORMAL)
+        val from = SipCallerIdPolicy.from(caller, "gateway", "sip:account@example.test", "example.test", false, CallerIdMode.NORMAL)
         assertEquals("Caller", from.displayName)
-        assertEquals("sip:+967712345678@anonymous.invalid", from.uri)
+        assertEquals("sip:account@example.test", from.uri)
         assertEquals("<sip:+967712345678@example.test>",
             SipCallerIdPolicy.assertedIdentity(caller, "example.test", CallerIdMode.NORMAL))
         assertNull(SipCallerIdPolicy.privacyHeader(CallerIdMode.NORMAL))
@@ -20,7 +20,7 @@ class SipCallerIdPolicyTest {
 
     @Test fun privacyModesUseAnonymousFromAndSuppressAssertedIdentity() {
         listOf(CallerIdMode.PRIVATE, CallerIdMode.UNKNOWN, CallerIdMode.HIDDEN).forEach { mode ->
-            val from = SipCallerIdPolicy.from(caller, "gateway", mode)
+            val from = SipCallerIdPolicy.from(caller, "gateway", "sip:account@example.test", "example.test", false, mode)
             assertEquals(mode.sipDisplayName, from.displayName)
             assertEquals("sip:anonymous@anonymous.invalid", from.uri)
             assertNull(SipCallerIdPolicy.assertedIdentity(caller, "example.test", mode))
