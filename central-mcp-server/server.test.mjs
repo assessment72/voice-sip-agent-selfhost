@@ -161,3 +161,78 @@ test("dashboard gateway API exposes allowlisted metadata only", async t => {
   assert.equal("device_token" in body.gateways[0].metadata, false);
   assert.equal("instance_id" in body.gateways[0], false);
 });
+
+
+class MemoryEnrollmentStore {
+  constructor(){this.enrollments=new Map();this.gateways=new Map();this.audit=[];}
+  async connect(){return this;}
+  watchCommands(){return ()=>{};}
+  async close(){}
+  async getEnrollment(id){return this.enrollments.get(id)||null;}
+  async createEnrollment(doc){
+    if(this.enrollments.has(doc.gateway_id)){const e=new Error("duplicate");e.code=11000;throw e;}
+    const now=new Date();this.enrollments.set(doc.gateway_id,{gateway_id:doc.gateway_id,token_hash:doc.token_hash,enabled:true,credential_source:"database",created_at:now,updated_at:now,token_rotated_at:now});
+    this.audit.push({gateway_id:doc.gateway_id,event_type:"gateway_enrolled",created_at:now});
+  }
+  async setEnrollmentEnabled(id,enabled){
+    const current=this.enrollments.get(id)||{gateway_id:id,token_hash:null,credential_source:"environment",created_at:new Date()};
+    Object.assign(current,{enabled,updated_at:new Date()});this.enrollments.set(id,current);
+    this.audit.push({gateway_id:id,event_type:enabled?"gateway_enabled":"gateway_disabled",created_at:new Date()});
+  }
+  async rotateEnrollmentToken(id,hash){
+    const current=this.enrollments.get(id)||{gateway_id:id,created_at:new Date()};
+    Object.assign(current,{token_hash:hash,credential_source:"database",enabled:true,updated_at:new Date(),token_rotated_at:new Date()});this.enrollments.set(id,current);
+    this.audit.push({gateway_id:id,event_type:"gateway_token_rotated",created_at:new Date()});
+  }
+  async listEnrollments(){return [...this.enrollments.values()].map(({gateway_id,enabled,credential_source,created_at,updated_at,token_rotated_at})=>({gateway_id,enabled,credential_source,created_at,updated_at,token_rotated_at}));}
+  async listGateways(){return [...this.gateways.values()];}
+  async registerGateway(doc){this.gateways.set(doc.gateway_id,{...doc,connected:true});}
+  async heartbeat(id,instance,metadata,lastSeen){const g=this.gateways.get(id);if(g){g.metadata=metadata;g.last_seen=lastSeen;}}
+  async disconnectGateway(id,instance,at){const g=this.gateways.get(id);if(g){g.connected=false;g.last_seen=at;}}
+  async listAudit(id,limit=50){return this.audit.filter(x=>x.gateway_id===id).slice(-limit).reverse();}
+}
+
+test("admin can enroll, rotate and disable a gateway without storing raw tokens", async t => {
+  const store=new MemoryEnrollmentStore();
+  const {url}=await start(t,{basePath:"/api",store});
+  const headers={authorization:"Bearer admin-test-token","content-type":"application/json"};
+  const created=await fetch(url+"/api/admin/gateways/enroll",{method:"POST",headers,body:JSON.stringify({gateway_id:"gw-new"})});
+  assert.equal(created.status,201);
+  const first=await created.json();
+  assert.equal(first.token_shown_once,true);
+  assert.equal(typeof first.device_token,"string");
+  assert.notEqual(store.enrollments.get("gw-new").token_hash,first.device_token);
+  assert.equal(store.enrollments.get("gw-new").token_hash.length,64);
+
+  const connected=new WebSocket(url.replace("http://","ws://")+"/api/v1/agent",{headers:{authorization:"Bearer "+first.device_token,"x-gateway-id":"gw-new"}});
+  await once(connected,"open");
+  t.after(()=>{if(connected.readyState===WebSocket.OPEN)connected.close();});
+
+  const disabled=await fetch(url+"/api/admin/gateways/gw-new/status",{method:"PATCH",headers,body:JSON.stringify({enabled:false})});
+  assert.equal(disabled.status,200);
+  assert.equal((await disabled.json()).enabled,false);
+  await once(connected,"close");
+
+  const rejected=new WebSocket(url.replace("http://","ws://")+"/api/v1/agent",{headers:{authorization:"Bearer "+first.device_token,"x-gateway-id":"gw-new"}});
+  const rejection=await once(rejected,"unexpected-response");
+  assert.equal(rejection[1].statusCode,401);
+
+  const rotated=await fetch(url+"/api/admin/gateways/gw-new/rotate-token",{method:"POST",headers});
+  assert.equal(rotated.status,200);
+  const second=await rotated.json();
+  assert.notEqual(second.device_token,first.device_token);
+  assert.equal(store.enrollments.get("gw-new").token_hash.length,64);
+  assert.equal(store.enrollments.get("gw-new").enabled,true);
+
+  const next=new WebSocket(url.replace("http://","ws://")+"/api/v1/agent",{headers:{authorization:"Bearer "+second.device_token,"x-gateway-id":"gw-new"}});
+  await once(next,"open");
+  next.close();
+});
+
+test("gateway management endpoints reject unauthenticated and malformed requests", async t => {
+  const store=new MemoryEnrollmentStore();
+  const {url}=await start(t,{basePath:"/api",store});
+  assert.equal((await fetch(url+"/api/admin/gateways/enroll",{method:"POST",body:"{}"})).status,401);
+  const invalid=await fetch(url+"/api/admin/gateways/enroll",{method:"POST",headers:{authorization:"Bearer admin-test-token","content-type":"application/json"},body:JSON.stringify({gateway_id:"bad id"})});
+  assert.equal(invalid.status,400);
+});
