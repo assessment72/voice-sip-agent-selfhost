@@ -61,6 +61,19 @@ class CallApprovalManagerTest {
         assertTrue(manager.auditLog().any { it.detail == "approval requested" })
     }
 
+    @Test fun approvedRequestsCountTowardOutstandingLimit() {
+        val manager = CallApprovalManager(maxPending = 1)
+        val first = manager.request(CallActionSpec(CallAction.HANGUP, callId = "call-10"))
+        manager.approve(first.id)
+
+        try {
+            manager.request(CallActionSpec(CallAction.HANGUP, callId = "call-11"))
+            fail("Expected approved request to count as outstanding")
+        } catch (_: IllegalArgumentException) {
+            // An approved but not yet executed operation still occupies a slot.
+        }
+    }
+
     @Test fun callTargetRejectsShellControlCharacters() {
         try {
             CallActionSpec(CallAction.DIAL, target = "+967700000000;reboot")
