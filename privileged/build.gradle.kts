@@ -1,8 +1,8 @@
-val compileSdkApi = providers.gradleProperty("android.compileSdk").orNull?.toInt() ?: 37
-
 plugins {
     alias(libs.plugins.android.library)
 }
+
+val compileSdkApi = providers.gradleProperty("android.compileSdk").orNull?.toInt() ?: 37
 
 android {
     namespace = "io.github.sparkcyf.voicesipagent.privileged"
