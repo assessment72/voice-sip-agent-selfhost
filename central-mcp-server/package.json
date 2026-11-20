@@ -8,7 +8,7 @@
   },
   "scripts": {
     "start": "node server.mjs",
-    "check": "node --check server.mjs && node --check server.test.mjs",
+    "check": "node --check server.mjs && node --check dashboard.mjs && node --check server.test.mjs",
     "test": "node --test"
   },
   "dependencies": {
