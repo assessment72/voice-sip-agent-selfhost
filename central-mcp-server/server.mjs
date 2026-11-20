@@ -263,7 +263,7 @@ export function createCentralMcpServer(options = {}) {
       return res.end(dashboardHtml);
     }
     const adminGatewayPrefix = basePath + "/admin/gateways";
-    if (requestPath === adminGatewayPrefix || requestPath === basePath + "/admin/audit" || requestPath === basePath + "/admin/call-control" || requestPath.startsWith(adminGatewayPrefix + "/")) {
+    if (requestPath === adminGatewayPrefix || requestPath === basePath + "/admin/audit" || requestPath.startsWith(basePath + "/admin/call-control") || requestPath.startsWith(adminGatewayPrefix + "/")) {
       if (!authorizedAdmin(req)) return json(res, 401, { error: "unauthorized" });
       let db;
       try { db = await ensureStore(); } catch { return json(res, 503, { error: "persistent_storage_unavailable" }); }
