@@ -153,6 +153,62 @@ export class MongoGatewayStore {
     start();
     return () => { closed = true; stream?.close().catch(() => {}); };
   }
+  async getEnrollment(gatewayId) {
+    const db = await this.connect();
+    return db.collection("gateway_enrollments").findOne({ gateway_id: gatewayId }, { projection: { _id: 0 } });
+  }
+  async createEnrollment(doc) {
+    const db = await this.connect();
+    const now = new Date();
+    await db.collection("gateway_enrollments").insertOne({
+      gateway_id: doc.gateway_id,
+      token_hash: doc.token_hash,
+      enabled: true,
+      credential_source: "database",
+      created_at: now,
+      updated_at: now,
+      token_rotated_at: now
+    });
+    await db.collection("audit_events").insertOne({
+      event_id: randomUUID(), gateway_id: doc.gateway_id,
+      event_type: "gateway_enrolled", created_at: now
+    });
+  }
+  async setEnrollmentEnabled(gatewayId, enabled) {
+    const db = await this.connect();
+    const now = new Date();
+    await db.collection("gateway_enrollments").updateOne(
+      { gateway_id: gatewayId },
+      { $set: { enabled, updated_at: now }, $setOnInsert: {
+        gateway_id: gatewayId, token_hash: null, credential_source: "environment", created_at: now
+      } },
+      { upsert: true }
+    );
+    await db.collection("audit_events").insertOne({
+      event_id: randomUUID(), gateway_id: gatewayId,
+      event_type: enabled ? "gateway_enabled" : "gateway_disabled", created_at: now
+    });
+  }
+  async rotateEnrollmentToken(gatewayId, tokenHash) {
+    const db = await this.connect();
+    const now = new Date();
+    await db.collection("gateway_enrollments").updateOne(
+      { gateway_id: gatewayId },
+      { $set: { token_hash: tokenHash, credential_source: "database", enabled: true, updated_at: now, token_rotated_at: now },
+        $setOnInsert: { gateway_id: gatewayId, created_at: now } },
+      { upsert: true }
+    );
+    await db.collection("audit_events").insertOne({
+      event_id: randomUUID(), gateway_id: gatewayId,
+      event_type: "gateway_token_rotated", created_at: now
+    });
+  }
+  async listEnrollments() {
+    const db = await this.connect();
+    return db.collection("gateway_enrollments").find({}, {
+      projection: { _id: 0, gateway_id: 1, enabled: 1, credential_source: 1, created_at: 1, updated_at: 1, token_rotated_at: 1 }
+    }).toArray();
+  }
   async listAudit(gatewayId, limit = 100) {
     const db = await this.connect();
     return db.collection("audit_events").find({ gateway_id: gatewayId }, { projection: { _id: 0 } }).sort({ created_at: -1 }).limit(limit).toArray();
