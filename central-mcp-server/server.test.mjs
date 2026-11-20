@@ -79,7 +79,7 @@ test("multiple gateways stay isolated and commands are sent only to the selected
   const command = JSON.parse(raw.toString());
   assert.equal(command.type, "command");
   assert.equal(command.name, "sip_gateway_status");
-  gw02.send(JSON.stringify({ type: "command_result", id: command.id, result: { ok: true, gateway_id: "gw02" } }));
+  gw01.send(JSON.stringify({ type: "command_result", id: command.id, result: { ok: true, gateway_id: "spoofed-gw01" } }));\n  await new Promise(resolve => setTimeout(resolve, 25));\n  gw02.send(JSON.stringify({ type: "command_result", id: command.id, result: { ok: true, gateway_id: "gw02" } }));
   const status = await (await statusPromise).json();
   assert.equal(JSON.parse(status.result.content[0].text).gateway_id, "gw02");
   assert.equal(gw01.readyState, WebSocket.OPEN);
