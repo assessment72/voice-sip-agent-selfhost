@@ -151,6 +151,7 @@ private fun Screen(rt: GatewayRuntime, modifier: Modifier, requestDialer: () -> 
             Text(h.calls.summary)
             Text(h.session ?: t("Нет активной сессии", "No active session"))
         }
+        CallApprovalsSection(rt)
         SettingsSection(rt)
         Section(t("Журнал", "Log")) {
             Text(log.takeLast(60).reversed().joinToString("\n"), fontFamily = FontFamily.Monospace,
@@ -401,6 +402,53 @@ private fun Section(title: String, info: String? = null, content: @Composable ()
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             LabelWithInfo(title, info, style = MaterialTheme.typography.titleMedium)
             content()
+        }
+    }
+}
+
+@Composable
+private fun CallApprovalsSection(rt: GatewayRuntime) {
+    val approvals by rt.pendingCallApprovals.collectAsState()
+    if (approvals.isEmpty()) return
+    Section(t("موافقات التحكم بالمكالمات", "Call-control approvals"), info = "mcp_approval") {
+        Text(
+            t(
+                "هذه الطلبات جاءت من MCP. لن يتم تنفيذ أي إجراء حتى تضغط موافقة هنا على الهاتف.",
+                "These requests came from MCP. Nothing will execute until you approve it here on the phone.",
+            ),
+            style = MaterialTheme.typography.bodySmall,
+        )
+        approvals.forEach { approval ->
+            val spec = approval.spec
+            val action = when (spec.action.name) {
+                "DIAL" -> t("اتصال صادر", "Outbound call")
+                "ANSWER" -> t("الرد على المكالمة", "Answer call")
+                "REJECT" -> t("رفض المكالمة", "Reject call")
+                "HANGUP" -> t("إنهاء المكالمة", "Hang up call")
+                "DTMF" -> t("إرسال نغمة DTMF", "Send DTMF")
+                else -> spec.action.name
+            }
+            val target = when (spec.action.name) {
+                "DIAL" -> "${t("الرقم", "Number")}: ${spec.target}"
+                "DTMF" -> "${t("المكالمة", "Call")}: ${spec.callId} · ${t("الرقم", "Digit")}: ${spec.dtmf}"
+                else -> "${t("معرّف المكالمة", "Call ID")}: ${spec.callId}"
+            }
+            Card(Modifier.fillMaxWidth()) {
+                Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Text(action, style = MaterialTheme.typography.titleSmall)
+                    Text(target)
+                    if (spec.action.name == "DIAL") Text("${t("المسار", "Route")}: ${spec.route}")
+                    Text("${t("تنتهي الموافقة", "Approval expires")}: ${approval.expiresAt}", style = MaterialTheme.typography.bodySmall)
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Button(onClick = { rt.approveCallApproval(approval.id) }) {
+                            Text(t("موافقة", "Approve"))
+                        }
+                        OutlinedButton(onClick = { rt.rejectCallApproval(approval.id) }) {
+                            Text(t("رفض الطلب", "Reject request"))
+                        }
+                    }
+                }
+            }
         }
     }
 }
