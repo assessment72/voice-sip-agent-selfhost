@@ -93,6 +93,11 @@ export class MongoGatewayStore {
     });
     return commandId;
   }
+  async claimCommand(commandId) {
+    const db = await this.connect();
+    const claimed = await db.collection("commands").updateOne({ command_id: commandId, status: "queued" }, { $set: { status: "delivered", delivered_at: new Date() } });
+    return claimed.modifiedCount === 1;
+  }
   async completeCommand(commandId, gatewayId, result, error) {
     const db = await this.connect();
     const now = new Date();
@@ -130,6 +135,8 @@ export class MongoGatewayStore {
           [{ $match: { operationType: "insert", "fullDocument.instance_id": instanceId } }],
           { fullDocument: "default" }
         );
+        const queued = await db.collection("commands").find({ instance_id: instanceId, status: "queued" }).toArray();
+        for (const command of queued) Promise.resolve(onCommand(command)).catch(onError);
         stream.on("change", change => {
           Promise.resolve(onCommand(change.fullDocument)).catch(onError);
         });

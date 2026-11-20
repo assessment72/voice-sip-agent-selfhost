@@ -47,7 +47,7 @@ export function createCentralMcpServer(options = {}) {
   let stopCommandWatch = null;
   async function ensureStore() {
     if (!store) { if (requirePersistentStore) throw new Error("persistent_storage_not_configured"); return null; }
-    if (!storeReady) storeReady = (async () => { await store.connect(); stopCommandWatch = store.watchCommands(instanceId, async command => { const entry = gateways.get(command.gateway_id); if (!entry || entry.ws.readyState !== WebSocket.OPEN) return store.completeCommand(command.command_id, command.gateway_id, null, "gateway_connection_not_on_this_instance"); try { entry.ws.send(JSON.stringify({ type: "command", id: command.command_id, name: command.name, arguments: command.arguments })); } catch (error) { await store.completeCommand(command.command_id, command.gateway_id, null, error.message); } }); return store; })().catch(error => { storeReady = null; throw error; });
+    if (!storeReady) storeReady = (async () => { await store.connect(); stopCommandWatch = store.watchCommands(instanceId, async command => { const entry = gateways.get(command.gateway_id); if (!entry || entry.ws.readyState !== WebSocket.OPEN) return store.completeCommand(command.command_id, command.gateway_id, null, "gateway_connection_not_on_this_instance"); if (!(await store.claimCommand(command.command_id))) return; try { entry.ws.send(JSON.stringify({ type: "command", id: command.command_id, name: command.name, arguments: command.arguments })); } catch (error) { await store.completeCommand(command.command_id, command.gateway_id, null, error.message); } }); return store; })().catch(error => { storeReady = null; throw error; });
     return storeReady;
   }
   const gateways = new Map();
@@ -112,7 +112,7 @@ export function createCentralMcpServer(options = {}) {
   }
   async function listGateways() {
     const db = await ensureStore();
-    if (db) return (await db.listGateways()).map(({ gateway_id, connected, connected_at, last_seen, metadata }) => ({ gateway_id, connected, connected_at, last_seen, metadata }));
+    if (db) return (await db.listGateways()).map(({ gateway_id, connected, connected_at, last_seen, metadata }) => ({ gateway_id, connected: Boolean(connected && last_seen && Date.now() - new Date(last_seen).getTime() <= 60_000), connected_at, last_seen, metadata }));
     return [...gateways.entries()].map(([gateway_id, entry]) => ({
       gateway_id,
       connected: entry.ws.readyState === WebSocket.OPEN,
