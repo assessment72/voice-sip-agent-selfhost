@@ -10,6 +10,19 @@ SPEC.loader.exec_module(MODULE)
 
 
 class McpProtocolTests(unittest.TestCase):
+    @patch.object(
+        MODULE.subprocess,
+        "run",
+        return_value=__import__("subprocess").CompletedProcess(
+            args=["adb"], returncode=0,
+            stdout='Broadcast completed: result=0, data="{\\"ok\\":true}"',
+            stderr="",
+        ),
+    )
+    def test_broadcast_decodes_ordered_result_data(self, mocked_run):
+        self.assertEqual({"ok": True}, MODULE.broadcast("call-status"))
+        self.assertIn("call-status", mocked_run.call_args.args[0])
+
     def test_initialize_advertises_tools(self):
         result = MODULE.handle({
             "jsonrpc": "2.0",
