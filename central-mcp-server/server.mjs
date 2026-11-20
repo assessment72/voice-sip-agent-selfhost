@@ -47,9 +47,9 @@ export function createCentralMcpServer(options = {}) {
     const token = bearer(req);
     return typeof expected === "string" && token && equalSecret(token, expected) ? id : null;
   }
-  function settlePending(id, result, error) {
+  function settlePending(id, result, error, sourceGatewayId = null) {
     const item = pending.get(id);
-    if (!item) return;
+    if (!item || (sourceGatewayId && item.gatewayId !== sourceGatewayId)) return;
     pending.delete(id);
     clearTimeout(item.timer);
     if (error) item.reject(new Error(String(error)));
@@ -191,6 +191,7 @@ export function createCentralMcpServer(options = {}) {
     gateways.set(gatewayId, entry);
     ws.send(JSON.stringify({ type: "server.ready", gateway_id: gatewayId }));
     ws.on("message", raw => {
+      if (gateways.get(gatewayId)?.ws !== ws) return;
       let message;
       try { message = JSON.parse(raw.toString()); } catch { return ws.close(1007, "invalid_json"); }
       if (!message || typeof message !== "object") return;
@@ -204,8 +205,9 @@ export function createCentralMcpServer(options = {}) {
       }
     });
     ws.on("close", () => {
-      if (gateways.get(gatewayId)?.ws === ws) gateways.delete(gatewayId);
-      for (const [id, item] of pending) if (item.gatewayId === gatewayId) settlePending(id, null, "gateway_disconnected");
+      if (gateways.get(gatewayId)?.ws !== ws) return;
+      gateways.delete(gatewayId);
+      for (const [id, item] of pending) if (item.gatewayId === gatewayId) settlePending(id, null, "gateway_disconnected", gatewayId);
     });
     ws.on("error", () => {});
   });
