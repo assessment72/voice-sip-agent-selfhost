@@ -4,7 +4,7 @@ on:
   push:
     branches: [audit/rtp-local-server-hardening]
   pull_request:
-    branches: [main]
+    branches: [main, fix/proxy-to-yemen-target]
   workflow_dispatch:
 
 permissions:
