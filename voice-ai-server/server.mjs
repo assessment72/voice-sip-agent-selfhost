@@ -68,7 +68,7 @@ server.on("upgrade", (req, socket, head) => {
 clients.on("connection", (client, req, ip) => {
   active.add(client);
   activeByIp.set(ip, (activeByIp.get(ip) ?? 0) + 1);
-  const upstreamUrl = new URL("https://api.openai.com/v1/realtime");
+  const upstreamUrl = new URL("wss://api.openai.com/v1/realtime");
   upstreamUrl.searchParams.set("model", MODEL);
   const upstream = new WebSocket(upstreamUrl, {
     headers: { Authorization: `Bearer ${API_KEY}` },
