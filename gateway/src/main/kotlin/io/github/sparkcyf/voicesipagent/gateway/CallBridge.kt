@@ -32,7 +32,8 @@ class BridgeSession internal constructor(
     @Volatile var employeeAnswered: Boolean = false
         internal set
     internal val attemptedEmployeeIds = linkedSetOf<String>()
-    internal val attemptFailures = CopyOnWriteArrayList<EmployeeAttemptFailure>()
+    /** Read-only failure history exposed for app diagnostics and local call history. */
+    val attemptFailures = CopyOnWriteArrayList<EmployeeAttemptFailure>()
     internal var outboundWatcher: CallLeg.Listener? = null
     val startedAtMs: Long = System.currentTimeMillis()
     @Volatile var connectedAtMs: Long? = null
@@ -48,7 +49,8 @@ class BridgeSession internal constructor(
     val ivr = ClinicIvrSession()
     internal var localIvr = false
     internal var ivrPromptSamples: ShortArray? = null
-    internal var ivrEmployees: List<CallCenterEmployee> = emptyList()
+    /** Employees selected for this call's local IVR fallback, for diagnostics and history. */
+    var ivrEmployees: List<CallCenterEmployee> = emptyList()
     internal var ivrPromptAttempts = 0
     internal var ivrInputTimer: ScheduledFuture<*>? = null
     internal var ivrPlayback: MediaBridge? = null
