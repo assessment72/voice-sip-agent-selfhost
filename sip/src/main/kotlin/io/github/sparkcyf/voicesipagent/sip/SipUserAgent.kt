@@ -331,10 +331,25 @@ class SipUserAgent(
         // dials out for free (open toll-fraud relay).  Gate before any call state is created.
         if (!inviteAuthPassed(req, from, tx)) return
         val handler = incomingHandler
-        // X-VSA-Dial: the number to dial when the PBX keeps the Request-URI user as our own AoR
-        // (needed behind registrar-based proxies such as Flexisip).
-        val target = req.headers["X-VSA-Dial"]?.trim()?.takeIf { it.isNotEmpty() }
-            ?: SipUri.parse(req.uri)?.user ?: req.to?.sipUri?.user
+        val target = when (val resolved = YemeniSipDialTarget.resolve(req)) {
+            is YemeniSipDialTarget.Result.Accepted -> {
+                val value = resolved.target
+                log.info(
+                    "incoming INVITE received; target source=${value.source}; " +
+                        "encoded SIP target=${redactNumber(value.encodedUser)}; " +
+                        "normalized cellular target=${redactNumber(value.e164)}",
+                )
+                value.e164
+            }
+            is YemeniSipDialTarget.Result.Rejected -> {
+                log.warn(
+                    "INVITE rejected with 484: invalid Yemeni dial target " +
+                        "(source=${resolved.error.source}, reason=${resolved.error.reason})",
+                )
+                tx.respond(buildResponse(req, 484, toTag = newTag()))
+                return
+            }
+        }
         val pai = req.headers["P-Asserted-Identity"]?.let(NameAddr::parse)
         val fromAddr = req.from!!
         val caller = Party(
@@ -342,7 +357,6 @@ class SipUserAgent(
             displayName = pai?.displayName ?: fromAddr.displayName,
         )
         val call = SipCall(this, LegDirection.INBOUND, caller, target, req.callId!!, newTag())
-        log.info("incoming INVITE to ${redactNumber(target)} from ${redactNumber(caller.number)}")
         if (handler == null || stopping) {
             tx.respond(buildResponse(req, 480, toTag = call.localTag))
             return
