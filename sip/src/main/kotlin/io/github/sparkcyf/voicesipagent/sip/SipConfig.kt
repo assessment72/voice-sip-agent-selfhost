@@ -1,6 +1,7 @@
 package io.github.sparkcyf.voicesipagent.sip
 
 import io.github.sparkcyf.voicesipagent.sip.media.AudioCodec
+import io.github.sparkcyf.voicesipagent.voice.CallerIdMode
 
 data class SipAccount(
     /** Registrar / proxy host (IP or name). */
@@ -52,6 +53,7 @@ data class SipConfig(
     val registrarPassword: String = "",
     /** Server mode: realm advertised in the auth challenge. */
     val registrarRealm: String = "voice-sip-agent",
+    val callerIdMode: CallerIdMode = CallerIdMode.NORMAL,
 )
 
 /** Minimal logging hook so the stack stays free of platform dependencies. */
