@@ -49,4 +49,4 @@ Approvals expire after 90 seconds, are bound to the exact operation, and can be 
 - Approval and audit data are currently in memory and are lost when the app process restarts. Durable storage and a native approval UI remain follow-up work.
 - The ADB result-data round trip must be verified on the target Android device before enabling real call operations. Start with status/list tools and test calls only after confirming the device-side behavior.
 
-This integration does not alter SIP credentials or gateway settings and does not initiate any call during startup.
+The repository CI runs Python syntax checks and protocol-level unit tests for this bridge.\n\nThis integration does not alter SIP credentials or gateway settings and does not initiate any call during startup.
