@@ -135,7 +135,11 @@ object CentralMcpAgent {
                 }
                 val listener = object : WebSocketListener() {
                     override fun onOpen(webSocket: WebSocket, response: Response) {
-                        socket = webSocket
+                        if (socket !== webSocket) {
+                            webSocket.close(1000, "superseded connection")
+                            closed.complete(Unit)
+                            return
+                        }
                         opened.complete(webSocket)
                         AppLog.i("central MCP connected (" + config.gatewayId + ")")
                     }
@@ -159,6 +163,7 @@ object CentralMcpAgent {
                     }
                 }
                 val ws = client.newWebSocket(request, listener)
+                socket = ws
                 val connected = withTimeoutOrNull(15_000) { runCatching { opened.await() }.getOrNull() }
                 if (connected != null) {
                     backoffMs = 2_000L
