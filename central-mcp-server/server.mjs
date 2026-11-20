@@ -390,12 +390,13 @@ export function createCentralMcpServer(options = {}) {
       socket.destroy();
       return;
     }
-    agentServer.handleUpgrade(req, socket, head, ws => agentServer.emit("connection", ws, gatewayId));
+    const deviceTokenHash = createHash("sha256").update(bearer(req)).digest("hex");
+    agentServer.handleUpgrade(req, socket, head, ws => agentServer.emit("connection", ws, gatewayId, deviceTokenHash));
   });
-  agentServer.on("connection", (ws, gatewayId) => {
+  agentServer.on("connection", (ws, gatewayId, deviceTokenHash) => {
     const previous = gateways.get(gatewayId);
     if (previous?.ws.readyState === WebSocket.OPEN) previous.ws.close(4001, "replaced_by_new_connection");
-    const entry = { ws, deviceTokenHash: createHash("sha256").update(bearer(req)).digest("hex"), connectedAt: new Date().toISOString(), lastSeen: new Date().toISOString(), metadata: {} };
+    const entry = { ws, deviceTokenHash, connectedAt: new Date().toISOString(), lastSeen: new Date().toISOString(), metadata: {} };
     gateways.set(gatewayId, entry);
     const connectionToken = randomUUID();
     entry.connectionToken = connectionToken;
