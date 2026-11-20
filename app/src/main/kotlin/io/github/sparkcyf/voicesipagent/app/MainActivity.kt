@@ -1,14 +1,23 @@
 package io.github.sparkcyf.voicesipagent.app
 
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.os.Build
 import android.Manifest
 import android.content.pm.PackageManager
 import android.content.Intent
 import android.content.ClipData
 import android.content.ClipboardManager
+import android.media.MediaPlayer
+import android.net.Uri
+import android.provider.OpenableColumns
 import android.provider.Settings
+import android.speech.tts.TextToSpeech
+import android.speech.tts.UtteranceProgressListener
 import androidx.activity.compose.setContent
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.FlowRow
@@ -43,6 +52,7 @@ import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -62,6 +72,10 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import java.util.Locale
+import java.io.ByteArrayOutputStream
+import java.io.File
+import java.io.FileOutputStream
 import io.github.sparkcyf.voicesipagent.gateway.BusyPolicy
 import io.github.sparkcyf.voicesipagent.gateway.CallCenterEmployee
 import io.github.sparkcyf.voicesipagent.gateway.CallFallbackPolicy
@@ -260,6 +274,7 @@ private fun Screen(rt: GatewayRuntime, modifier: Modifier, requestDialer: () -> 
         }
         ClinicRoutingSection(rt)
         ClinicEmployeeStatusSection(rt)
+        IvrSettingsSection(rt)
         CallHistorySection(rt)
         SettingsSection(rt)
         Section(t("Журнал", "Log")) {
@@ -349,6 +364,247 @@ private fun Screen(rt: GatewayRuntime, modifier: Modifier, requestDialer: () -> 
     }
     }
 }
+
+@Composable
+private fun IvrSettingsSection(rt: GatewayRuntime) {
+    val cur by rt.settingsFlow.collectAsState()
+    val health by rt.health.collectAsState()
+    val callActive = health.session != null || health.calls.owned > 0
+    val context = LocalContext.current
+    var welcome by remember(cur) { mutableStateOf(cur.ivrWelcome) }
+    var doctor by remember(cur) { mutableStateOf(cur.ivrDoctor) }
+    var reception by remember(cur) { mutableStateOf(cur.ivrReception) }
+    var invalid by remember(cur) { mutableStateOf(cur.ivrInvalid) }
+    var timeout by remember(cur) { mutableStateOf(cur.ivrTimeout) }
+    var source by remember(cur) { mutableStateOf(cur.ivrSource) }
+    var rate by remember(cur) { mutableStateOf(cur.ivrSpeechRate) }
+    var pitch by remember(cur) { mutableStateOf(cur.ivrPitch) }
+    var audioName by remember(cur) { mutableStateOf(cur.ivrAudioFileName) }
+    var selectedVoice by remember(cur) { mutableStateOf(cur.ivrTtsVoice) }
+    var message by remember { mutableStateOf("") }
+    var synthesizing by remember { mutableStateOf(false) }
+    var ttsReady by remember { mutableStateOf(false) }
+    val tts = remember(context) { TextToSpeech(context.applicationContext) { status ->
+        ttsReady = status == TextToSpeech.SUCCESS
+    } }
+    DisposableEffect(tts) { onDispose { tts.stop(); tts.shutdown() } }
+    val pickAudio = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri: Uri? ->
+        if (uri == null) return@rememberLauncherForActivityResult
+        runCatching {
+            val displayName = context.contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)
+                ?.use { c -> if (c.moveToFirst()) c.getString(0) else null }
+                ?: uri.lastPathSegment?.substringAfterLast('/') ?: "ivr-audio"
+            val ext = displayName.substringAfterLast('.', "").lowercase(Locale.ROOT)
+            require(ext == "wav" || ext == "ogg") { "اختر ملف WAV أو OGG فقط." }
+            val bytes = context.contentResolver.openInputStream(uri)?.use { input ->
+                val out = ByteArrayOutputStream()
+                val chunk = ByteArray(8192)
+                var total = 0
+                while (true) {
+                    val n = input.read(chunk)
+                    if (n < 0) break
+                    total += n
+                    require(total <= 10 * 1024 * 1024) { "الحد الأقصى لحجم ملف IVR هو 10 ميغابايت." }
+                    out.write(chunk, 0, n)
+                }
+                out.toByteArray()
+            } ?: error("تعذر قراءة الملف المحدد.")
+            require(bytes.size >= 44) { "الملف الصوتي أقصر من الحد الأدنى أو تالف." }
+            val wav = ext == "wav" && isSupportedPcmWav(bytes)
+            val ogg = ext == "ogg" && bytes.copyOfRange(0, 4).decodeToString() == "OggS"
+            require(wav || ogg) { "امتداد الملف لا يطابق ترويسة WAV/OGG صالحة." }
+            sequenceOf("wav", "ogg").filter { it != ext }.forEach { File(context.filesDir, "ivr_custom.$it").delete() }
+            val privateFile = File(context.filesDir, "ivr_custom.$ext")
+            FileOutputStream(privateFile).use { it.write(bytes) }
+            audioName = displayName.take(120)
+            source = "file"
+            message = "تم نسخ الملف إلى مساحة التطبيق الخاصة."
+        }.onFailure { message = it.message ?: "تعذر استيراد الملف." }
+    }
+    Section("صوت قائمة الرد الآلي IVR") {
+        Text("رسائل القائمة الحالية محفوظة محلياً. لا تُسجّل هذه الإعدادات صوت المكالمات.",
+            style = MaterialTheme.typography.bodySmall)
+        @Composable fun ivrField(label: String, value: String, update: (String) -> Unit) {
+            OutlinedTextField(value = value, onValueChange = update, label = { Text(label) },
+                modifier = Modifier.fillMaxWidth(), minLines = 2, maxLines = 4)
+        }
+        ivrField("رسالة الترحيب", welcome) { welcome = it }
+        ivrField("نص الخيار 1 — الطبيب", doctor) { doctor = it }
+        ivrField("نص الخيار 2 — الاستقبال", reception) { reception = it }
+        ivrField("رسالة الاختيار غير الصحيح", invalid) { invalid = it }
+        ivrField("رسالة انتهاء المهلة", timeout) { timeout = it }
+        Choice("مصدر الصوت", listOf("tts", "file", "default"), source,
+            { when (it) { "tts" -> "تحويل النص إلى كلام TTS"; "file" -> "ملف صوتي مخصص"; else -> "الإعداد الافتراضي" } }) {
+            source = it
+        }
+        Text("سرعة الكلام: ${"%.1f".format(Locale.ROOT, rate)}")
+        androidx.compose.material3.Slider(value = rate, onValueChange = { rate = it }, valueRange = 0.5f..2f)
+        Text("درجة الصوت: ${"%.1f".format(Locale.ROOT, pitch)}")
+        androidx.compose.material3.Slider(value = pitch, onValueChange = { pitch = it }, valueRange = 0.5f..2f)
+        val availableVoiceNames = if (ttsReady) tts.voices.orEmpty().filter { it.locale.language == "ar" }
+            .map { it.name }.sorted() else emptyList()
+        if (availableVoiceNames.isNotEmpty()) {
+            Choice("الصوت العربي المتاح على الجهاز", availableVoiceNames, selectedVoice.takeIf { it in availableVoiceNames }
+                ?: availableVoiceNames.first(), { it }) { selectedVoice = it }
+        } else {
+            Text("يتم التحقق من أصوات TTS العربية المتاحة على الجهاز…", style = MaterialTheme.typography.bodySmall)
+        }
+        OutlinedButton(onClick = {
+            if (!ttsReady) {
+                message = "محرك TTS لم يصبح جاهزاً بعد."
+            } else if (tts.isLanguageAvailable(Locale("ar")) < TextToSpeech.LANG_AVAILABLE) {
+                message = "محرك TTS أو بيانات اللغة العربية غير متوفرة على هذا الجهاز."
+            } else {
+                tts.setLanguage(Locale("ar"))
+                availableVoiceNames.firstOrNull { it == selectedVoice }?.let { name ->
+                    tts.voices?.firstOrNull { it.name == name }?.let(tts::setVoice)
+                }
+                tts.setSpeechRate(rate)
+                tts.setPitch(pitch)
+                tts.speak(welcome, TextToSpeech.QUEUE_FLUSH, null, "ivr-local-preview")
+                message = "بدأت معاينة TTS محلياً؛ هذا لا يثبت وصول الصوت إلى المتصل."
+            }
+        }) { Text("اختبار الصوت محلياً") }
+        if (source == "file") {
+            Text(if (audioName.isBlank()) "لم يتم اختيار ملف" else "الملف: $audioName")
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedButton(onClick = { pickAudio.launch(arrayOf("audio/wav", "audio/ogg", "application/ogg", "application/octet-stream")) }, enabled = !callActive) {
+                    Text("اختيار ملف")
+                }
+                OutlinedButton(onClick = {
+                    val file = sequenceOf("ivr_custom.wav", "ivr_custom.ogg").map { File(context.filesDir, it) }.firstOrNull { it.exists() }
+                    if (file == null) message = "اختر ملفاً أولاً."
+                    else runCatching {
+                        MediaPlayer().apply {
+                            setDataSource(file.absolutePath)
+                            setOnCompletionListener { it.release() }
+                            setOnPreparedListener { it.start() }
+                            prepareAsync()
+                        }
+                        message = "بدأ التشغيل التجريبي المحلي؛ لا يؤكد ذلك وصول الصوت للمتصل."
+                    }.onFailure { message = "تعذر تشغيل الملف: ${it.message}" }
+                }) { Text("تشغيل تجريبي") }
+                TextButton(onClick = {
+                    sequenceOf("ivr_custom.wav", "ivr_custom.ogg").map { File(context.filesDir, it) }.forEach { it.delete() }
+                    audioName = ""; source = "tts"; message = "حُذف الملف المحلي."
+                }, enabled = !callActive) { Text("حذف الملف") }
+            }
+            OutlinedButton(onClick = { source = "tts" }) { Text("العودة إلى TTS") }
+        }
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Button(onClick = {
+                val newSettings = cur.copy(ivrWelcome = welcome, ivrDoctor = doctor,
+                    ivrReception = reception, ivrInvalid = invalid, ivrTimeout = timeout,
+                    ivrSource = source, ivrSpeechRate = rate, ivrPitch = pitch,
+                    ivrAudioFileName = audioName, ivrTtsVoice = selectedVoice)
+                if (source != "tts") {
+                    rt.applySettings(newSettings)
+                    message = "تم حفظ الإعدادات؛ ستُطبّق من المكالمة التالية."
+                } else if (!ttsReady || tts.isLanguageAvailable(Locale("ar")) < TextToSpeech.LANG_AVAILABLE) {
+                    message = "تعذر توليد TTS: تحقق من جاهزية المحرك وتوفر بيانات اللغة العربية."
+                } else {
+                    synthesizing = true
+                    tts.setLanguage(Locale("ar"))
+                    tts.voices?.firstOrNull { it.name == selectedVoice }?.let(tts::setVoice)
+                    tts.setSpeechRate(rate)
+                    tts.setPitch(pitch)
+                    val prompts = listOf("welcome" to welcome, "doctor" to doctor, "reception" to reception,
+                        "invalid" to invalid, "timeout" to timeout)
+                    lateinit var generateNext: (Int) -> Unit
+                    generateNext = { index ->
+                        val (kind, text) = prompts[index]
+                        val output = File(context.filesDir, "ivr_tts_new_$kind.wav")
+                        val utteranceId = "ivr-save-$kind-${System.currentTimeMillis()}"
+                        tts.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
+                            override fun onStart(utteranceId: String?) = Unit
+                            override fun onDone(utteranceId: String?) {
+                                Handler(Looper.getMainLooper()).post {
+                                    if (!output.isFile || output.length() <= 44) {
+                                        synthesizing = false
+                                        message = "لم ينتج TTS ملف WAV صالحاً لرسالة $kind."
+                                    } else if (index + 1 < prompts.size) generateNext(index + 1)
+                                    else {
+                                        val installed = prompts.all { (promptKind, _) ->
+                                            val staged = File(context.filesDir, "ivr_tts_new_$promptKind.wav")
+                                            val target = File(context.filesDir, "ivr_tts_$promptKind.wav")
+                                            staged.isFile && staged.length() > 44 && staged.renameTo(target)
+                                        }
+                                        synthesizing = false
+                                        if (installed) {
+                                            rt.applySettings(newSettings)
+                                            message = "تم توليد رسائل IVR محلياً؛ ستُطبّق من المكالمة التالية."
+                                        } else message = "تعذر تثبيت ملفات TTS؛ أعد المحاولة."
+                                    }
+                                }
+                            }
+                            override fun onError(utteranceId: String?) {
+                                Handler(Looper.getMainLooper()).post {
+                                    synthesizing = false
+                                    prompts.forEach { (pendingKind, _) -> File(context.filesDir, "ivr_tts_new_$pendingKind.wav").delete() }
+                                    message = "فشل توليد رسالة TTS: $kind."
+                                }
+                            }
+                        })
+                        val result = tts.synthesizeToFile(text, Bundle(), output, utteranceId)
+                        if (result != TextToSpeech.SUCCESS) {
+                            synthesizing = false
+                            prompts.forEach { (pendingKind, _) -> File(context.filesDir, "ivr_tts_new_$pendingKind.wav").delete() }
+                            message = "تعذر بدء توليد رسالة TTS: $kind."
+                        }
+                    }
+                    generateNext(0)
+                    message = "جارٍ توليد رسائل IVR محلياً…"
+                }
+            }, enabled = !callActive && !synthesizing) { Text("حفظ وتطبيق") }
+            OutlinedButton(onClick = {
+                welcome = "مرحباً بك. اضغط 1 للتحدث مع الطبيب، أو اضغط 2 للتحدث مع الاستقبال."
+                doctor = "يتم تحويلك الآن إلى الطبيب."
+                reception = "يتم تحويلك الآن إلى الاستقبال."
+                invalid = "الاختيار غير صحيح. حاول مرة أخرى."
+                timeout = "لم يتم اختيار أي خيار."
+                sequenceOf("ivr_custom.wav", "ivr_custom.ogg").map { File(context.filesDir, it) }.forEach { it.delete() }
+                audioName = ""; source = "default"; rate = 1f; pitch = 1f; selectedVoice = ""
+                rt.applySettings(cur.copy(
+                    ivrWelcome = welcome, ivrDoctor = doctor, ivrReception = reception,
+                    ivrInvalid = invalid, ivrTimeout = timeout, ivrSource = "default",
+                    ivrSpeechRate = 1f, ivrPitch = 1f, ivrAudioFileName = "", ivrTtsVoice = "",
+                ))
+                message = "تمت استعادة الإعدادات الافتراضية للصوت المدمج."
+            }, enabled = !callActive) { Text("استعادة الإعدادات الافتراضية") }
+        }
+        if (callActive) Text("لا يمكن تطبيق تغييرات IVR أو استبدال ملفاته أثناء مكالمة نشطة؛ انتظر انتهاء المكالمة.",
+            style = MaterialTheme.typography.bodySmall)
+        if (message.isNotBlank()) Text(message, style = MaterialTheme.typography.bodySmall)
+    }
+}
+
+private fun isSupportedPcmWav(data: ByteArray): Boolean {
+    if (data.size < 44 || data.asciiAt(0, 4) != "RIFF" || data.asciiAt(8, 4) != "WAVE") return false
+    var offset = 12
+    var pcm = false
+    var channels = 0
+    var sampleRate = 0
+    var bits = 0
+    var audioBytes = 0
+    while (offset + 8 <= data.size) {
+        val chunk = data.asciiAt(offset, 4)
+        val size = data.le32(offset + 4).toLong() and 0xffffffffL
+        val content = offset + 8
+        if (size > data.size - content) return false
+        if (chunk == "fmt " && size >= 16) {
+            pcm = data.le16(content) == 1
+            channels = data.le16(content + 2)
+            sampleRate = data.le32(content + 4)
+            bits = data.le16(content + 14)
+        } else if (chunk == "data") audioBytes = size.toInt()
+        offset = content + size.toInt() + (size.toInt() and 1)
+    }
+    return pcm && channels in 1..2 && sampleRate in 8000..48000 && bits == 16 && audioBytes >= 2
+}
+
+private fun ByteArray.asciiAt(offset: Int, count: Int) = copyOfRange(offset, offset + count).decodeToString()
+private fun ByteArray.le16(offset: Int) = (this[offset].toInt() and 255) or ((this[offset + 1].toInt() and 255) shl 8)
+private fun ByteArray.le32(offset: Int) = le16(offset) or (le16(offset + 2) shl 16)
 
 /**
  * Optional, voluntary donation link (DonationAlerts). The app stays free (GPL-2.0-or-later);

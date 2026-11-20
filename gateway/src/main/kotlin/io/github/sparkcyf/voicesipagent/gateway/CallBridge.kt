@@ -49,6 +49,8 @@ class BridgeSession internal constructor(
     val ivr = ClinicIvrSession()
     internal var localIvr = false
     internal var ivrPromptSamples: ShortArray? = null
+    internal var ivrFollowUpPrompt: Boolean = false
+    internal var ivrPendingEmployee: CallCenterEmployee? = null
     /** Employees selected for this call's local IVR fallback, for diagnostics and history. */
     var ivrEmployees: List<CallCenterEmployee> = emptyList()
     internal var ivrPromptAttempts = 0
@@ -97,6 +99,7 @@ class CallBridge(
     private val localCellularIvr: Boolean = false,
     private val ivrEmployees: () -> List<CallCenterEmployee> = { emptyList() },
     private val ivrPromptSamples: () -> ShortArray? = { null },
+    private val ivrEventPromptSamples: (String) -> ShortArray? = { null },
     private val ivrInputTimeoutMs: Long = 10_000,
     private val fallbackPolicy: CallFallbackPolicy = CallFallbackPolicy(),
     private val audioDiagnostics: () -> String = { "unavailable" },
@@ -340,10 +343,10 @@ class CallBridge(
         }
     }
 
-    private fun startIvrPlayback(s: BridgeSession) {
+    private fun startIvrPlayback(s: BridgeSession, promptOverride: ShortArray? = null) {
         if (session !== s || !s.localIvr || s.outbound != null) return
         val callerPort = s.inbound.media ?: return
-        val prompt = s.ivrPromptSamples ?: return endSession(s, HangupCause.UNAVAILABLE)
+        val prompt = promptOverride ?: s.ivrPromptSamples ?: return endSession(s, HangupCause.UNAVAILABLE)
         if (callerPort.format != promptFormat) {
             log("$s: cellular media format ${callerPort.format} is incompatible with IVR prompt $promptFormat")
             endSession(s, HangupCause.INTERNAL_ERROR)
@@ -353,7 +356,7 @@ class CallBridge(
         s.answerTimer = null
         s.ivrInputTimer?.cancel(false)
         s.ivrInputTimer = null
-        s.ivrPromptAttempts++
+        if (promptOverride == null) s.ivrPromptAttempts++
         s.ivr.retry()
         val playbackPort = IvrMediaPort(
             prompt = prompt,
@@ -365,10 +368,12 @@ class CallBridge(
         s.ivrPlayback = try {
             MediaBridge(recorded, playbackPort).also { it.start() }
         } catch (e: Exception) {
+            log("ivr_prompt_playback_failed reason=${e.javaClass.simpleName}")
             log("$s: IVR media failed: ${e.message}")
             endSession(s, HangupCause.INTERNAL_ERROR)
             return
         }
+        log("ivr_prompt_playback_started framesExpected=${(prompt.size + playbackPort.format.frameSamples - 1) / playbackPort.format.frameSamples}")
         log("$s: IVR prompt attempt ${s.ivrPromptAttempts} started")
     }
 
@@ -377,6 +382,18 @@ class CallBridge(
         s.ivr.announcementFinished()
         val playback = s.ivrPlayback
         val ivrPort = s.ivrPort
+        log("ivr_prompt_playback_finished framesProduced=${ivrPort?.framesProduced ?: 0}; remote audibility unverified")
+        s.ivrPendingEmployee?.let { employee ->
+            s.ivrPendingEmployee = null
+            s.ivrFollowUpPrompt = false
+            startEmployeeAttempt(s, employee)
+            return
+        }
+        if (s.ivrFollowUpPrompt) {
+            s.ivrFollowUpPrompt = false
+            startIvrPlayback(s)
+            return
+        }
         val audioRoute = runCatching { audioDiagnostics() }.getOrDefault("unavailable")
         log("$s: IVR result=software framesProduced=${ivrPort?.framesProduced ?: 0} " +
             "callerAudioChannelWrites=${playback?.writesToA ?: 0} " +
@@ -385,16 +402,16 @@ class CallBridge(
             "frames were sent in software; remote audibility was not verified")
         s.ivrInputTimer?.cancel(false)
         s.ivrInputTimer = executor.schedule({
-            if (session === s && s.outbound == null) retryIvr(s, "no extension entered")
+            if (session === s && s.outbound == null) retryIvr(s, "no extension entered", "timeout")
         }, ivrInputTimeoutMs, TimeUnit.MILLISECONDS)
     }
 
     private fun handleIvrDigit(s: BridgeSession, digit: Char) {
-        if (session !== s || !s.localIvr || s.outbound != null) return
+        if (session !== s || !s.localIvr || s.outbound != null || s.ivrPendingEmployee != null) return
         when (val action = s.ivr.digitReceived(digit)) {
             is ClinicIvrSession.Action.InvalidDigit -> {
                 log("$s: invalid IVR digit ${action.digit}")
-                retryIvr(s, "invalid extension")
+                retryIvr(s, "invalid extension", "invalid")
             }
             is ClinicIvrSession.Action.ConnectEmployee -> {
                 s.ivrInputTimer?.cancel(false)
@@ -409,10 +426,15 @@ class CallBridge(
                 val employee = employeeId?.let { id -> s.ivrEmployees.firstOrNull { it.id == id } }
                 if (employee == null) {
                     log("$s: no enabled employee for extension ${action.extension}")
-                    retryIvr(s, "extension unavailable")
+                    retryIvr(s, "extension unavailable", "invalid")
                     return
                 }
-                startEmployeeAttempt(s, employee)
+                val confirmation = runCatching { ivrEventPromptSamples(if (digit == '1') "doctor" else "reception") }.getOrNull()
+                if (confirmation != null && confirmation.isNotEmpty()) {
+                    stopIvrPlayback(s)
+                    s.ivrPendingEmployee = employee
+                    startIvrPlayback(s, confirmation)
+                } else startEmployeeAttempt(s, employee)
             }
         }
     }
@@ -516,7 +538,7 @@ class CallBridge(
         }
     }
 
-    private fun retryIvr(s: BridgeSession, reason: String) {
+    private fun retryIvr(s: BridgeSession, reason: String, event: String? = null) {
         if (session !== s || s.outbound != null) return
         s.ivrInputTimer?.cancel(false)
         s.ivrInputTimer = null
@@ -526,6 +548,14 @@ class CallBridge(
             return
         }
         stopIvrPlayback(s)
+        if (event != null) {
+            val eventPrompt = runCatching { ivrEventPromptSamples(event) }.getOrNull()
+            if (eventPrompt != null && eventPrompt.isNotEmpty()) {
+                s.ivrFollowUpPrompt = true
+                startIvrPlayback(s, eventPrompt)
+                return
+            }
+        }
         startIvrPlayback(s)
     }
 

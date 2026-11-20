@@ -62,6 +62,17 @@ data class GatewaySettings(
     val serverMode: Boolean = true,
     /** UI language: "ru", "en", or "ar". Pure UI preference, no SIP restart. */
     val uiLanguage: String = "ru",
+    /** Caller-facing local IVR text. These preferences never contain caller/employee audio. */
+    val ivrWelcome: String = "مرحباً بك. اضغط 1 للتحدث مع الطبيب، أو اضغط 2 للتحدث مع الاستقبال.",
+    val ivrDoctor: String = "يتم تحويلك الآن إلى الطبيب.",
+    val ivrReception: String = "يتم تحويلك الآن إلى الاستقبال.",
+    val ivrInvalid: String = "الاختيار غير صحيح. حاول مرة أخرى.",
+    val ivrTimeout: String = "لم يتم اختيار أي خيار.",
+    val ivrSource: String = "default",
+    val ivrSpeechRate: Float = 1.0f,
+    val ivrPitch: Float = 1.0f,
+    val ivrAudioFileName: String = "",
+    val ivrTtsVoice: String = "",
 ) {
     val sipConfigured: Boolean get() =
         serverMode || (server.isNotBlank() && username.isNotBlank() && password.isNotEmpty())
@@ -125,6 +136,16 @@ class SettingsStore(context: Context) {
         // First run (key absent): default to Russian, Arabic, or English system language.
         // Once the user picks a language it is saved and always wins.
         uiLanguage = prefs.getString("ui_lang", null) ?: systemDefaultUiLang(),
+        ivrWelcome = prefs.getString("ivr_welcome", "مرحباً بك. اضغط 1 للتحدث مع الطبيب، أو اضغط 2 للتحدث مع الاستقبال.")!!,
+        ivrDoctor = prefs.getString("ivr_doctor", "يتم تحويلك الآن إلى الطبيب.")!!,
+        ivrReception = prefs.getString("ivr_reception", "يتم تحويلك الآن إلى الاستقبال.")!!,
+        ivrInvalid = prefs.getString("ivr_invalid", "الاختيار غير صحيح. حاول مرة أخرى.")!!,
+        ivrTimeout = prefs.getString("ivr_timeout", "لم يتم اختيار أي خيار.")!!,
+        ivrSource = prefs.getString("ivr_source", "default")!!.takeIf { it in setOf("tts", "file", "default") } ?: "default",
+        ivrSpeechRate = prefs.getFloat("ivr_speech_rate", 1f).takeIf { it in 0.5f..2f } ?: 1f,
+        ivrPitch = prefs.getFloat("ivr_pitch", 1f).takeIf { it in 0.5f..2f } ?: 1f,
+        ivrAudioFileName = prefs.getString("ivr_audio_name", "")!!,
+        ivrTtsVoice = prefs.getString("ivr_tts_voice", "")!!,
     )
 
     fun save(s: GatewaySettings) {
@@ -154,6 +175,16 @@ class SettingsStore(context: Context) {
             .putString("sip_stack", s.sipStack.id)
             .putBoolean("server_mode", s.serverMode)
             .putString("ui_lang", s.uiLanguage)
+            .putString("ivr_welcome", s.ivrWelcome.take(500))
+            .putString("ivr_doctor", s.ivrDoctor.take(500))
+            .putString("ivr_reception", s.ivrReception.take(500))
+            .putString("ivr_invalid", s.ivrInvalid.take(500))
+            .putString("ivr_timeout", s.ivrTimeout.take(500))
+            .putString("ivr_source", s.ivrSource.takeIf { it in setOf("tts", "file", "default") } ?: "tts")
+            .putFloat("ivr_speech_rate", s.ivrSpeechRate.coerceIn(0.5f, 2f))
+            .putFloat("ivr_pitch", s.ivrPitch.coerceIn(0.5f, 2f))
+            .putString("ivr_audio_name", s.ivrAudioFileName.take(120))
+            .putString("ivr_tts_voice", s.ivrTtsVoice.take(160))
             .apply()
     }
 

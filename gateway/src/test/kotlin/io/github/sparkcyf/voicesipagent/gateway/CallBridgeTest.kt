@@ -35,6 +35,7 @@ class CallBridgeTest {
     private fun buildLocalIvr(
         inputTimeoutMs: Long = 10_000,
         fallbackPolicy: CallFallbackPolicy = CallFallbackPolicy(),
+        eventPromptSamples: (String) -> ShortArray? = { null },
     ) {
         bridge = CallBridge(
             sideA = cell,
@@ -50,6 +51,7 @@ class CallBridgeTest {
                 )
             },
             ivrPromptSamples = { ShortArray(160) { 700 } },
+            ivrEventPromptSamples = eventPromptSamples,
             ivrInputTimeoutMs = inputTimeoutMs,
             fallbackPolicy = fallbackPolicy,
         )
@@ -110,6 +112,30 @@ class CallBridgeTest {
         caller.mediaUp(FakePort(isClockSource = true, fill = 0)); settle()
         caller.remoteDtmf('2'); settle()
         assertEquals("sip:reception@example.invalid", sip.dialed.single().target)
+    }
+
+    @Test
+    fun localIvrPlaysDoctorConfirmationBeforeDialingWhenConfigured() {
+        bridge.stop()
+        buildLocalIvr(eventPromptSamples = { kind -> if (kind == "doctor") ShortArray(160) { 321 } else null })
+        val caller = cell.incoming("+966500000051"); settle()
+        val callerPort = FakePort(isClockSource = true, fill = 0)
+        caller.mediaUp(callerPort); settle()
+        caller.remoteDtmf('1'); settle()
+        assertTrue("confirmation must finish before dialing", sip.dialed.isEmpty())
+        callerPort.clock!!.onFrame(); settle()
+        assertEquals("sip:doctor@example.invalid", sip.dialed.single().target)
+    }
+
+    @Test
+    fun localIvrInvalidDigitAnnouncementKeepsCallReadyForMenuReplay() {
+        bridge.stop()
+        buildLocalIvr(eventPromptSamples = { kind -> if (kind == "invalid") ShortArray(160) { 123 } else null })
+        val caller = cell.incoming("+966500000052"); settle()
+        caller.mediaUp(FakePort(isClockSource = true, fill = 0)); settle()
+        caller.remoteDtmf('9'); settle()
+        assertTrue(sip.dialed.isEmpty())
+        assertNotNull(bridge.session?.ivrPlayback)
     }
 
     @Test

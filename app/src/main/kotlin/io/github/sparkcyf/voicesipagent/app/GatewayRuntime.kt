@@ -11,6 +11,7 @@ import android.content.ComponentName
 import android.content.pm.PackageManager
 import android.app.role.RoleManager
 import android.Manifest
+import java.io.File
 import io.github.sparkcyf.voicesipagent.gateway.BridgeSession
 import io.github.sparkcyf.voicesipagent.gateway.CallBridge
 import io.github.sparkcyf.voicesipagent.gateway.CallFallbackPolicy
@@ -40,7 +41,6 @@ import io.github.sparkcyf.voicesipagent.voice.redactNumber
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.update
-import java.io.File
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.ScheduledFuture
 import java.util.concurrent.ScheduledThreadPoolExecutor
@@ -102,7 +102,41 @@ class GatewayRuntime private constructor(context: Context) {
             val lo = bytes[i * 2].toInt() and 0xff
             val hi = bytes[i * 2 + 1].toInt()
             ((hi shl 8) or lo).toShort()
+        }.also { AppLog.i("ivr_prompt_generated source=default_pcm sampleRate=8000 channels=1 samples=${it.size}; remote audibility unverified") }
+    }
+    @Volatile private var preparedIvrPcm: Map<String, ShortArray> = emptyMap()
+    private fun configuredIvrPcm(kind: String): ShortArray? {
+        return preparedIvrPcm[kind] ?: if (kind == "welcome") ivrMenuPcm else null
+    }
+
+    /** Decode potentially compressed media away from the call-bridge frame/signal thread. */
+    private fun prepareIvrPcm() {
+        val s = settings
+        val result = linkedMapOf<String, ShortArray>()
+        val filesDir = runCatching { app.filesDir }.getOrNull()
+        when (s.ivrSource) {
+            "tts" -> if (filesDir != null) listOf("welcome", "doctor", "reception", "invalid", "timeout").forEach { kind ->
+                runCatching { IvrAudioDecoder.decodeWav(File(filesDir, "ivr_tts_$kind.wav")) }.getOrNull()?.let { result[kind] = it }
+            }
+            "file" -> if (filesDir != null) {
+                val ext = s.ivrAudioFileName.substringAfterLast('.', "").lowercase()
+                val file = when (ext) {
+                    "wav" -> File(filesDir, "ivr_custom.wav")
+                    "ogg" -> File(filesDir, "ivr_custom.ogg")
+                    else -> null
+                }
+                val samples = runCatching { file?.let { if (ext == "ogg") IvrAudioDecoder.decodeOgg(it) else IvrAudioDecoder.decodeWav(it) } }.getOrNull()
+                if (samples != null) listOf("welcome", "doctor", "reception", "invalid", "timeout").forEach { result[it] = samples }
+            }
         }
+        if (result["welcome"] == null) {
+            if (s.ivrSource != "default") AppLog.w("configured IVR audio unavailable/invalid; built-in prompt remains available")
+            runCatching { ivrMenuPcm }.getOrNull()?.let { result["welcome"] = it }
+        }
+        result.forEach { (kind, pcm) ->
+            AppLog.i("ivr_prompt_generated prompt=$kind sampleRate=8000 channels=1 samples=${pcm.size}; remote audibility unverified")
+        }
+        preparedIvrPcm = result
     }
     private val _settings = MutableStateFlow(settingsStore.load())
     val settingsFlow: StateFlow<GatewaySettings> = _settings
@@ -652,6 +686,7 @@ class GatewayRuntime private constructor(context: Context) {
         stopBridge()
         if (!gatewayEnabled) return
         val s = settings
+        prepareIvrPcm()
         if (!s.takeover) {
             bridge = null
             AppLog.i("bridge idle: takeover off")
@@ -691,7 +726,8 @@ class GatewayRuntime private constructor(context: Context) {
             log = { AppLog.i("bridge: $it") },
             localCellularIvr = !loopback,
             ivrEmployees = clinicEmployeeStore::list,
-            ivrPromptSamples = { ivrMenuPcm },
+            ivrPromptSamples = { configuredIvrPcm("welcome") },
+            ivrEventPromptSamples = { kind -> configuredIvrPcm(kind) },
             fallbackPolicy = runCatching {
                 CallFallbackPolicy(
                     fallbackExtensions = s.fallbackExtensionsCsv.split(',').map { it.trim() }.filter { it.isNotEmpty() },
@@ -819,10 +855,20 @@ class GatewayRuntime private constructor(context: Context) {
         settingsStore.save(new)
         _settings.value = new
         AppLog.i("settings saved (serverMode=${new.serverMode}, takeover=${new.takeover}, audioMethod=${new.audioMethod}, callAccess=${new.callAccess}; SIP credentials and addresses omitted)")
+        val ivrChanged = old.ivrWelcome != new.ivrWelcome || old.ivrDoctor != new.ivrDoctor ||
+            old.ivrReception != new.ivrReception || old.ivrInvalid != new.ivrInvalid || old.ivrTimeout != new.ivrTimeout ||
+            old.ivrSource != new.ivrSource || old.ivrSpeechRate != new.ivrSpeechRate ||
+            old.ivrPitch != new.ivrPitch || old.ivrAudioFileName != new.ivrAudioFileName ||
+            old.ivrTtsVoice != new.ivrTtsVoice
         val platformOnly = old.copy(audioMethod = new.audioMethod, callAccess = new.callAccess,
             muteEarpiece = new.muteEarpiece, sipDebugLog = new.sipDebugLog,
-            keepDefaultDialer = new.keepDefaultDialer) == new
+            keepDefaultDialer = new.keepDefaultDialer, ivrWelcome = new.ivrWelcome,
+            ivrDoctor = new.ivrDoctor, ivrReception = new.ivrReception,
+            ivrInvalid = new.ivrInvalid, ivrTimeout = new.ivrTimeout, ivrSource = new.ivrSource,
+            ivrSpeechRate = new.ivrSpeechRate, ivrPitch = new.ivrPitch,
+            ivrAudioFileName = new.ivrAudioFileName, ivrTtsVoice = new.ivrTtsVoice) == new
         if (!platformOnly) { startSip(); rebuildBridge() }
+        else if (ivrChanged) rebuildBridge()
         configureCallAccess()
         runSetup()
         updateReadiness()
