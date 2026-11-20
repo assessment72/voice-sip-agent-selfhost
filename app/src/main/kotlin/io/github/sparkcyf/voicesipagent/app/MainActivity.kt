@@ -45,6 +45,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalUriHandler
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
@@ -152,6 +153,7 @@ private fun Screen(rt: GatewayRuntime, modifier: Modifier, requestDialer: () -> 
             Text(h.session ?: t("Нет активной сессии", "No active session"))
         }
         CallApprovalsSection(rt)
+        CentralMcpSection(rt)
         SettingsSection(rt)
         Section(t("Журнал", "Log")) {
             Text(log.takeLast(60).reversed().joinToString("\n"), fontFamily = FontFamily.Monospace,
@@ -403,6 +405,61 @@ private fun Section(title: String, info: String? = null, content: @Composable ()
             LabelWithInfo(title, info, style = MaterialTheme.typography.titleMedium)
             content()
         }
+    }
+}
+
+
+@Composable
+private fun CentralMcpSection(rt: GatewayRuntime) {
+    val context = LocalContext.current
+    val store = remember { CentralMcpConfigStore(context) }
+    val saved = remember { store.load() }
+    var endpoint by remember { mutableStateOf(saved.endpoint) }
+    var gatewayId by remember { mutableStateOf(saved.gatewayId) }
+    var token by remember { mutableStateOf(saved.token) }
+    var message by remember { mutableStateOf("") }
+    Section(t("Управление через центральный MCP", "Central MCP management"), info = "central_mcp") {
+        Text(
+            t(
+                "Подключает этот телефон как отдельный шлюз. SIP-аккаунты и SIM остаются только на этом устройстве. Токен хранится в Android Keystore.",
+                "Connects this phone as an independent gateway. SIP accounts and SIMs remain local to this device. The device token is protected by Android Keystore.",
+            ),
+            style = MaterialTheme.typography.bodySmall,
+        )
+        Field(t("Адрес центрального сервера HTTPS", "Central server HTTPS URL"), endpoint) { endpoint = it }
+        Field(t("ID этого шлюза", "This gateway ID"), gatewayId) { gatewayId = it }
+        OutlinedTextField(
+            value = token,
+            onValueChange = { token = it },
+            label = { Text(t("Уникальный токен устройства", "Unique device token")) },
+            visualTransformation = PasswordVisualTransformation(),
+            singleLine = true,
+            modifier = Modifier.fillMaxWidth(),
+        )
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Button(onClick = {
+                runCatching {
+                    store.save(endpoint, gatewayId, token)
+                    GatewayService.start(context)
+                    CentralMcpAgent.reconfigure(context, rt)
+                    message = t("تم حفظ الإعدادات وبدء الاتصال.", "Configuration saved; connection started.")
+                }.onFailure { message = it.message ?: "Invalid configuration" }
+            }) { Text(t("حفظ وربط الجهاز", "Save & connect")) }
+            OutlinedButton(onClick = {
+                CentralMcpAgent.stop()
+                store.clear()
+                token = ""
+                message = t("تم فصل هذا الجهاز عن MCP المركزي.", "This gateway has been disconnected from central MCP.")
+            }) { Text(t("فصل الجهاز", "Disconnect")) }
+        }
+        if (message.isNotBlank()) Text(message, style = MaterialTheme.typography.bodySmall)
+        Text(
+            t(
+                "يجب إضافة نفس ID والتوكن إلى إعداد GATEWAY_CREDENTIALS_JSON في الخادم المركزي. لا تستخدم توكن جهاز آخر.",
+                "The same ID/token pair must be provisioned in the central server's GATEWAY_CREDENTIALS_JSON. Never reuse another device's token.",
+            ),
+            style = MaterialTheme.typography.bodySmall,
+        )
     }
 }
 
