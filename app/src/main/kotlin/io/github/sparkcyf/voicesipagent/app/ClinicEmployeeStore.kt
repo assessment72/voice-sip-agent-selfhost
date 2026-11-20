@@ -27,7 +27,7 @@ class ClinicEmployeeStore(context: Context) {
     }.getOrDefault(emptyList())
 
     @Synchronized fun upsert(name: String, kind: String, destination: String, priority: Int,
-        enabled: Boolean = true, extension: String = "", id: String? = null): CallCenterEmployee {
+        enabled: Boolean = true, extension: String = "", id: String? = null, ringSeconds: Int = 20): CallCenterEmployee {
         val current = list()
         val existing = id?.let { key -> current.firstOrNull { it.id == key } ?: error("employee not found") }
         val normalizedExtension = extension.trim().ifEmpty {
@@ -37,7 +37,7 @@ class ClinicEmployeeStore(context: Context) {
         }
         require(current.none { it.id != existing?.id && it.extension == normalizedExtension }) { "duplicate extension" }
         val employee = parseEmployee(existing?.id ?: UUID.randomUUID().toString(), name, kind, destination,
-            priority, enabled, 20, normalizedExtension)
+            priority, enabled, ringSeconds, normalizedExtension)
             ?: error("invalid employee")
         save(current.filterNot { it.id == employee.id } + employee)
         return employee

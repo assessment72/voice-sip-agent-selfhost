@@ -24,12 +24,22 @@ class BridgeSession internal constructor(
 ) {
     var outbound: CallLeg? = null
         internal set
+    /** Monotonically increases whenever an employee call attempt is replaced. */
+    @Volatile var attemptId: Long = 0
+        internal set
+    @Volatile var selectedEmployeeId: String? = null
+        internal set
+    @Volatile var employeeAnswered: Boolean = false
+        internal set
+    internal val attemptedEmployeeIds = linkedSetOf<String>()
+    internal val attemptFailures = CopyOnWriteArrayList<EmployeeAttemptFailure>()
+    internal var outboundWatcher: CallLeg.Listener? = null
     val startedAtMs: Long = System.currentTimeMillis()
-    var connectedAtMs: Long? = null
+    @Volatile var connectedAtMs: Long? = null
         internal set
     var media: MediaBridge? = null
         internal set
-    var endedAtMs: Long? = null
+    @Volatile var endedAtMs: Long? = null
         internal set
     internal var answerTimer: ScheduledFuture<*>? = null
     internal var inboundAnswerRequested = false
@@ -44,10 +54,20 @@ class BridgeSession internal constructor(
     internal var ivrPlayback: MediaBridge? = null
     internal var ivrPort: IvrMediaPort? = null
     internal var recordedInboundPort: MediaPort? = null
+    @Volatile var endCause: HangupCause? = null
+        internal set
 
     override fun toString() =
         "session#$id[$origin ${inbound.kind}:${inbound.state} -> ${outbound?.kind}:${outbound?.state}]"
 }
+
+data class EmployeeAttemptFailure(
+    val attemptId: Long,
+    val employeeId: String,
+    val extension: String,
+    val cause: HangupCause,
+    val sipResponseCode: Int? = null,
+)
 
 fun interface BridgeListener {
     fun onSessionChanged(session: BridgeSession)
@@ -76,6 +96,8 @@ class CallBridge(
     private val ivrEmployees: () -> List<CallCenterEmployee> = { emptyList() },
     private val ivrPromptSamples: () -> ShortArray? = { null },
     private val ivrInputTimeoutMs: Long = 10_000,
+    private val fallbackPolicy: CallFallbackPolicy = CallFallbackPolicy(),
+    private val audioDiagnostics: () -> String = { "unavailable" },
 ) {
     private val executor: ScheduledExecutorService =
         ScheduledThreadPoolExecutor(1) { r -> Thread(r, "call-bridge").apply { isDaemon = true } }.apply {
@@ -127,7 +149,9 @@ class CallBridge(
             inbound.addListener(LegWatcher(s, inbound = true))
             val outbound = to.dial(toTarget, caller)
             s.outbound = outbound
-            outbound.addListener(LegWatcher(s, inbound = false))
+            val watcher = LegWatcher(s, inbound = false, attemptId = s.attemptId)
+            s.outboundWatcher = watcher
+            outbound.addListener(watcher)
             s.answerTimer = executor.schedule({
                 if (session === s && s.connectedAtMs == null) endSession(s, HangupCause.NO_ANSWER)
             }, config.answerTimeoutMs, TimeUnit.MILLISECONDS)
@@ -219,10 +243,21 @@ class CallBridge(
         notifyChanged(s)
     }
 
-    private inner class LegWatcher(val s: BridgeSession, val inbound: Boolean) : CallLeg.Listener {
-        override fun onStateChanged(leg: CallLeg, state: LegState) = post { reevaluate(s); notifyChanged(s) }
-        override fun onMediaChanged(leg: CallLeg, media: MediaPort?) = post { reevaluate(s) }
+    private inner class LegWatcher(
+        val s: BridgeSession,
+        val inbound: Boolean,
+        private val attemptId: Long? = null,
+    ) : CallLeg.Listener {
+        override fun onStateChanged(leg: CallLeg, state: LegState) = post {
+            if (!isCurrentLeg(s, leg, inbound, attemptId)) return@post
+            if (!inbound && state == LegState.CONNECTED) s.employeeAnswered = true
+            reevaluate(s); notifyChanged(s)
+        }
+        override fun onMediaChanged(leg: CallLeg, media: MediaPort?) = post {
+            if (isCurrentLeg(s, leg, inbound, attemptId)) reevaluate(s)
+        }
         override fun onDtmf(leg: CallLeg, digit: Char, durationMs: Int) = post {
+            if (!isCurrentLeg(s, leg, inbound, attemptId)) return@post
             if (s.localIvr && s.outbound == null) {
                 handleIvrDigit(s, digit)
                 return@post
@@ -232,18 +267,25 @@ class CallBridge(
         }
     }
 
+    private fun isCurrentLeg(s: BridgeSession, leg: CallLeg, inbound: Boolean, attemptId: Long?): Boolean =
+        session === s && if (inbound) leg === s.inbound else
+            leg === s.outbound && (attemptId == null || attemptId == s.attemptId)
+
     /** Drives the session from the current leg states; idempotent. */
     private fun reevaluate(s: BridgeSession) {
         if (session !== s) return
         val a = s.inbound
         val b = s.outbound
-        if (a.state == LegState.ENDED || b?.state == LegState.ENDED) {
-            val cause = if (a.state == LegState.ENDED) {
-                if (s.connectedAtMs == null) HangupCause.CANCELLED else HangupCause.NORMAL
-            } else {
-                if (s.connectedAtMs == null) b?.endCause ?: HangupCause.UNAVAILABLE else HangupCause.NORMAL
+        if (a.state == LegState.ENDED) {
+            endSession(s, if (s.connectedAtMs == null) HangupCause.CANCELLED else HangupCause.NORMAL)
+            return
+        }
+        if (b?.state == LegState.ENDED) {
+            if (s.localIvr && s.selectedEmployeeId != null && !s.employeeAnswered && s.connectedAtMs == null) {
+                handleEmployeeAttemptFailure(s, s.attemptId, b.endCause ?: HangupCause.UNAVAILABLE)
+                return
             }
-            endSession(s, cause)
+            endSession(s, if (s.connectedAtMs == null) b.endCause ?: HangupCause.UNAVAILABLE else HangupCause.NORMAL)
             return
         }
         if (s.localIvr && b == null) {
@@ -263,6 +305,8 @@ class CallBridge(
             a.answer()
         }
         if (a.state == LegState.CONNECTED && b.state == LegState.CONNECTED) {
+            s.employeeAnswered = true
+            if (s.localIvr) s.ivr.complete()
             if (s.connectedAtMs == null) {
                 s.connectedAtMs = System.currentTimeMillis()
                 s.answerTimer?.cancel(false)
@@ -330,7 +374,13 @@ class CallBridge(
         if (session !== s || !s.localIvr || s.outbound != null) return
         s.ivr.announcementFinished()
         val playback = s.ivrPlayback
-        log("$s: IVR prompt ended; frames=${playback?.frames ?: 0}, promptPeak=${playback?.peakB ?: 0} (remote audibility not verified)")
+        val ivrPort = s.ivrPort
+        val audioRoute = runCatching { audioDiagnostics() }.getOrDefault("unavailable")
+        log("$s: IVR result=software framesProduced=${ivrPort?.framesProduced ?: 0} " +
+            "callerAudioChannelWrites=${playback?.writesToA ?: 0} " +
+            "callerAudioWriteErrors=${playback?.writeErrorsToA ?: 0} " +
+            "lastWriteError=${playback?.lastWriteErrorToA ?: "none"} route=[$audioRoute]; " +
+            "frames were sent in software; remote audibility was not verified")
         s.ivrInputTimer?.cancel(false)
         s.ivrInputTimer = executor.schedule({
             if (session === s && s.outbound == null) retryIvr(s, "no extension entered")
@@ -347,7 +397,11 @@ class CallBridge(
             is ClinicIvrSession.Action.ConnectEmployee -> {
                 s.ivrInputTimer?.cancel(false)
                 s.ivrInputTimer = null
-                val decision = runCatching { ClinicCallRouter(CallCenterPolicy(s.ivrEmployees)).route(digit) }
+                val policyAttempts = s.ivrEmployees.size.coerceIn(1, 4)
+                val decision = runCatching {
+                    ClinicCallRouter(CallCenterPolicy(s.ivrEmployees, maxAttempts = policyAttempts))
+                        .route(digit, s.attemptedEmployeeIds)
+                }
                     .getOrNull()
                 val employeeId = (decision as? RouteDecision.Connect)?.employeeId
                 val employee = employeeId?.let { id -> s.ivrEmployees.firstOrNull { it.id == id } }
@@ -356,30 +410,107 @@ class CallBridge(
                     retryIvr(s, "extension unavailable")
                     return
                 }
-                s.ivr.complete()
-                stopIvrPlayback(s)
-                val target = when (val destination = employee.destination) {
-                    is EmployeeDestination.Sip -> destination.uri
-                    is EmployeeDestination.Mobile -> destination.e164
-                }
-                val outbound = runCatching { sideB.dial(target, s.inbound.remote) }.getOrElse {
-                    log("$s: employee dial failed: ${it.javaClass.simpleName}")
-                    endSession(s, HangupCause.UNAVAILABLE)
-                    return
-                }
-                s.outbound = outbound
-                outbound.addListener(LegWatcher(s, inbound = false))
-                s.answerTimer?.cancel(false)
-                s.answerTimer = executor.schedule({
-                    if (session === s && s.connectedAtMs == null) {
-                        log("$s: employee ${employee.id} did not answer")
-                        endSession(s, HangupCause.NO_ANSWER)
-                    }
-                }, employee.ringSeconds.toLong(), TimeUnit.SECONDS)
-                log("$s: extension ${action.extension} -> employee ${employee.id}, dialing ${sideB.name}")
-                reevaluate(s)
-                notifyChanged(s)
+                startEmployeeAttempt(s, employee)
             }
+        }
+    }
+
+    private fun startEmployeeAttempt(s: BridgeSession, employee: CallCenterEmployee) {
+        if (session !== s || s.inbound.state == LegState.ENDED || s.connectedAtMs != null) return
+        if (s.attemptedEmployeeIds.contains(employee.id) || s.attemptedEmployeeIds.size >= fallbackPolicy.maxAttempts) {
+            finishFallback(s, s.attemptFailures.lastOrNull()?.cause ?: HangupCause.UNAVAILABLE)
+            return
+        }
+        s.ivrInputTimer?.cancel(false)
+        s.ivrInputTimer = null
+        stopIvrPlayback(s)
+        val target = when (val destination = employee.destination) {
+            is EmployeeDestination.Sip -> destination.uri
+            is EmployeeDestination.Mobile -> destination.e164
+        }
+        val thisAttempt = ++s.attemptId
+        s.selectedEmployeeId = employee.id
+        s.attemptedEmployeeIds += employee.id
+        s.employeeAnswered = false
+        s.answerTimer?.cancel(false)
+        val outbound = try {
+            sideB.dial(target, s.inbound.remote)
+        } catch (_: Throwable) {
+            log("$s: employee extension ${employee.extension} dial setup failed")
+            handleEmployeeAttemptFailure(s, thisAttempt, HangupCause.UNAVAILABLE)
+            return
+        }
+        if (session !== s || s.attemptId != thisAttempt || s.inbound.state == LegState.ENDED) {
+            outbound.hangup(HangupCause.CANCELLED)
+            return
+        }
+        s.outbound = outbound
+        val watcher = LegWatcher(s, inbound = false, attemptId = thisAttempt)
+        s.outboundWatcher = watcher
+        outbound.addListener(watcher)
+        s.answerTimer = executor.schedule({
+            if (session === s && s.attemptId == thisAttempt && s.connectedAtMs == null && !s.employeeAnswered) {
+                log("$s: employee extension ${employee.extension} ring timeout")
+                handleEmployeeAttemptFailure(s, thisAttempt, HangupCause.NO_ANSWER)
+            }
+        }, employee.ringSeconds.toLong(), TimeUnit.SECONDS)
+        log("$s: extension ${employee.extension} attempt=$thisAttempt dialing ${sideB.name}")
+        reevaluate(s)
+        notifyChanged(s)
+    }
+
+    private fun handleEmployeeAttemptFailure(s: BridgeSession, attemptId: Long, cause: HangupCause) {
+        if (session !== s || s.attemptId != attemptId || s.connectedAtMs != null || s.employeeAnswered) return
+        if (s.inbound.state == LegState.ENDED) {
+            endSession(s, HangupCause.CANCELLED)
+            return
+        }
+        val employee = s.ivrEmployees.firstOrNull { it.id == s.selectedEmployeeId }
+        val previous = s.outbound
+        val sipCode = previous?.endCode
+        if (employee != null) s.attemptFailures += EmployeeAttemptFailure(
+            attemptId, employee.id, employee.extension, cause, sipResponseCode = sipCode,
+        )
+        s.outboundWatcher?.let { previous?.removeListener(it) }
+        s.outboundWatcher = null
+        s.answerTimer?.cancel(false)
+        s.answerTimer = null
+        // Invalidate this attempt before hanging it up: any reentrant or queued callback is stale.
+        s.attemptId++
+        s.outbound = null
+        if (previous != null && previous.state != LegState.ENDED) previous.hangup(HangupCause.CANCELLED)
+        log("$s: employee extension ${employee?.extension ?: "?"} attempt failed: " +
+            (sipCode?.let { "SIP $it " } ?: "") + cause)
+
+        val retryable = cause == HangupCause.BUSY || cause == HangupCause.NO_ANSWER || cause == HangupCause.UNAVAILABLE
+        if (!retryable) {
+            endSession(s, cause)
+            return
+        }
+        if (s.attemptedEmployeeIds.size < fallbackPolicy.maxAttempts) {
+            val fallback = fallbackPolicy.nextFallback(s.ivrEmployees, s.attemptedEmployeeIds)
+            if (fallback != null) {
+                startEmployeeAttempt(s, fallback)
+                return
+            }
+        }
+        finishFallback(s, cause)
+    }
+
+    private fun finishFallback(s: BridgeSession, cause: HangupCause) {
+        if (session !== s || s.inbound.state == LegState.ENDED) {
+            if (session === s) endSession(s, HangupCause.CANCELLED)
+            return
+        }
+        if (fallbackPolicy.finalAction == FinalCallAction.RETURN_TO_IVR_ONCE &&
+            s.ivrPromptAttempts < MAX_IVR_PROMPTS && s.outbound == null) {
+            log("$s: fallback list exhausted after $cause; replaying IVR once")
+            s.ivr.retry()
+            startIvrPlayback(s)
+            notifyChanged(s)
+        } else {
+            log("$s: fallback list exhausted; final action ends call ($cause)")
+            endSession(s, cause)
         }
     }
 
@@ -416,7 +547,11 @@ class CallBridge(
         s.recordings.toList().forEach { runCatching { it.close() } }
         s.recordings.clear()
         if (s.inbound.state != LegState.ENDED) s.inbound.hangup(cause)
-        s.outbound?.let { if (it.state != LegState.ENDED) it.hangup(if (cause == HangupCause.CANCELLED) HangupCause.CANCELLED else cause) }
+        s.outbound?.let { leg ->
+            s.outboundWatcher?.let(leg::removeListener)
+            if (leg.state != LegState.ENDED) leg.hangup(if (cause == HangupCause.CANCELLED) HangupCause.CANCELLED else cause)
+        }
+        s.endCause = cause
         log("$s ended: $cause")
         notifyChanged(s)
     }

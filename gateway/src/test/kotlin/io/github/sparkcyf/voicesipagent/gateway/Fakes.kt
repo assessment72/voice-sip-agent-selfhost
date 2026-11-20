@@ -21,17 +21,24 @@ class FakePort(
     override val format: PcmFormat = PcmFormat.NARROWBAND,
 ) : MediaPort {
     var clock: FrameClockListener? = null
+    var writeFailure: RuntimeException? = null
     val written = CopyOnWriteArrayList<ShortArray>()
     override fun setClockListener(listener: FrameClockListener?) { clock = listener }
     override fun readFrame() = ShortArray(format.frameSamples) { fill }
-    override fun writeFrame(frame: ShortArray) { written += frame }
+    override fun writeFrame(frame: ShortArray) { writeFailure?.let { throw it }; written += frame }
 }
 
 class FakeLeg(kind: String, dir: LegDirection, remote: Party, target: String?) :
     AbstractCallLeg("$kind-${target ?: remote.number}", kind, dir, remote, target) {
     val actions = CopyOnWriteArrayList<String>()
     val dtmf = CopyOnWriteArrayList<Char>()
+    private val historicalListeners = CopyOnWriteArrayList<CallLeg.Listener>()
     var autoConfirmAnswer = true
+
+    override fun addListener(listener: CallLeg.Listener) {
+        super.addListener(listener)
+        historicalListeners.addIfAbsent(listener)
+    }
 
     override fun ring() { actions += "ring"; transition(LegState.RINGING) }
     override fun answer() { actions += "answer"; if (autoConfirmAnswer) transition(LegState.CONNECTED) }
@@ -45,6 +52,7 @@ class FakeLeg(kind: String, dir: LegDirection, remote: Party, target: String?) :
     fun remoteEnded(cause: HangupCause) = transition(LegState.ENDED, cause)
     fun mediaUp(port: MediaPort) = publishMedia(port)
     fun remoteDtmf(c: Char) = publishDtmf(c, 100)
+    fun fireLateStateForTest(state: LegState) = historicalListeners.forEach { it.onStateChanged(this, state) }
 }
 
 class FakeEndpoint(override val name: String) : CallEndpoint {

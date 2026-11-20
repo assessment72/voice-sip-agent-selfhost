@@ -28,6 +28,8 @@ class PcmSocketPort(
 
     @Volatile var framesIn = 0L; private set
     @Volatile var framesOut = 0L; private set
+    @Volatile var writeErrors = 0L; private set
+    @Volatile var lastWriteErrorType: String? = null; private set
 
     private val reader = Thread(::readLoop, "pcm-socket-rx").apply {
         priority = Thread.MAX_PRIORITY
@@ -45,17 +47,26 @@ class PcmSocketPort(
     override fun readFrame(): ShortArray = queue.poll() ?: format.silence()
 
     override fun writeFrame(frame: ShortArray) {
-        if (closed.get()) return
+        if (closed.get()) failWrite(IllegalStateException("PCM channel is closed"))
         synchronized(writeBuf) {
-            if (closed.get()) return
-            format.encodeLe(frame, writeBuf)
+            if (closed.get()) failWrite(IllegalStateException("PCM channel is closed"))
             try {
+                format.encodeLe(frame, writeBuf)
                 check(Os.write(fd, writeBuf, 0, writeBuf.size) == writeBuf.size) { "short PCM packet write" }
                 framesOut++
             } catch (e: Exception) {
-                closeWith("write: ${e.message}")
+                writeErrors++
+                lastWriteErrorType = e.javaClass.simpleName
+                closeWith("write: ${e.javaClass.simpleName}")
+                throw IllegalStateException("PCM channel write failed", e)
             }
         }
+    }
+
+    private fun failWrite(error: RuntimeException): Nothing {
+        writeErrors++
+        lastWriteErrorType = error.javaClass.simpleName
+        throw error
     }
 
     private fun readLoop() {

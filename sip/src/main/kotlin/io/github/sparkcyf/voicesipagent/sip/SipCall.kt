@@ -178,7 +178,7 @@ internal class SipCall(
             }
         }
         log.info("call $id failed: ${r.code} ${r.reason}")
-        end(SipCodes.toCause(r.code))
+        end(SipCodes.toCause(r.code), r.code)
         finish()
     }
 
@@ -377,10 +377,10 @@ internal class SipCall(
 
     private fun remoteWithTag(): NameAddr = remoteTag?.let(remoteUri::withTag) ?: remoteUri
 
-    private fun end(cause: HangupCause) {
+    private fun end(cause: HangupCause, sipResponseCode: Int? = null) {
         ringTimer?.cancel(false)
         stopMedia()
-        transition(LegState.ENDED, cause)
+        transition(LegState.ENDED, cause, sipResponseCode)
     }
 
     private fun finish() {

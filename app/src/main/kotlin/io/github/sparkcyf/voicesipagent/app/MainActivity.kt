@@ -63,7 +63,9 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import io.github.sparkcyf.voicesipagent.gateway.BusyPolicy
 import io.github.sparkcyf.voicesipagent.gateway.CallCenterEmployee
+import io.github.sparkcyf.voicesipagent.gateway.CallFallbackPolicy
 import io.github.sparkcyf.voicesipagent.gateway.EmployeeDestination
+import io.github.sparkcyf.voicesipagent.gateway.FinalCallAction
 import io.github.sparkcyf.voicesipagent.privileged.HealthKeys
 import io.github.sparkcyf.voicesipagent.privileged.AudioMethod
 import io.github.sparkcyf.voicesipagent.privileged.CallAccess
@@ -224,6 +226,8 @@ private fun Screen(rt: GatewayRuntime, modifier: Modifier, requestDialer: () -> 
             Text(h.session ?: t("Нет активной сессии", "No active session"))
         }
         ClinicRoutingSection(rt)
+        ClinicEmployeeStatusSection(rt)
+        CallHistorySection(rt)
         SettingsSection(rt)
         Section(t("Журнал", "Log")) {
             val sharedLog = remember(log) { LogShareSanitizer.sanitize(log.takeLast(200).joinToString("\n")) }
@@ -373,8 +377,12 @@ private fun SettingsSection(rt: GatewayRuntime) {
     var transport by remember(cur) { mutableStateOf(SipTransport.of(cur.sipTransport) ?: SipTransport.UDP) }
     var srtp by remember(cur) { mutableStateOf(SrtpPolicy.of(cur.srtp) ?: SrtpPolicy.OPTIONAL) }
     var busy by remember(cur) { mutableStateOf(cur.busyPolicy) }
+    var fallbackExtensions by remember(cur) { mutableStateOf(cur.fallbackExtensionsCsv) }
+    var maxCallAttempts by remember(cur) { mutableStateOf(cur.maxCallAttempts.toString()) }
+    var finalCallAction by remember(cur) { mutableStateOf(cur.finalCallAction) }
     var lease by remember(cur) { mutableStateOf(cur.registrarLeaseSec.toString()) }
     var regPassword by remember(cur) { mutableStateOf(cur.registrarPassword) }
+    var settingsMessage by remember { mutableStateOf("") }
     val builtin = stack == SipStack.BUILTIN
     Section(t("Настройки", "Settings")) {
         // Core mode: this phone is its own SIP server, or it registers to an external PBX.
@@ -441,7 +449,27 @@ private fun SettingsSection(rt: GatewayRuntime) {
             { when (it) { BusyPolicy.REJECT -> t("Отклонять", "Reject"); BusyPolicy.IGNORE -> t("Отдать звонилке", "Leave to phone") } }, info = "busy") {
             busy = it
         }
+        Field(t("ترتيب تحويلات البدائل (تحويلات مفصولة بفواصل)", "Fallback extension order (comma separated)"), fallbackExtensions) {
+            fallbackExtensions = it
+        }
+        Field(t("الحد الأقصى لمحاولات الموظفين (1–4)", "Maximum employee attempts (1–4)"), maxCallAttempts, KeyboardType.Number) {
+            maxCallAttempts = it
+        }
+        Choice(t("الإجراء النهائي بعد فشل البدائل", "Final action after all employee fallbacks fail"), FinalCallAction.entries, finalCallAction,
+            { if (it == FinalCallAction.END_CALL) t("إنهاء المكالمة", "End call") else t("إعادة قائمة IVR مرة واحدة ثم الإنهاء", "Replay IVR once, then end") }) {
+            finalCallAction = it
+        }
         Button(onClick = {
+            val attempts = maxCallAttempts.toIntOrNull()?.takeIf { it in 1..4 }
+            val fallback = runCatching {
+                CallFallbackPolicy(fallbackExtensions.split(',').map { it.trim() }.filter { it.isNotEmpty() },
+                    attempts ?: error("invalid attempts"), finalCallAction)
+            }.exceptionOrNull()
+            if (fallback != null) {
+                settingsMessage = t("تحقق من ترتيب التحويلات وحد المحاولات (1–4).", "Check fallback extensions and attempt count (1–4).")
+                return@Button
+            }
+            settingsMessage = ""
             rt.applySettings(
                 cur.copy(
                     serverMode = serverMode,
@@ -451,9 +479,13 @@ private fun SettingsSection(rt: GatewayRuntime) {
                     server = server, port = port.toIntOrNull() ?: transport.defaultPort, username = user, password = password,
                     allowedPrefixes = prefixes, domain = domain,
                     sipStack = stack, sipTransport = transport.id, srtp = srtp.id, busyPolicy = busy,
+                    fallbackExtensionsCsv = fallbackExtensions,
+                    maxCallAttempts = attempts ?: cur.maxCallAttempts,
+                    finalCallAction = finalCallAction,
                 ),
             )
         }) { Text(t("Сохранить и применить", "Save & apply")) }
+        if (settingsMessage.isNotBlank()) Text(settingsMessage, style = MaterialTheme.typography.bodySmall)
     }
 }
 
@@ -464,6 +496,7 @@ private fun ClinicRoutingSection(rt: GatewayRuntime) {
     var editingId by remember { mutableStateOf<String?>(null) }
     var name by remember { mutableStateOf("") }
     var extension by remember { mutableStateOf("1") }
+    var ringSeconds by remember { mutableStateOf("20") }
     var kind by remember { mutableStateOf("sip") }
     var destination by remember { mutableStateOf("") }
     var message by remember { mutableStateOf("") }
@@ -472,6 +505,7 @@ private fun ClinicRoutingSection(rt: GatewayRuntime) {
         editingId = null
         name = ""
         extension = if (employees.none { it.extension == "1" }) "1" else "2"
+        ringSeconds = "20"
         kind = "sip"
         destination = ""
         message = ""
@@ -488,6 +522,9 @@ private fun ClinicRoutingSection(rt: GatewayRuntime) {
         Choice(t("نوع الوجهة", "Destination type"), listOf("sip", "mobile"), kind,
             { if (it == "sip") "SIP" else t("رقم جوال عبر SIP", "Mobile via SIP trunk") }) { kind = it }
         Field(t("اسم الموظف", "Employee name"), name) { name = it }
+        Field(t("مدة الرنين قبل البديل (5–120 ثانية)", "Ring time before fallback (5–120 seconds)"), ringSeconds, KeyboardType.Number) {
+            ringSeconds = it
+        }
         Field(
             if (kind == "sip") t("وجهة SIP (مثال: sip:doctor@host)", "SIP destination (e.g. sip:doctor@host)")
             else t("رقم دولي بصيغة +966…", "International number in +966… format"),
@@ -500,12 +537,15 @@ private fun ClinicRoutingSection(rt: GatewayRuntime) {
                     val wasEditing = editingId != null
                     try {
                         store.upsert(name, kind, destination, priority = extension.toInt(),
-                            extension = extension, id = editingId)
+                            extension = extension, id = editingId,
+                            ringSeconds = ringSeconds.toIntOrNull()?.takeIf { it in 5..120 } ?: error("invalid ring time"))
                         employees = store.list()
+                        rt.refreshEmployeeStatuses()
                         message = if (wasEditing) t("تم تحديث الموظف", "Employee updated") else t("تمت إضافة الموظف", "Employee added")
                         editingId = null
                         name = ""
                         destination = ""
+                        ringSeconds = "20"
                         extension = if (employees.none { it.extension == "1" }) "1" else "2"
                     } catch (e: Exception) {
                         message = if (e.message?.contains("duplicate extension") == true)
@@ -533,10 +573,12 @@ private fun ClinicRoutingSection(rt: GatewayRuntime) {
                     is EmployeeDestination.Sip -> d.uri
                     is EmployeeDestination.Mobile -> d.e164
                 }
+                ringSeconds = employee.ringSeconds.toString()
                 message = ""
             }, onDelete = {
                 store.delete(employee.id)
                 employees = store.list()
+                rt.refreshEmployeeStatuses()
                 if (editingId == employee.id) clearForm()
             })
         }
@@ -552,6 +594,8 @@ private fun EmployeeRouteRow(employee: CallCenterEmployee, onEdit: () -> Unit, o
     }
     Column(Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
         Text("$role — ${employee.displayName}", style = MaterialTheme.typography.titleSmall)
+        Text(t("الرنين ${employee.ringSeconds} ث قبل البديل", "Ring ${employee.ringSeconds}s before fallback"),
+            style = MaterialTheme.typography.bodySmall)
         val target = when (val d = employee.destination) {
             is EmployeeDestination.Sip -> d.uri
             is EmployeeDestination.Mobile -> d.e164
@@ -560,6 +604,74 @@ private fun EmployeeRouteRow(employee: CallCenterEmployee, onEdit: () -> Unit, o
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             TextButton(onClick = onEdit) { Text(t("تعديل", "Edit")) }
             TextButton(onClick = onDelete) { Text(t("حذف", "Delete")) }
+        }
+    }
+}
+
+@Composable
+private fun ClinicEmployeeStatusSection(rt: GatewayRuntime) {
+    val snapshot by rt.employeeStatuses.collectAsState()
+    Section(t("حالات الموظفين", "Employee status")) {
+        OutlinedButton(onClick = { rt.refreshEmployeeStatuses() }) {
+            Text(t("تحديث الحالات", "Refresh status"))
+        }
+        val updated = snapshot.updatedAtMs?.let {
+            java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss", java.util.Locale.getDefault())
+                .format(java.util.Date(it))
+        } ?: t("لم يُحدّث بعد", "Not checked yet")
+        Text(t("آخر تحديث: $updated", "Last updated: $updated"), style = MaterialTheme.typography.bodySmall)
+        snapshot.items.forEach { item ->
+            val state = when (item.status) {
+                EmployeeCallStatus.REGISTERED -> t("مسجّل", "Registered")
+                EmployeeCallStatus.BUSY -> t("مشغول", "Busy")
+                EmployeeCallStatus.OFFLINE -> t("غير متصل", "Offline")
+                EmployeeCallStatus.UNKNOWN -> t("غير معروف", "Unknown")
+            }
+            Text("${item.employee.displayName} · ${item.employee.extension}: $state")
+        }
+        snapshot.error?.let {
+            Text(t("يمكن التحقق فقط من مستخدم SIP المطابق للمسجل المحلي حتى انتهاء مدة REGISTER الممنوحة؛ الوجهات الخارجية تبقى «غير معروف». التسجيل لا يضمن الرد.",
+                "Only a matching user on this device's local SIP registrar can be verified until its granted REGISTER expiry; external endpoints remain UNKNOWN. Registration does not guarantee an answer."),
+                style = MaterialTheme.typography.bodySmall)
+        }
+    }
+}
+
+@Composable
+private fun CallHistorySection(rt: GatewayRuntime) {
+    val entries by rt.callHistory.collectAsState()
+    Section(t("سجل المكالمات", "Call history")) {
+        if (entries.isEmpty()) Text(t("لا توجد مكالمات مسجلة بعد.", "No calls recorded yet."))
+        entries.take(30).forEach { entry ->
+            val time = java.text.SimpleDateFormat("yyyy-MM-dd HH:mm", java.util.Locale.getDefault())
+                .format(java.util.Date(entry.startedAtMs))
+            val reason = when (entry.endReason) {
+                "CALLER_ENDED" -> t("أنهى المتصل المكالمة", "Caller ended the call")
+                "BUSY" -> t("الموظف مشغول", "Employee busy")
+                "NO_ANSWER" -> t("لم يرد", "No answer")
+                "UNAVAILABLE" -> t("غير متاح مؤقتًا", "Temporarily unavailable")
+                "REJECTED" -> t("رفض المكالمة", "Call rejected")
+                "NETWORK_ERROR" -> t("خطأ شبكة", "Network error")
+                "NOT_FOUND" -> t("الوجهة غير موجودة", "Destination not found")
+                "FORBIDDEN" -> t("الوجهة غير مسموح بها", "Destination forbidden")
+                "INTERNAL_ERROR" -> t("خطأ داخلي", "Internal error")
+                "NORMAL" -> t("انتهت المكالمة", "Call ended")
+                else -> t("سبب غير معروف", "Unknown reason")
+            }
+            Column(Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
+                Text("$time · ${entry.destinationLabel}", style = MaterialTheme.typography.titleSmall)
+                Text(t("المتصل ${entry.maskedCaller} · ${if (entry.answered) "أُجيب" else "لم يُجب"} · المدة ${entry.durationSeconds} ث",
+                    "Caller ${entry.maskedCaller} · ${if (entry.answered) "answered" else "not answered"} · ${entry.durationSeconds}s"),
+                    style = MaterialTheme.typography.bodySmall)
+                Text(reason, style = MaterialTheme.typography.bodySmall)
+                entry.sipResponseCode?.let {
+                    Text(t("رمز استجابة SIP: $it", "SIP response code: $it"), style = MaterialTheme.typography.bodySmall)
+                }
+                if (entry.attemptSummary.isNotBlank()) Text(
+                    t("المحاولات/البدائل: ${entry.attemptSummary}", "Attempts/fallbacks: ${entry.attemptSummary}"),
+                    style = MaterialTheme.typography.bodySmall,
+                )
+            }
         }
     }
 }

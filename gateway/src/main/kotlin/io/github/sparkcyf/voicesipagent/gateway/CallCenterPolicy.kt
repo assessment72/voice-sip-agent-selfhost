@@ -57,8 +57,8 @@ data class RecordingPolicy(
 }
 
 /**
- * Pure routing policy for the first safe implementation increment. It does not place calls,
- * create SIP registrations, or claim support for concurrent GSM calls.
+ * Pure routing policy. It does not place calls, create SIP registrations, or claim support for
+ * concurrent GSM calls.
  */
 class CallCenterPolicy(
     employees: List<CallCenterEmployee>,
@@ -68,7 +68,7 @@ class CallCenterPolicy(
     private val orderedEmployees = employees.sortedWith(compareBy<CallCenterEmployee> { it.priority }.thenBy { it.id })
 
     init {
-        require(maxAttempts in 1..2) { "the initial policy supports at most two attempts" }
+        require(maxAttempts in 1..4) { "the policy supports at most four attempts" }
         require(orderedEmployees.map { it.id }.toSet().size == orderedEmployees.size) { "employee ids must be unique" }
         val extensions = orderedEmployees.map { it.extension }.filter { it.isNotEmpty() }
         require(extensions.toSet().size == extensions.size) { "employee extensions must be unique" }

@@ -22,6 +22,8 @@ class IvrMediaPort(
     private val detector = DtmfDetector(format.sampleRate)
     private var cursor = 0
     private var completionSent = false
+    @Volatile var framesProduced: Long = 0
+        private set
 
     override fun setClockListener(listener: FrameClockListener?) = Unit
 
@@ -34,6 +36,7 @@ class IvrMediaPort(
         val count = minOf(frame.size, prompt.size - cursor)
         prompt.copyInto(frame, 0, cursor, cursor + count)
         cursor += count
+        framesProduced++
         if (cursor >= prompt.size) notifyFinished()
         return frame
     }

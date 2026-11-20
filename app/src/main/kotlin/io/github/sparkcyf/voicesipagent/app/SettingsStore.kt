@@ -5,6 +5,7 @@ import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyProperties
 import android.util.Base64
 import io.github.sparkcyf.voicesipagent.gateway.BusyPolicy
+import io.github.sparkcyf.voicesipagent.gateway.FinalCallAction
 import io.github.sparkcyf.voicesipagent.privileged.AudioMethod
 import io.github.sparkcyf.voicesipagent.privileged.CallAccess
 import java.security.KeyStore
@@ -45,6 +46,10 @@ data class GatewaySettings(
     /** Comma-separated; empty = any number may be dialed out. */
     val allowedPrefixes: String = "",
     val busyPolicy: BusyPolicy = BusyPolicy.REJECT,
+    /** Caller-facing fallback extensions in order, e.g. "2,3". */
+    val fallbackExtensionsCsv: String = "2",
+    val maxCallAttempts: Int = 3,
+    val finalCallAction: FinalCallAction = FinalCallAction.RETURN_TO_IVR_ONCE,
     val audioMethod: Int = AudioMethod.AUTO,
     val callAccess: Int = CallAccess.AUTO,
     /** Which SIP implementation backs the PBX side. */
@@ -108,6 +113,11 @@ class SettingsStore(context: Context) {
         inboundTarget = prefs.getString("inbound_target", "")!!,
         allowedPrefixes = prefs.getString("allowed_prefixes", "")!!,
         busyPolicy = runCatching { BusyPolicy.valueOf(prefs.getString("busy_policy", "REJECT")!!) }.getOrDefault(BusyPolicy.REJECT),
+        fallbackExtensionsCsv = prefs.getString("fallback_extensions", "2")!!,
+        maxCallAttempts = prefs.getInt("max_call_attempts", 3).takeIf { it in 1..4 } ?: 3,
+        finalCallAction = runCatching {
+            FinalCallAction.valueOf(prefs.getString("final_call_action", FinalCallAction.RETURN_TO_IVR_ONCE.name)!!)
+        }.getOrDefault(FinalCallAction.RETURN_TO_IVR_ONCE),
         audioMethod = prefs.getInt("audio_method", AudioMethod.AUTO).takeIf { it in 0..2 } ?: AudioMethod.AUTO,
         callAccess = prefs.getInt("call_access", CallAccess.AUTO).takeIf { it in 0..2 } ?: CallAccess.AUTO,
         sipStack = SipStack.of(prefs.getString("sip_stack", null)) ?: SipStack.BUILTIN,
@@ -136,6 +146,9 @@ class SettingsStore(context: Context) {
             .putString("inbound_target", s.inboundTarget.trim())
             .putString("allowed_prefixes", s.allowedPrefixes.trim())
             .putString("busy_policy", s.busyPolicy.name)
+            .putString("fallback_extensions", s.fallbackExtensionsCsv.trim())
+            .putInt("max_call_attempts", s.maxCallAttempts.coerceIn(1, 4))
+            .putString("final_call_action", s.finalCallAction.name)
             .putInt("audio_method", s.audioMethod)
             .putInt("call_access", s.callAccess)
             .putString("sip_stack", s.sipStack.id)

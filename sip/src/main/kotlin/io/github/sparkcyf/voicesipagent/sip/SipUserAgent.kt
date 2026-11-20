@@ -78,11 +78,19 @@ class SipUserAgent(
 
     // ---- Server (device-in-itself) mode: learned from the single registered softphone ----
     internal val isServerMode get() = config.serverMode
-    private var peerAor: String? = null
+    @Volatile private var peerAor: String? = null
     @Volatile private var peerContactUri: String? = null
+    @Volatile private var peerValidUntilMs: Long = 0
     private var peerExpiry: ScheduledFuture<*>? = null
     /** Full SIP URI (sip:user@ip:port) to reach the registered phone, or null if none. */
     internal fun serverPeerUri(): String? = peerContactUri
+    /** True/false only for a user at this local registrar; null means this UA cannot verify it. */
+    fun isLocallyRegisteredPeer(user: String?, host: String): Boolean? {
+        return localPeerRegistrationStatus(
+            config.serverMode, user, host, localDomain, peerAor, peerValidUntilMs,
+            peerContactUri != null, System.currentTimeMillis(),
+        )
+    }
     /** Domain to use in locally generated URIs (our LAN IP when no account domain is set). */
     internal val selfDomain: String get() = localDomain
 
@@ -115,7 +123,12 @@ class SipUserAgent(
             calls.values.toList().forEach { it.hangup(HangupCause.NORMAL) }
             regRefresh?.cancel(false)
             peerExpiry?.cancel(false)
-            if (config.serverMode) done.countDown() else sendRegister(0, null) { done.countDown() }
+            if (config.serverMode) {
+                peerAor = null
+                peerContactUri = null
+                peerValidUntilMs = 0
+                done.countDown()
+            } else sendRegister(0, null) { done.countDown() }
         }
         done.await(timeoutMs, TimeUnit.MILLISECONDS)
         post {
@@ -546,7 +559,7 @@ class SipUserAgent(
         val granted = if (deregister) 0 else minOf(if (expires <= 0) lease else expires, lease)
         if (deregister) {
             peerExpiry?.cancel(false)
-            peerAor = null; peerContactUri = null
+            peerAor = null; peerContactUri = null; peerValidUntilMs = 0
             setStatus(false, "phone unregistered")
             log.info("phone unregistered (${redactNumber(aorUser)})")
         } else {
@@ -554,11 +567,12 @@ class SipUserAgent(
             // Reach the phone at the address the REGISTER actually came from (NAT/roaming friendly).
             peerAor = aorUser
             peerContactUri = "sip:$cUser@${from.address.hostAddress}:${from.port}"
+            peerValidUntilMs = System.currentTimeMillis() + granted.toLong() * 1000
             serverAddr = from
             peerExpiry?.cancel(false)
             val holdMs = granted.toLong() * 2 * 1000 + 30_000
             peerExpiry = schedule(holdMs) {
-                peerAor = null; peerContactUri = null
+                peerAor = null; peerContactUri = null; peerValidUntilMs = 0
                 setStatus(false, "phone registration expired")
                 log.info("phone registration expired (no refresh for ${holdMs / 1000}s)")
             }
@@ -702,4 +716,20 @@ class SipUserAgent(
     companion object {
         const val ALLOW = "INVITE, ACK, CANCEL, BYE, OPTIONS, INFO, NOTIFY, UPDATE"
     }
+}
+
+/** A local registrar can establish status only for its own domain and unexpired registered contact. */
+internal fun localPeerRegistrationStatus(
+    serverMode: Boolean,
+    user: String?,
+    host: String,
+    localDomain: String,
+    registeredUser: String?,
+    expiresAtMs: Long,
+    hasContact: Boolean,
+    nowMs: Long,
+): Boolean? {
+    if (!serverMode || user.isNullOrBlank() || !host.equals(localDomain, ignoreCase = true)) return null
+    return registeredUser != null && registeredUser.equals(user, ignoreCase = true) &&
+        hasContact && nowMs < expiresAtMs
 }

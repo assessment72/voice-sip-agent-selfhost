@@ -26,6 +26,19 @@ class MediaBridge(private val a: MediaPort, private val b: MediaPort) {
         private set
     @Volatile var peakB = 0
         private set
+    /** Successful frame writes to A; for local IVR this is the cellular uplink channel. */
+    @Volatile var writesToA = 0L
+        private set
+    @Volatile var writesToB = 0L
+        private set
+    @Volatile var writeErrorsToA = 0L
+        private set
+    @Volatile var writeErrorsToB = 0L
+        private set
+    @Volatile var lastWriteErrorToA: String? = null
+        private set
+    @Volatile var lastWriteErrorToB: String? = null
+        private set
     private var windowPeakA = 0
     private var windowPeakB = 0
 
@@ -49,8 +62,20 @@ class MediaBridge(private val a: MediaPort, private val b: MediaPort) {
         try {
             val fa = a.readFrame()
             val fb = b.readFrame()
-            b.writeFrame(fa)
-            a.writeFrame(fb)
+            try {
+                b.writeFrame(fa)
+                writesToB++
+            } catch (t: Throwable) {
+                writeErrorsToB++
+                lastWriteErrorToB = t.javaClass.simpleName
+            }
+            try {
+                a.writeFrame(fb)
+                writesToA++
+            } catch (t: Throwable) {
+                writeErrorsToA++
+                lastWriteErrorToA = t.javaClass.simpleName
+            }
             windowPeakA = maxOf(windowPeakA, VoiceFormat.peak(fa))
             windowPeakB = maxOf(windowPeakB, VoiceFormat.peak(fb))
             if (++frames % 50 == 0L) {

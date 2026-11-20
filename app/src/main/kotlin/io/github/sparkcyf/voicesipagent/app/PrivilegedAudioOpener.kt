@@ -35,7 +35,7 @@ class PrivilegedAudioOpener(
             throw e
         }
         // A diagnostic Binder transaction must never turn an open tap into an unowned resource.
-        runCatching { AppLog.i("call audio tap opened: ${runCatching { svc.audioStats() }.getOrDefault("stats unavailable")}") }
+        runCatching { AppLog.i("call audio tap opened requestedMethod=$selectedMethod: ${runCatching { svc.audioStats() }.getOrDefault("stats unavailable")}") }
         if (suppressLocal) {
             // Best effort: a failure here only means the handset stays audible.
             AppLog.i("earpiece mute: ${runCatching { svc.setLocalOutputMuted(true) }.getOrElse { "failed: ${it.message}" }}")
@@ -49,7 +49,8 @@ class PrivilegedAudioOpener(
                 try { port.close() } finally {
                     if (ticket == generation) runCatching { svc.closeCallAudio() }
                 }
-                AppLog.i("call audio tap closed: in=${port.framesIn} out=${port.framesOut} ${runCatching { svc.audioStats() }.getOrDefault("")}")
+                AppLog.i("call audio tap closed: in=${port.framesIn} out=${port.framesOut} channelWriteErrors=${port.writeErrors} " +
+                    "lastChannelWriteError=${port.lastWriteErrorType ?: "none"} ${runCatching { svc.audioStats() }.getOrDefault("")}")
             }
         }
     }

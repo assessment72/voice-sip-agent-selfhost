@@ -37,4 +37,22 @@ class CallCenterPolicyTest {
             CallCenterEmployee("same", "Two", EmployeeDestination.Sip("sip:two@example.invalid")),
         ))
     }
+
+    @Test
+    fun fallbackOrderSkipsAttemptedAndDisabledEmployees() {
+        val employees = listOf(
+            CallCenterEmployee("reception", "Reception", EmployeeDestination.Sip("sip:rec@example.invalid"), extension = "2"),
+            CallCenterEmployee("backup", "Backup", EmployeeDestination.Sip("sip:backup@example.invalid"), extension = "3"),
+            CallCenterEmployee("disabled", "Disabled", EmployeeDestination.Sip("sip:off@example.invalid"), enabled = false, extension = "4"),
+        )
+        val policy = CallFallbackPolicy(listOf("4", "3", "2"), maxAttempts = 3)
+        assertEquals("backup", policy.nextFallback(employees, emptySet())?.id)
+        assertEquals("reception", policy.nextFallback(employees, setOf("backup"))?.id)
+        assertEquals(null, policy.nextFallback(employees, setOf("backup", "reception"))?.id)
+    }
+
+    @Test(expected = IllegalArgumentException::class)
+    fun fallbackPolicyRejectsUnboundedAttemptCounts() {
+        CallFallbackPolicy(maxAttempts = 5)
+    }
 }
