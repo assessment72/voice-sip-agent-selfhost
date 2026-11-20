@@ -263,10 +263,43 @@ export function createCentralMcpServer(options = {}) {
       return res.end(dashboardHtml);
     }
     const adminGatewayPrefix = basePath + "/admin/gateways";
-    if (requestPath === adminGatewayPrefix || requestPath === basePath + "/admin/audit" || requestPath.startsWith(adminGatewayPrefix + "/")) {
+    if (requestPath === adminGatewayPrefix || requestPath === basePath + "/admin/audit" || requestPath === basePath + "/admin/call-control" || requestPath.startsWith(adminGatewayPrefix + "/")) {
       if (!authorizedAdmin(req)) return json(res, 401, { error: "unauthorized" });
       let db;
       try { db = await ensureStore(); } catch { return json(res, 503, { error: "persistent_storage_unavailable" }); }
+      if (requestPath === basePath + "/admin/call-control" && req.method === "GET") {
+        const query = new URL(req.url ?? "/", "http://localhost").searchParams;
+        const gatewayId = query.get("gateway_id") ?? "";
+        if (!SAFE_ID.test(gatewayId)) return json(res, 400, { error: "valid_gateway_id_required" });
+        try {
+          const [status, calls, approvals] = await Promise.all([
+            callTool("gateway_status", { gateway_id: gatewayId }),
+            callTool("gateway_calls_list", { gateway_id: gatewayId, limit: 50 }),
+            callTool("gateway_pending_call_approvals", { gateway_id: gatewayId })
+          ]);
+          return json(res, 200, { gateway_id: gatewayId, status, calls, approvals });
+        } catch (error) { return json(res, 409, { error: error.message || "call_control_unavailable" }); }
+      }
+      if (requestPath === basePath + "/admin/call-control/request" && req.method === "POST") {
+        let raw = "";
+        try {
+          for await (const chunk of req) { raw += chunk; if (raw.length > MAX_BODY) throw new Error("body_too_large"); }
+          const body = JSON.parse(raw || "{}");
+          if (!SAFE_ID.test(body.gateway_id || "") || !ACTIONS.has(body.action)) throw new Error("invalid_call_request");
+          const result = await callTool("gateway_request_call_action", body);
+          return json(res, 202, { ok: true, result, requires_local_approval: true, call_executed: false });
+        } catch (error) { return json(res, 400, { error: error.message || "invalid_call_request" }); }
+      }
+      if (requestPath === basePath + "/admin/call-control/execute" && req.method === "POST") {
+        let raw = "";
+        try {
+          for await (const chunk of req) { raw += chunk; if (raw.length > MAX_BODY) throw new Error("body_too_large"); }
+          const body = JSON.parse(raw || "{}");
+          if (!SAFE_ID.test(body.gateway_id || "") || typeof body.approval_id !== "string" || !body.approval_id.trim()) throw new Error("invalid_approval_request");
+          const result = await callTool("gateway_execute_approved_action", body);
+          return json(res, 200, { ok: true, result });
+        } catch (error) { return json(res, 409, { error: error.message || "approval_execution_failed" }); }
+      }
       if (requestPath === adminGatewayPrefix && req.method === "GET") {
         const [rows, enrollments] = await Promise.all([listGateways(), db ? db.listEnrollments() : []]);
         const enrollmentById = new Map(enrollments.map(item => [item.gateway_id, item]));
