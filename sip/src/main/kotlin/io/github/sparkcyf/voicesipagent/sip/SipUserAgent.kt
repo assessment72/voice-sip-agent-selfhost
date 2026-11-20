@@ -331,7 +331,7 @@ class SipUserAgent(
         // dials out for free (open toll-fraud relay).  Gate before any call state is created.
         if (!inviteAuthPassed(req, from, tx)) return
         val handler = incomingHandler
-        val target = when (val resolved = YemeniSipDialTarget.resolve(req)) {
+        val target = when (val resolved = YemeniSipDialTarget.resolve(req, localUser)) {
             is YemeniSipDialTarget.Result.Accepted -> {
                 val value = resolved.target
                 log.info(
