@@ -10,6 +10,10 @@ enum class CallAction { DIAL, ANSWER, REJECT, HANGUP, DTMF }
 
 enum class ApprovalState { PENDING, APPROVED, REJECTED, EXPIRED, CONSUMED }
 
+private val SAFE_CALL_ID = Regex("^[A-Za-z0-9._:-]{1,128}$")
+private val SAFE_CALL_TARGET = Regex("^[A-Za-z0-9+*#@._:%-]{1,256}$")
+private val SAFE_ROUTE = Regex("^[A-Za-z0-9._-]{1,64}$")
+
 data class CallActionSpec(
     val action: CallAction,
     val callId: String? = null,
@@ -18,9 +22,9 @@ data class CallActionSpec(
     val dtmf: Char? = null,
 ) {
     init {
-        require(callId == null || callId.isNotBlank())
-        require(target == null || target.isNotBlank())
-        require(route.isNotBlank())
+        require(callId == null || SAFE_CALL_ID.matches(callId)) { "Invalid callId" }
+        require(target == null || SAFE_CALL_TARGET.matches(target)) { "Invalid call target" }
+        require(SAFE_ROUTE.matches(route)) { "Invalid route" }
         if (action == CallAction.DIAL) require(!target.isNullOrBlank()) { "DIAL requires a target" }
         if (action != CallAction.DIAL) require(!callId.isNullOrBlank()) { "$action requires a callId" }
         if (action == CallAction.DTMF) require(dtmf != null && dtmf in "0123456789*#ABCD") { "Invalid DTMF digit" }
