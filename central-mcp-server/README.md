@@ -61,7 +61,7 @@ Every command other than listing gateways requires an explicit `gateway_id`; the
 
 ## Current implementation boundary
 
-The branch includes the authenticated central MCP coordinator, Android outbound WSS agent, per-device credential configuration, heartbeat/status reporting, and approval-gated device commands. Live device state, command queue, leases, and audit events are persisted in MongoDB Atlas. Device enrollment credentials remain server secrets. Credential rotation workflow, central web dashboard, and physical-device validation remain future work.
+The branch includes the authenticated central MCP coordinator, Android outbound WSS agent, per-device credential configuration, heartbeat/status reporting, approval-gated device commands, and an Arabic read-only web dashboard. Live device state, command queue, leases, and audit events are persisted in MongoDB Atlas. Device enrollment credentials remain server secrets. Managed credential rotation and physical-device validation remain future work.
 
 ## Automatic gateway routing
 
@@ -119,3 +119,8 @@ docker run -d --name voice-sip-central-mcp --restart unless-stopped \
 Configure the reverse proxy to forward HTTPS `/mcp` to the HTTP listener and upgrade WSS `/v1/agent` to the same listener. Preserve the `Authorization` and `X-Gateway-Id` headers and enable WebSocket upgrades. Expose only the TLS proxy publicly; the container listener is bound to localhost on the host in the example.
 
 When `MONGODB_URI` is configured, the service persists gateway state, commands, leases and audit events in MongoDB Atlas; otherwise local development uses an in-memory registry. After a server restart, Android agents reconnect automatically. Keep the `.env` file private and restrict access to it. Rotate credentials by changing the device token in the server secret and then updating that gateway's app configuration; a managed enrollment/rotation API remains future work.
+
+
+## Central web dashboard
+
+Open `https://YOUR-HOST/dashboard` to use the Arabic, mobile-friendly dashboard. Sign in with the `MCP_ADMIN_TOKEN` (not a gateway device token). The browser keeps this admin token in session storage only; logging out or closing the browser session clears it. Dashboard data APIs require the admin bearer token and return an allowlist of operational metadata only; device tokens, SIP passwords, SIM PINs and internal instance identifiers are never returned. The dashboard refreshes device status every 15 seconds and can show the persisted audit events for a selected gateway. This initial dashboard is read-only: it does not issue call commands or change gateway settings.
