@@ -673,6 +673,7 @@ private fun SettingsSection(rt: GatewayRuntime) {
     var lease by remember(cur) { mutableStateOf(cur.registrarLeaseSec.toString()) }
     var regPassword by remember(cur) { mutableStateOf(cur.registrarPassword) }
     var callerIdMode by remember(cur) { mutableStateOf(cur.callerIdMode) }
+    var sipCallerId by remember(cur) { mutableStateOf(cur.sipCallerId) }
     var settingsMessage by remember { mutableStateOf("") }
     val builtin = stack == SipStack.BUILTIN
     Section(t("Настройки", "Settings")) {
@@ -755,6 +756,13 @@ private fun SettingsSection(rt: GatewayRuntime) {
             },
             info = "caller_id",
         ) { callerIdMode = it }
+        if (!serverMode) {
+            Field("رقم Caller ID المعتمد من مزود SIP (E.164، مثال +9677XXXXXXX)", sipCallerId, KeyboardType.Phone) {
+                sipCallerId = it.filter { ch -> ch.isDigit() || ch == '+' }.take(16)
+            }
+            Text("اتركه فارغاً لاستخدام هوية حساب SIP. لا تستخدم إلا رقماً معتمداً لديك لدى مزود الخدمة.",
+                style = MaterialTheme.typography.bodySmall)
+        }
         Text(
             if (currentUiLang == UiLang.AR)
                 "تُرسل خيارات الإخفاء كطلب CLIR عبر SIM وPrivacy عبر SIP. ظهور Private أو Unknown أو No Caller ID يعتمد على دعم شركة الاتصالات ومزود SIP."
@@ -786,6 +794,10 @@ private fun SettingsSection(rt: GatewayRuntime) {
                 settingsMessage = t("تحقق من ترتيب التحويلات وحد المحاولات (1–4).", "Check fallback extensions and attempt count (1–4).")
                 return@Button
             }
+            if (sipCallerId.isNotBlank() && !sipCallerId.matches(Regex("""^\\+[1-9][0-9]{6,14}$"""))) {
+                settingsMessage = "رقم Caller ID يجب أن يكون بصيغة دولية صحيحة مثل +9677XXXXXXX، أو اتركه فارغاً."
+                return@Button
+            }
             settingsMessage = ""
             rt.applySettings(
                 cur.copy(
@@ -795,6 +807,7 @@ private fun SettingsSection(rt: GatewayRuntime) {
                     registrarPassword = regPassword,
                     server = server, port = port.toIntOrNull() ?: transport.defaultPort, username = user, password = password,
                     allowedPrefixes = prefixes, callerIdMode = callerIdMode, domain = domain,
+                    sipCallerId = sipCallerId.trim(),
                     sipStack = stack, sipTransport = transport.id, srtp = srtp.id, busyPolicy = busy,
                     fallbackExtensionsCsv = fallbackExtensions,
                     maxCallAttempts = attempts ?: cur.maxCallAttempts,
