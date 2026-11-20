@@ -61,7 +61,7 @@ Every command other than listing gateways requires an explicit `gateway_id`; the
 
 ## Current implementation boundary
 
-The branch includes the authenticated central MCP coordinator, Android outbound WSS agent, per-device credential configuration, heartbeat/status reporting, approval-gated device commands, and an Arabic read-only web dashboard. Live device state, command queue, leases, and audit events are persisted in MongoDB Atlas. Device enrollment credentials remain server secrets. Managed credential rotation and physical-device validation remain future work.
+The branch includes the authenticated central MCP coordinator, Android outbound WSS agent, per-device credential configuration, heartbeat/status reporting, approval-gated device commands, and an Arabic read-only web dashboard. Live device state, command queue, leases, and audit events are persisted in MongoDB Atlas. Device enrollment credentials remain server secrets. Physical-device validation remains future work.
 
 ## Automatic gateway routing
 
@@ -124,3 +124,11 @@ When `MONGODB_URI` is configured, the service persists gateway state, commands, 
 ## Central web dashboard
 
 Open `https://YOUR-HOST/dashboard` to use the Arabic, mobile-friendly dashboard. Sign in with the `MCP_ADMIN_TOKEN` (not a gateway device token). The browser keeps this admin token in session storage only; logging out or closing the browser session clears it. Dashboard data APIs require the admin bearer token and return an allowlist of operational metadata only; device tokens, SIP passwords, SIM PINs and internal instance identifiers are never returned. The dashboard refreshes device status every 15 seconds and can show the persisted audit events for a selected gateway. This initial dashboard is read-only: it does not issue call commands or change gateway settings.
+
+
+## Gateway administration API
+
+- `POST /admin/gateways/enroll` with `{ "gateway_id": "gw01" }` creates a random per-device token and returns it once. The raw token is never persisted.
+- `PATCH /admin/gateways/{gateway_id}/status` with `{ "enabled": false }` disables a device; use `true` to re-enable it.
+- `POST /admin/gateways/{gateway_id}/rotate-token` invalidates the old device token and returns a new token once. Update the phone configuration before reconnecting.
+- All routes require the admin bearer token and MongoDB Atlas. The dashboard does not display stored token hashes or secrets.
