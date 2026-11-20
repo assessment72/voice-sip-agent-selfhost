@@ -27,4 +27,28 @@ class SipCallerIdPolicyTest {
             assertEquals("id;user", SipCallerIdPolicy.privacyHeader(mode))
         }
     }
+    @Test fun authorizedAlternateCallerIdIsUsedOnlyForExternalSipCalls() {
+        val from = SipCallerIdPolicy.from(
+            caller, "gateway", "sip:account@example.test", "example.test",
+            false, CallerIdMode.NORMAL, "+967712345678",
+        )
+        assertEquals("sip:+967712345678@example.test", from.uri)
+        assertEquals("<sip:+967712345678@example.test>",
+            SipCallerIdPolicy.assertedIdentity(caller, "example.test", CallerIdMode.NORMAL, "+967712345678"))
+    }
+
+    @Test fun invalidAlternateCallerIdIsIgnoredAndPrivacyNeverLeaksIt() {
+        val normal = SipCallerIdPolicy.from(
+            caller, "gateway", "sip:account@example.test", "example.test",
+            false, CallerIdMode.NORMAL, "sip:attacker@example.test",
+        )
+        assertEquals("sip:account@example.test", normal.uri)
+        val hidden = SipCallerIdPolicy.from(
+            caller, "gateway", "sip:account@example.test", "example.test",
+            false, CallerIdMode.PRIVATE, "+967712345678",
+        )
+        assertEquals("sip:anonymous@anonymous.invalid", hidden.uri)
+        assertNull(SipCallerIdPolicy.assertedIdentity(caller, "example.test", CallerIdMode.PRIVATE, "+967712345678"))
+    }
+
 }
