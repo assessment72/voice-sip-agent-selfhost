@@ -36,6 +36,15 @@ footer{margin-top:30px;color:var(--muted);font-size:12px}
 <div id="tokenPanel" class="token-panel" hidden><strong id="tokenTitle">رمز الجهاز الجديد</strong><code id="oneTimeToken"></code><button type="button" id="copyToken">نسخ الرمز</button> <button type="button" class="secondary" id="hideToken">إخفاء</button><p class="muted">أدخل هذا الرمز في إعدادات Central MCP على الهاتف مع معرّف البوابة نفسه.</p></div>
 <div class="section"><h2>الأجهزة المسجلة</h2><span id="updated" class="muted">—</span></div>
 <div id="devices" class="grid"><div class="empty">جارٍ تحميل الأجهزة...</div></div>
+<div class="section"><h2>التحكم بالمكالمات</h2><span class="muted">كل أمر يتطلب موافقة محلية على الهاتف</span></div>
+<div class="device">
+  <div class="manage"><select id="callDevice"><option value="">اختر البوابة</option></select><button id="loadCalls" class="secondary" type="button">تحديث المكالمات</button></div>
+  <form id="dialForm"><input id="dialTarget" inputmode="tel" maxlength="64" placeholder="الرقم الدولي المطلوب" required><input id="dialRoute" maxlength="64" value="auto" placeholder="المسار (auto)"><button type="submit">طلب اتصال</button></form>
+  <p class="muted">سيظهر طلب الاتصال على الهاتف للموافقة. لا يبدأ الاتصال بمجرد الضغط هنا.</p>
+  <div class="section"><h2>المكالمات الحالية والسجل</h2></div><div id="callList" class="empty">اختر بوابة لعرض المكالمات</div>
+  <div class="section"><h2>طلبات تنتظر الموافقة</h2></div><div id="approvalList" class="empty">لا توجد بيانات محملة</div>
+  <p id="callMessage" class="muted" role="status"></p>
+</div>
 <div class="section"><h2>سجل أوامر الإدارة</h2><select id="auditDevice" style="max-width:220px"><option value="">اختر بوابة</option></select></div>
 <div id="audit" class="table-wrap"><div class="empty">اختر بوابة لعرض السجل المتاح</div></div>
 </section><footer>تتيح اللوحة مراقبة البوابات وإدارة تسجيلها وتعطيلها وتدوير رموزها. لا تنفّذ مكالمات ولا تغيّر إعدادات SIP على الهاتف.</footer>
@@ -54,10 +63,28 @@ $("devices").innerHTML=gateways.length?gateways.map(g=>{const m=g.metadata||{};r
 <div><small>جاهزية SIP</small><b>\${m.sip_ready===true?"جاهز":m.sip_ready===false?"غير جاهز":"غير محدد"}</b></div><div><small>التحكم / الاستلام</small><b>\${m.takeover===true?"مفعّل":m.takeover===false?"متوقف":"غير محدد"}</b></div>
 <div><small>المكالمة الحالية</small><b>\${m.active_call===true?"يوجد اتصال":m.active_call===false?"لا يوجد":"غير محدد"}</b></div><div><small>إصدار التطبيق / أندرويد</small><b>\${esc([m.app_version,m.android_release].filter(Boolean).join(" / ")||"—")}</b></div>
 </div>\${m.sip_detail?'<p class="muted">'+esc(m.sip_detail)+'</p>':""}<div class="actions"><button type="button" class="secondary" data-toggle="\${esc(g.gateway_id)}" data-enabled="\${g.enabled!==false}">\${g.enabled===false?"إعادة التفعيل":"إيقاف البوابة"}</button><button type="button" class="secondary" data-rotate="\${esc(g.gateway_id)}">تدوير الرمز</button></div></article>\`;}).join(""):'<div class="empty">لا توجد بوابات مسجلة حتى الآن.</div>';
+const callSelected=$("callDevice").value; $("callDevice").innerHTML='<option value="">اختر البوابة</option>'+gateways.map(g=>'<option value="'+esc(g.gateway_id)+'">'+esc(g.gateway_id)+'</option>').join(""); if(callSelected&&gateways.some(g=>g.gateway_id===callSelected)) $("callDevice").value=callSelected;
 const selected=$("auditDevice").value;$("auditDevice").innerHTML='<option value="">اختر بوابة</option>'+gateways.map(g=>'<option value="'+esc(g.gateway_id)+'">'+esc(g.gateway_id)+'</option>').join("");if(selected&&gateways.some(g=>g.gateway_id===selected))$("auditDevice").value=selected;
 }
 async function load(){ $("refresh").disabled=true;try{const data=await api("/admin/gateways");gateways=data.gateways||[];render();$("updated").textContent="آخر تحديث: "+new Date().toLocaleTimeString("ar");}catch(e){if(e.message==="unauthorized"){sessionStorage.removeItem("central_admin_token");token="";showLogin("رمز المدير غير صحيح أو انتهت صلاحيته.");}else $("devices").innerHTML='<div class="error">'+esc(e.message)+'</div>';}finally{$("refresh").disabled=false;}}
 async function loadAudit(){const id=$("auditDevice").value;if(!id){$("audit").innerHTML='<div class="empty">اختر بوابة لعرض السجل</div>';return;}try{const d=await api("/admin/audit?gateway_id="+encodeURIComponent(id));const rows=d.records||[];$("audit").innerHTML=rows.length?'<table><thead><tr><th>الوقت</th><th>الحدث</th><th>اسم الأمر</th><th>معرّف الأمر</th></tr></thead><tbody>'+rows.map(r=>'<tr><td>'+esc(date(r.created_at))+'</td><td>'+esc(r.event_type)+'</td><td>'+esc(r.command_name)+'</td><td>'+esc(r.command_id)+'</td></tr>').join("")+'</tbody></table>':'<div class="empty">لا توجد أحداث محفوظة لهذه البوابة.</div>';}catch(e){$("audit").innerHTML='<div class="error">'+esc(e.message)+'</div>';}}
+async function loadCalls(){
+ const id=$("callDevice").value;if(!id){$("callList").textContent="اختر بوابة";$("approvalList").textContent="";return;}
+ $("loadCalls").disabled=true;$("callMessage").textContent="جارٍ جلب البيانات...";
+ try{
+  const d=await api("/admin/call-control?gateway_id="+encodeURIComponent(id));
+  const active=d.calls?.active||d.calls?.calls||[];
+  $("callList").innerHTML=active.length?'<table><thead><tr><th>المكالمة</th><th>الرقم</th><th>الحالة</th><th>إجراء</th></tr></thead><tbody>'+active.map(c=>'<tr><td>'+esc(c.call_id||c.id)+'</td><td>'+esc(c.target||c.remote_number||"—")+'</td><td>'+esc(c.state||c.status||"نشطة")+'</td><td><button type="button" data-hangup="'+esc(c.call_id||c.id)+'">طلب إنهاء</button></td></tr>').join("")+'</tbody></table>':'<div class="empty">لا توجد مكالمات نشطة حالياً</div>';
+  const approvals=d.approvals?.approvals||[];
+  $("approvalList").innerHTML=approvals.length?approvals.map(a=>'<div class="meta"><div><small>الإجراء</small><b>'+esc(a.action)+'</b></div><div><small>الحالة</small><b>'+esc(a.state)+'</b></div><div><small>المعرّف</small><b>'+esc(a.id)+'</b></div><div><small>الهدف</small><b>'+esc(a.target||a.call_id||"—")+'</b></div></div><div class="actions"><button type="button" data-execute="'+esc(a.id)+'">تنفيذ بعد الموافقة على الهاتف</button></div>').join(""):'<div class="empty">لا توجد طلبات موافقة معلقة</div>';
+  $("callMessage").textContent="تم تحديث بيانات البوابة.";
+ }catch(e){$("callList").innerHTML='<div class="error">'+esc(e.message)+'</div>';$("approvalList").textContent="";$("callMessage").textContent="";}
+ finally{$("loadCalls").disabled=false;}
+}
+$("callDevice").addEventListener("change",loadCalls);$("loadCalls").addEventListener("click",loadCalls);
+$("dialForm").addEventListener("submit",async e=>{e.preventDefault();const gateway_id=$("callDevice").value;if(!gateway_id){alert("اختر البوابة أولاً");return;}try{const result=await api("/admin/call-control/request",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({gateway_id,action:"DIAL",target:$("dialTarget").value.trim(),route:$("dialRoute").value.trim()||"auto"})});$("callMessage").textContent="تم إرسال طلب الاتصال للهاتف. وافق عليه محلياً قبل التنفيذ.";await loadCalls();}catch(err){$("callMessage").textContent=err.message;}});
+$("callList").addEventListener("click",async e=>{const b=e.target.closest("[data-hangup]");if(!b)return;const gateway_id=$("callDevice").value;if(!confirm("إرسال طلب إنهاء المكالمة إلى الهاتف؟"))return;try{await api("/admin/call-control/request",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({gateway_id,action:"HANGUP",call_id:b.dataset.hangup})});$("callMessage").textContent="أُرسل طلب إنهاء المكالمة؛ يلزم اعتماد الهاتف.";await loadCalls();}catch(err){$("callMessage").textContent=err.message;}});
+$("approvalList").addEventListener("click",async e=>{const b=e.target.closest("[data-execute]");if(!b)return;const gateway_id=$("callDevice").value;if(!confirm("تأكدت أن الشخص وافق على نفس الطلب من شاشة الهاتف؟"))return;try{await api("/admin/call-control/execute",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({gateway_id,approval_id:b.dataset.execute})});$("callMessage").textContent="تم إرسال أمر التنفيذ لمرة واحدة إلى البوابة.";await loadCalls();}catch(err){$("callMessage").textContent=err.message;}});
 $("loginForm").addEventListener("submit",async e=>{e.preventDefault();token=$("token").value.trim();if(!token)return;sessionStorage.setItem("central_admin_token",token);showApp();await load();});
 $("refresh").addEventListener("click",load);$("logout").addEventListener("click",()=>{sessionStorage.removeItem("central_admin_token");token="";showLogin();});
 $("auditDevice").addEventListener("change",loadAudit);
