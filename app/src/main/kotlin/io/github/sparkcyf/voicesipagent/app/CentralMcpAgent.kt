@@ -191,7 +191,7 @@ object CentralMcpAgent {
     private fun buildRequest(config: CentralMcpConfig): Request {
         val base = config.endpoint.trimEnd('/')
         val wsUrl = when {
-            base.startsWith("https://", true) -> "wss://" + base.removePrefix("https://") + "/v1/agent"
+            base.startsWith("https://", true) -> "wss://" + base.substringAfter("://") + "/v1/agent"
             base.startsWith("wss://", true) -> base + "/v1/agent"
             else -> error("Only HTTPS/WSS central endpoints are supported")
         }
