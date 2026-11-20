@@ -14,8 +14,8 @@ This document describes the first, approval-gated call-control layer. It is not 
 ## Approval flow
 
 1. A local client requests an operation using a complete `CallActionSpec`.
-2. The client displays the exact operation (number/call ID, route and DTMF digit where relevant).
-3. The user explicitly approves or rejects the approval ID.
+2. The request appears in the gateway app's **Call-control approvals** section with the exact number/call ID, route and DTMF digit.
+3. The user taps Approve or Reject on the Android device. The ADB/MCP interface intentionally has no approval operation.
 4. Immediately before execution, the controller checks that the approval is still valid and matches the exact operation.
 5. The approval is atomically consumed. Replays, mismatches, rejected approvals and expired approvals are blocked.
 
@@ -38,7 +38,7 @@ Implemented:
 Not implemented yet:
 - MCP JSON-RPC transport and tool/resource declarations.
 - A hardened local transport with authenticated clients, localhost-only binding, origin checks and request-size/time limits.
-- Durable approval/audit storage and an Android UI for approval prompts.
+- Durable approval/audit storage (the on-device approval UI is now present).
 - A verified Android device test matrix for SIP and cellular answer/reject/hangup/DTMF.
 - Explicit Android `PhoneAccountHandle` discovery and multi-SIM route selection.
 
