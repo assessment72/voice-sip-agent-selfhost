@@ -127,8 +127,9 @@ object CentralMcpAgent {
             while (isActive) {
                 val opened = CompletableDeferred<WebSocket>()
                 val closed = CompletableDeferred<Unit>()
-                val request = runCatching { buildRequest(config) }.getOrElse {
-                    AppLog.w("central MCP endpoint configuration is invalid", it)
+                val request = runCatching { buildRequest(config) }.getOrNull()
+                if (request == null) {
+                    AppLog.w("central MCP endpoint configuration is invalid")
                     delay(60_000)
                     continue
                 }
@@ -158,7 +159,7 @@ object CentralMcpAgent {
                     }
                 }
                 val ws = client.newWebSocket(request, listener)
-                val connected = withTimeoutOrNull(15_000) { opened.await() }
+                val connected = withTimeoutOrNull(15_000) { runCatching { opened.await() }.getOrNull() }
                 if (connected != null) {
                     backoffMs = 2_000L
                     while (isActive && !closed.isCompleted) {
