@@ -9,6 +9,8 @@ import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
@@ -114,12 +116,18 @@ object CentralMcpAgent {
 
     @Volatile private var scope: CoroutineScope? = null
     @Volatile private var socket: WebSocket? = null
+    private val _connectionState = MutableStateFlow("DISCONNECTED")
+    val connectionState: StateFlow<String> = _connectionState
 
     @Synchronized
     fun start(context: Context, runtime: GatewayRuntime) {
         stop()
         val config = CentralMcpConfigStore(context).load()
-        if (!config.enabled) return
+        if (!config.enabled) {
+            _connectionState.value = "DISABLED"
+            return
+        }
+        _connectionState.value = "CONNECTING"
         val agentScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
         scope = agentScope
         agentScope.launch {
@@ -129,6 +137,7 @@ object CentralMcpAgent {
                 val closed = CompletableDeferred<Unit>()
                 val request = runCatching { buildRequest(config) }.getOrNull()
                 if (request == null) {
+                    _connectionState.value = "CONFIG_ERROR"
                     AppLog.w("central MCP endpoint configuration is invalid")
                     delay(60_000)
                     continue
@@ -140,6 +149,7 @@ object CentralMcpAgent {
                             closed.complete(Unit)
                             return
                         }
+                        _connectionState.value = "CONNECTED"
                         opened.complete(webSocket)
                         AppLog.i("central MCP connected (" + config.gatewayId + ")")
                     }
@@ -152,11 +162,13 @@ object CentralMcpAgent {
 
                     override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
                         if (socket === webSocket) socket = null
+                        _connectionState.value = "RECONNECTING"
                         closed.complete(Unit)
                     }
 
                     override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
                         if (socket === webSocket) socket = null
+                        _connectionState.value = "RECONNECTING"
                         if (!opened.isCompleted) opened.completeExceptionally(t)
                         closed.complete(Unit)
                         AppLog.w("central MCP connection interrupted", t)
@@ -174,6 +186,7 @@ object CentralMcpAgent {
                     }
                 } else {
                     ws.cancel()
+                    _connectionState.value = "RECONNECTING"
                 }
                 if (socket === ws) socket = null
                 delay(backoffMs)
@@ -188,6 +201,7 @@ object CentralMcpAgent {
         socket = null
         scope?.cancel()
         scope = null
+        _connectionState.value = "DISCONNECTED"
     }
 
     @Synchronized
