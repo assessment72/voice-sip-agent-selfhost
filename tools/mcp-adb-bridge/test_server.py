@@ -1,5 +1,6 @@
 import importlib.util
 import pathlib
+import subprocess
 import unittest
 from unittest.mock import patch
 
@@ -13,7 +14,7 @@ class McpProtocolTests(unittest.TestCase):
     @patch.object(
         MODULE.subprocess,
         "run",
-        return_value=__import__("subprocess").CompletedProcess(
+        return_value=subprocess.CompletedProcess(
             args=["adb"], returncode=0,
             stdout='Broadcast completed: result=0, data="{\\"ok\\":true}"',
             stderr="",
