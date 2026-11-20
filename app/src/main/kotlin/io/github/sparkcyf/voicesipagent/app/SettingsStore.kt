@@ -76,6 +76,8 @@ data class GatewaySettings(
     val ivrTtsVoice: String = "",
     /** Default caller identity policy for outgoing SIP and cellular legs. */
     val callerIdMode: CallerIdMode = CallerIdMode.NORMAL,
+    /** Optional provider-authorized E.164 caller ID for outbound calls through an external SIP trunk. */
+    val sipCallerId: String = "",
 ) {
     val sipConfigured: Boolean get() =
         serverMode || (server.isNotBlank() && username.isNotBlank() && password.isNotEmpty())
@@ -127,6 +129,7 @@ class SettingsStore(context: Context) {
         inboundTarget = prefs.getString("inbound_target", "")!!,
         allowedPrefixes = prefs.getString("allowed_prefixes", "")!!,
         callerIdMode = CallerIdMode.fromId(prefs.getString("caller_id_mode", CallerIdMode.NORMAL.id)),
+        sipCallerId = prefs.getString("sip_caller_id", "")!!.take(16),
         busyPolicy = runCatching { BusyPolicy.valueOf(prefs.getString("busy_policy", "REJECT")!!) }.getOrDefault(BusyPolicy.REJECT),
         fallbackExtensionsCsv = prefs.getString("fallback_extensions", "2")!!,
         maxCallAttempts = prefs.getInt("max_call_attempts", 3).takeIf { it in 1..4 } ?: 3,
@@ -171,6 +174,7 @@ class SettingsStore(context: Context) {
             .putString("inbound_target", s.inboundTarget.trim())
             .putString("allowed_prefixes", s.allowedPrefixes.trim())
             .putString("caller_id_mode", s.callerIdMode.id)
+            .putString("sip_caller_id", s.sipCallerId.trim().take(16))
             .putString("busy_policy", s.busyPolicy.name)
             .putString("fallback_extensions", s.fallbackExtensionsCsv.trim())
             .putInt("max_call_attempts", s.maxCallAttempts.coerceIn(1, 4))
