@@ -39,7 +39,6 @@ object SipCallerIdPolicy {
     /** Accept only an E.164-like number; never permit arbitrary SIP URI/header injection. */
     fun normalizeAuthorizedCallerId(value: String): String? {
         val candidate = value.trim()
-        return candidate.takeIf { it.matches(Regex("^\\+[1-9][0-9]{6,14}$")) }?.removePrefix("+")
-    }
+        return candidate.takeIf { it.matches(Regex("^\\+[1-9][0-9]{6,14}$")) }
     }
 }
