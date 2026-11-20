@@ -1,6 +1,7 @@
 package io.github.sparkcyf.voicesipagent.sip
 
 import io.github.sparkcyf.voicesipagent.voice.HangupCause
+import io.github.sparkcyf.voicesipagent.voice.IncomingCallHandler
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -19,7 +20,7 @@ class SipInboundDynamicTargetTest {
         override fun warn(msg: String, t: Throwable?) {}
     }
 
-    private fun start(peer: DatagramSocket, handler: ((io.github.sparkcyf.voicesipagent.voice.CallLeg) -> Unit)? = null): SipUserAgent {
+    private fun start(peer: DatagramSocket, handler: IncomingCallHandler? = null): SipUserAgent {
         val ua = SipUserAgent(
             SipConfig(
                 account = SipAccount("127.0.0.1", peer.localPort, "gateway", "test-secret"),
@@ -90,11 +91,11 @@ class SipInboundDynamicTargetTest {
         DatagramSocket(0).use { peer ->
             val received = CountDownLatch(1)
             val target = AtomicReference<String?>()
-            val ua = start(peer) { leg ->
+            val ua = start(peer, IncomingCallHandler { leg ->
                 target.set(leg.target)
                 received.countDown()
                 leg.hangup(HangupCause.NORMAL)
-            }
+            })
             try {
                 sendInvite(peer, ua, "sip:sip777405578@sip2sip.info", withSdp = true)
                 assertTrue("valid INVITE did not reach the bridge handler", received.await(3, TimeUnit.SECONDS))
