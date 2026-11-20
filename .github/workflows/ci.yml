@@ -16,4 +16,9 @@ jobs:
           distribution: temurin
           java-version: 17
       - uses: gradle/actions/setup-gradle@v4
-      - uses: actions/setup-python@v5\n        with:\n          python-version: '3.12'\n      - run: python -m py_compile tools/mcp-adb-bridge/server.py\n      - run: python -m unittest discover -s tools/mcp-adb-bridge -p 'test_*.py'\n      - run: ./gradlew :voice-api:test :sip:test :gateway:test
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m py_compile tools/mcp-adb-bridge/server.py
+      - run: python -m unittest discover -s tools/mcp-adb-bridge -p 'test_*.py'
+      - run: ./gradlew :voice-api:test :sip:test :gateway:test
