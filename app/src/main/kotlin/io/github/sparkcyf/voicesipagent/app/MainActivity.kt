@@ -448,6 +448,7 @@ private fun CentralMcpSection(rt: GatewayRuntime) {
             OutlinedButton(onClick = {
                 CentralMcpAgent.stop()
                 store.clear()
+                GatewayService.start(context)
                 token = ""
                 message = t("تم فصل هذا الجهاز عن MCP المركزي.", "This gateway has been disconnected from central MCP.")
             }) { Text(t("فصل الجهاز", "Disconnect")) }
