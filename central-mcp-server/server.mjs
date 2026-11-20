@@ -3,6 +3,7 @@ import { timingSafeEqual, randomUUID } from "node:crypto";
 import { MongoGatewayStore } from "./mongo-store.mjs";
 import { WebSocket, WebSocketServer } from "ws";
 import { selectGateway } from "./routing.mjs";
+import { dashboardHtml } from "./dashboard.mjs";
 
 const MAX_BODY = 64 * 1024;
 const MAX_AGENT_MESSAGE = 256 * 1024;
@@ -229,6 +230,50 @@ export function createCentralMcpServer(options = {}) {
   const httpServer = http.createServer(async (req, res) => {
     const requestPath = new URL(req.url ?? "/", "http://localhost").pathname;
     if (req.method === "GET" && requestPath === `${basePath}/healthz`) { try { const db = await ensureStore(); if (db) await db.health(); return json(res, 200, { ok: true, service: "voice-sip-central-mcp", connected_gateways: db ? (await db.listGateways()).filter(g => g.connected && g.last_seen && Date.now() - new Date(g.last_seen).getTime() <= 60_000).length : gateways.size, state_backend: db ? "mongodb_atlas" : "instance_memory", multi_instance_safe: Boolean(db) }); } catch { return json(res, 503, { ok: false, service: "voice-sip-central-mcp", state_backend: "unavailable", multi_instance_safe: false }); } }
+    if (req.method === "GET" && requestPath === basePath + "/dashboard") {
+      res.writeHead(200, {
+        "content-type": "text/html; charset=utf-8",
+        "cache-control": "no-store",
+        "x-content-type-options": "nosniff",
+        "x-frame-options": "DENY",
+        "referrer-policy": "no-referrer",
+        "content-security-policy": "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'"
+      });
+      return res.end(dashboardHtml);
+    }
+    if (requestPath === basePath + "/admin/gateways" || requestPath === basePath + "/admin/audit") {
+      if (req.method !== "GET") return json(res, 405, { error: "method_not_allowed" });
+      if (!authorizedAdmin(req)) return json(res, 401, { error: "unauthorized" });
+      let db;
+      try { db = await ensureStore(); } catch { return json(res, 503, { error: "persistent_storage_unavailable" }); }
+      if (requestPath === basePath + "/admin/gateways") {
+        const rows = await listGateways();
+        const safeRows = rows.map(gateway => {
+          const source = gateway.metadata && typeof gateway.metadata === "object" ? gateway.metadata : {};
+          const metadata = {};
+          for (const key of ["manufacturer", "model", "android_release", "app_version", "takeover", "sip_ready", "sip_detail", "server_mode", "active_call", "battery_level", "network_type"]) {
+            if (source[key] !== undefined && ["string", "number", "boolean"].includes(typeof source[key])) {
+              metadata[key] = typeof source[key] === "string" ? source[key].slice(0, 120) : source[key];
+            }
+          }
+          const fresh = Boolean(gateway.last_seen && Date.now() - new Date(gateway.last_seen).getTime() <= 60_000);
+          return { gateway_id: gateway.gateway_id, connected: Boolean(gateway.connected && fresh), connected_at: gateway.connected_at ?? null, last_seen: gateway.last_seen ?? null, metadata };
+        });
+        return json(res, 200, { gateways: safeRows });
+      }
+      const query = new URL(req.url ?? "/", "http://localhost").searchParams;
+      const gatewayId = query.get("gateway_id") ?? "";
+      if (!SAFE_ID.test(gatewayId)) return json(res, 400, { error: "valid_gateway_id_required" });
+      const requestedLimit = Number(query.get("limit") ?? 50);
+      const limit = Number.isInteger(requestedLimit) ? Math.max(1, Math.min(100, requestedLimit)) : 50;
+      const records = db ? await db.listAudit(gatewayId, limit) : [];
+      return json(res, 200, { records: records.map(record => ({
+        event_type: String(record.event_type ?? "").slice(0, 80),
+        command_name: typeof record.command_name === "string" ? record.command_name.slice(0, 80) : null,
+        command_id: typeof record.command_id === "string" ? record.command_id.slice(0, 100) : null,
+        created_at: record.created_at ?? null
+      })) });
+    }
     if (requestPath !== `${basePath}/mcp`) return json(res, 404, { error: "not_found" });
     if (req.method !== "POST") return json(res, 405, { error: "method_not_allowed" });
     try { await ensureStore(); } catch { return json(res, 503, { error: "persistent_storage_unavailable" }); }
