@@ -27,6 +27,7 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
@@ -87,7 +88,7 @@ class MainActivity : DialerRoleActivity() {
         super.onCreate(savedInstanceState)
         val runtime = GatewayRuntime.get(this)
         setContent {
-            MaterialTheme(colorScheme = if (isSystemInDarkTheme()) darkColorScheme() else lightColorScheme()) {
+            MaterialTheme(colorScheme = appColorScheme(isSystemInDarkTheme())) {
                 val message by roleMessage.collectAsState()
                 Scaffold { pad -> Screen(runtime, Modifier.padding(pad), ::requestDialer, ::switchDialer,
                     ::chooseDialerInSettings, ::cancelDialerChange, ::setTakeoverFromUi, message) }
@@ -106,6 +107,18 @@ class MainActivity : DialerRoleActivity() {
     }
 }
 
+private fun appColorScheme(dark: Boolean) = if (dark) {
+    darkColorScheme(primary = Color(0xFF9CCBFF), secondary = Color(0xFFB6C8E8), tertiary = Color(0xFFB6DCCB))
+} else {
+    lightColorScheme(
+        primary = Color(0xFF125A9E),
+        secondary = Color(0xFF4D6280),
+        tertiary = Color(0xFF276A50),
+        background = Color(0xFFF5F7FB),
+        surfaceVariant = Color(0xFFE8EEF6),
+    )
+}
+
 @Composable
 private fun Screen(rt: GatewayRuntime, modifier: Modifier, requestDialer: () -> Unit, switchDialer: () -> Unit,
     chooseDialer: () -> Unit, cancelDialer: () -> Unit, setTakeover: (Boolean) -> Unit, roleMessage: String) {
@@ -122,16 +135,36 @@ private fun Screen(rt: GatewayRuntime, modifier: Modifier, requestDialer: () -> 
         modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-            Text("GSMtoSIP", style = MaterialTheme.typography.headlineSmall)
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                val lang = UiLang.of(cur.uiLanguage)
-                TextButton(onClick = { rt.setUiLanguage("ru") }, enabled = lang != UiLang.RU) { Text("РУ") }
-                TextButton(onClick = { rt.setUiLanguage("en") }, enabled = lang != UiLang.EN) { Text("EN") }
-                TextButton(onClick = { rt.setUiLanguage("ar") }, enabled = lang != UiLang.AR) { Text("عربي") }
-                InfoButton("language")
+        Card(
+            Modifier.fillMaxWidth(),
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primary),
+            elevation = CardDefaults.cardElevation(defaultElevation = 3.dp),
+        ) {
+            Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 14.dp),
+                horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                    Text("Voice SIP Agent", style = MaterialTheme.typography.titleLarge,
+                        color = MaterialTheme.colorScheme.onPrimary,
+                        fontWeight = androidx.compose.ui.text.font.FontWeight.Bold)
+                    Text(t("بوابة المكالمات الخلوية وSIP", "Cellular and SIP call gateway"),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onPrimary.copy(alpha = 0.82f))
+                }
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    val lang = UiLang.of(cur.uiLanguage)
+                    TextButton(onClick = { rt.setUiLanguage("ru") }, enabled = lang != UiLang.RU) { Text("РУ", color = MaterialTheme.colorScheme.onPrimary) }
+                    TextButton(onClick = { rt.setUiLanguage("en") }, enabled = lang != UiLang.EN) { Text("EN", color = MaterialTheme.colorScheme.onPrimary) }
+                    TextButton(onClick = { rt.setUiLanguage("ar") }, enabled = lang != UiLang.AR) { Text("عربي", color = MaterialTheme.colorScheme.onPrimary) }
+                    InfoButton("language")
+                }
             }
         }
+        val ready = h.cellularReady && h.callAccessReady && h.sip.ready
+        StatusBanner(
+            ready = ready,
+            title = if (ready) t("البوابة جاهزة للعمل", "Gateway ready") else t("تحتاج البوابة إلى إعداد", "Setup required"),
+            detail = if (ready) t("المكالمات الخلوية وSIP جاهزة للتحويل.", "Cellular and SIP calls are ready to bridge.") else h.readinessDetail,
+        )
         Section(t("Перехват", "Takeover"), info = "takeover") {
             Toggle(t("Перехватывать звонки", "Take over calls"), cur.takeover, setTakeover) {
                 when {
@@ -727,10 +760,38 @@ private fun Field(label: String, value: String, type: KeyboardType = KeyboardTyp
 
 @Composable
 private fun Section(title: String, info: String? = null, content: @Composable () -> Unit) {
-    Card(Modifier.fillMaxWidth()) {
+    Card(
+        Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+        elevation = CardDefaults.cardElevation(defaultElevation = 1.dp),
+    ) {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            LabelWithInfo(title, info, style = MaterialTheme.typography.titleMedium)
+            LabelWithInfo(title, info, style = MaterialTheme.typography.titleMedium.copy(
+                color = MaterialTheme.colorScheme.primary,
+                fontWeight = androidx.compose.ui.text.font.FontWeight.SemiBold,
+            ))
             content()
+        }
+    }
+}
+
+@Composable
+private fun StatusBanner(ready: Boolean, title: String, detail: String) {
+    val tone = if (ready) Color(0xFF2E7D32) else Color(0xFFB45309)
+    Card(
+        Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(containerColor = tone.copy(alpha = 0.10f)),
+        border = androidx.compose.foundation.BorderStroke(1.dp, tone.copy(alpha = 0.32f)),
+    ) {
+        Row(Modifier.fillMaxWidth().padding(14.dp), verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            Text(if (ready) "✓" else "!", color = tone, fontSize = 22.sp,
+                fontWeight = androidx.compose.ui.text.font.FontWeight.Bold)
+            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                Text(title, style = MaterialTheme.typography.titleSmall,
+                    fontWeight = androidx.compose.ui.text.font.FontWeight.SemiBold)
+                Text(detail, style = MaterialTheme.typography.bodySmall)
+            }
         }
     }
 }
