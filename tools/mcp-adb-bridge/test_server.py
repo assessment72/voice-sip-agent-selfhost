@@ -31,7 +31,7 @@ class McpProtocolTests(unittest.TestCase):
         names = {tool["name"] for tool in result["result"]["tools"]}
         self.assertIn("sip_request_call_action", names)
         self.assertIn("sip_pending_call_approvals", names)
-        self.assertIn("sip_approve_call_action", names)
+        self.assertNotIn("sip_approve_call_action", names)
         self.assertIn("sip_execute_approved_action", names)
 
     def test_approval_cannot_be_granted_through_mcp_tool(self):
