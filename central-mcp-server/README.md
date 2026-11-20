@@ -61,9 +61,19 @@ Every command other than listing gateways requires an explicit `gateway_id`; the
 
 ## Current implementation boundary
 
-This commit provides the central MCP coordinator and the authenticated device WebSocket protocol. It does not yet add the Android-side WSS agent, persistent enrollment UI, durable server-side registry, reverse-proxy deployment, or real-call/device validation. Until the Android agent is implemented, phones will not appear online. The existing local ADB MCP remains available and is not replaced by this service.
+The branch includes the authenticated central MCP coordinator, Android outbound WSS agent, per-device credential configuration, heartbeat/status reporting, and approval-gated device commands. The live registry is currently in memory; device enrollment credentials are configured through server secrets. A durable database-backed registry, credential rotation workflow, central web dashboard, and physical-device validation remain future work.
 
-No phone is contacted, no call is initiated, no production setting is changed, and no deployment is performed by tests or startup.
+## Automatic gateway routing
+
+- `gateway_route_preview` is read-only and selects an eligible online phone.
+- `gateway_request_routed_call` selects one eligible phone and asks it to create a local DIAL approval. It does **not** execute the call.
+- Eligibility requires a live WSS connection, heartbeat no older than 60 seconds, SIP ready, takeover enabled, and no active call.
+- Selection orders by configured priority, then oldest assignment, then most recent heartbeat and gateway ID for deterministic tie-breaking.
+- A gateway is reserved for up to 90 seconds while the local approval is pending, preventing duplicate routing to the same phone.
+- Capacity is deliberately limited to one active call per phone until the Android agent reports a verified concurrent-call count. The current boolean `active_call` heartbeat is not sufficient to safely claim multi-channel capacity.
+- Optional `GATEWAY_ROUTING_POLICY_JSON` maps gateway IDs to `priority` and `enabled`, for example `{"gw01":{"priority":10},"gw02":{"priority":2,"enabled":false}}`.
+
+No automatic retry to another phone is performed after a local approval request fails; the operator can preview and request again. No phone call is placed without local approval and the separate one-time execution step.
 
 ## Android gateway enrollment
 
