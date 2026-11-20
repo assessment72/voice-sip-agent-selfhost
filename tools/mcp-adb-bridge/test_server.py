@@ -34,6 +34,28 @@ class McpProtocolTests(unittest.TestCase):
         self.assertIn("sip_approve_call_action", names)
         self.assertIn("sip_execute_approved_action", names)
 
+    def test_approval_cannot_be_granted_through_mcp_tool(self):
+        result = MODULE.handle({
+            "jsonrpc": "2.0",
+            "id": 4,
+            "method": "tools/list",
+        })
+        names = {tool["name"] for tool in result["result"]["tools"]}
+        self.assertNotIn("sip_approve_call_action", names)
+
+    @patch.object(MODULE, "broadcast")
+    def test_invalid_dial_request_is_rejected_before_adb(self, mocked_broadcast):
+        with self.assertRaises(ValueError):
+            MODULE.invoke_tool("sip_request_call_action", {"action": "DIAL"})
+        mocked_broadcast.assert_not_called()
+
+    @patch.object(MODULE, "broadcast", return_value={"ok": True, "detail": "not approved"})
+    def test_execute_only_forwards_approval_id(self, mocked_broadcast):
+        MODULE.invoke_tool("sip_execute_approved_action", {"approval_id": "approval-123"})
+        mocked_broadcast.assert_called_once_with(
+            "call-execute", {"approval_id": "approval-123"}
+        )
+
     @patch.object(MODULE, "broadcast", return_value={"ok": True, "approval": {"id": "test"}})
     def test_request_tool_only_creates_pending_approval(self, mocked_broadcast):
         result = MODULE.handle({
