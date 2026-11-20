@@ -60,6 +60,7 @@ class CallApprovalManager(
     private val clock: Clock = Clock.systemUTC(),
     private val ttl: Duration = Duration.ofSeconds(90),
     private val maxPending: Int = 32,
+    private val maxStored: Int = 256,
 ) {
     private val approvals = linkedMapOf<String, CallApproval>()
     private val audit = ArrayDeque<CallAuditEntry>()
@@ -67,14 +68,19 @@ class CallApprovalManager(
     init {
         require(!ttl.isZero && !ttl.isNegative) { "ttl must be positive" }
         require(maxPending > 0) { "maxPending must be positive" }
+        require(maxStored >= maxPending) { "maxStored must be at least maxPending" }
     }
 
     @Synchronized
     fun request(spec: CallActionSpec): CallApproval {
         expireOutstanding()
-        require(approvals.values.count { it.state == ApprovalState.PENDING } < maxPending) {
-            "Too many pending call approvals"
+        require(approvals.values.count {
+            it.state == ApprovalState.PENDING || it.state == ApprovalState.APPROVED
+        } < maxPending) {
+            "Too many outstanding call approvals"
         }
+        pruneTerminalApprovals()
+        require(approvals.size < maxStored) { "Call approval history is full" }
         val now = clock.instant()
         val approval = CallApproval(
             id = UUID.randomUUID().toString(),
@@ -144,6 +150,18 @@ class CallApprovalManager(
     fun auditLog(limit: Int = 100): List<CallAuditEntry> {
         require(limit > 0)
         return audit.toList().takeLast(limit)
+    }
+
+    /** Keep the in-memory approval map bounded without evicting live requests. */
+    private fun pruneTerminalApprovals() {
+        val iterator = approvals.entries.iterator()
+        while (approvals.size >= maxStored && iterator.hasNext()) {
+            val state = iterator.next().value.state
+            if (state == ApprovalState.REJECTED || state == ApprovalState.EXPIRED ||
+                state == ApprovalState.CONSUMED) {
+                iterator.remove()
+            }
+        }
     }
 
     private fun expireOutstanding() {
