@@ -9,6 +9,7 @@ import io.github.sparkcyf.voicesipagent.voice.HangupCause
 import io.github.sparkcyf.voicesipagent.voice.LegDirection
 import io.github.sparkcyf.voicesipagent.voice.LegState
 import io.github.sparkcyf.voicesipagent.voice.Party
+import io.github.sparkcyf.voicesipagent.voice.CallerIdMode
 import io.github.sparkcyf.voicesipagent.voice.redactNumber
 import java.net.DatagramSocket
 import java.net.InetAddress
@@ -29,6 +30,7 @@ internal class SipCall(
 ) : AbstractCallLeg(callId.take(8), "sip", direction, remote, target) {
     private val log = ua.logger
     private val config = ua.sipConfig
+    private var callerIdMode: CallerIdMode = config.callerIdMode
 
     // Dialog state (RFC 3261 §12)
     private lateinit var localUri: NameAddr
@@ -81,7 +83,8 @@ internal class SipCall(
 
     fun startOutbound(target: String, caller: Party) {
         val acct = config.account
-        localUri = SipCallerIdPolicy.from(caller, acct.displayName, ua.aor, ua.selfDomain, ua.isServerMode, config.callerIdMode)
+        callerIdMode = caller.callerIdMode ?: config.callerIdMode
+        localUri = SipCallerIdPolicy.from(caller, acct.displayName, ua.aor, ua.selfDomain, ua.isServerMode, callerIdMode)
         if (ua.isServerMode) {
             remoteUri = NameAddr(null, ua.serverPeerUri() ?: "sip:$target@${ua.selfDomain}")
         } else {
@@ -97,7 +100,7 @@ internal class SipCall(
             finish()
             return
         }
-        log.info("dialing ${redactNumber(target)} (call $id)")
+        log.info("dialing ${redactNumber(target)} (call $id, callerId=${callerIdMode.id})")
         sendInvite(null, caller)
         transition(LegState.PROCEEDING)
         ringTimer = ua.schedule(config.ringTimeoutMs) {
@@ -115,13 +118,13 @@ internal class SipCall(
         val req = ua.newRequest("INVITE", remoteTarget, localUri.withTag(localTag), remoteUri, callId, ++localCseq)
         req.headers.add("Contact", "<${ua.contactUri()}>")
         ua.addCapabilities(req)
-        val privacy = SipCallerIdPolicy.privacyHeader(config.callerIdMode)
+        val privacy = SipCallerIdPolicy.privacyHeader(callerIdMode)
         if (privacy != null) {
             req.headers.add("Privacy", privacy)
         } else {
             callerForRetry?.let { caller ->
                 val d = config.account.domain.ifBlank { ua.selfDomain }
-                SipCallerIdPolicy.assertedIdentity(caller, d, config.callerIdMode)?.let {
+                SipCallerIdPolicy.assertedIdentity(caller, d, callerIdMode)?.let {
                     req.headers.add("P-Asserted-Identity", it)
                 }
             }
