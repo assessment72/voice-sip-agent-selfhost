@@ -161,14 +161,18 @@ object CentralMcpAgent {
                     }
 
                     override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
-                        if (socket === webSocket) socket = null
-                        _connectionState.value = "RECONNECTING"
+                        val current = socket === webSocket
+                        if (current) socket = null
+                        if (current && scope?.isActive == true) _connectionState.value = "RECONNECTING"
+                        else if (scope?.isActive != true) _connectionState.value = "DISCONNECTED"
                         closed.complete(Unit)
                     }
 
                     override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
-                        if (socket === webSocket) socket = null
-                        _connectionState.value = "RECONNECTING"
+                        val current = socket === webSocket
+                        if (current) socket = null
+                        if (current && scope?.isActive == true) _connectionState.value = "RECONNECTING"
+                        else if (scope?.isActive != true) _connectionState.value = "DISCONNECTED"
                         if (!opened.isCompleted) opened.completeExceptionally(t)
                         closed.complete(Unit)
                         AppLog.w("central MCP connection interrupted", t)
