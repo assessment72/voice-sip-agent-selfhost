@@ -10,7 +10,7 @@ One central MCP service maintains independent WebSocket sessions for many Androi
 - Every command includes exactly one gateway ID; no implicit fan-out.
 - The central service forwards commands and reports online/offline state; it does not dial SIP or SIM itself.
 - Each device credential is distinct. Admin MCP authentication is separate from device authentication.
-- TLS/WSS is mandatory outside localhost. Credentials are stored only in server secret configuration.
+- TLS/WSS is mandatory outside localhost. Legacy device credentials can be provisioned through server secrets; managed enrollment stores only SHA-256 hashes of random device tokens in MongoDB Atlas.
 - Heartbeats contain operational status only; never secrets, call audio, transcripts or full phone numbers.
 
 ## Call-control safety
@@ -21,8 +21,8 @@ A call action is a two-step operation: request approval, then execute the return
 
 1. Central coordinator and MCP tools (this branch).
 2. Android WSS agent with Keystore-backed credential storage, reconnect/backoff, heartbeat and command-result handling.
-3. Device enrollment/revocation UX and server-side durable registry/credential rotation.
-4. Per-device status, call-list and approval UI in the central admin dashboard.
+3. Device enrollment/revocation UX and server-side durable registry/credential rotation (initial admin controls implemented).
+4. Per-device status, audit and credential lifecycle UI in the central admin dashboard (initial version implemented; call-list and approval UI remain future work).
 5. CI, multi-device simulation tests, then controlled device tests. No production rollout until separately approved.
 
 ## Protocol version
@@ -51,4 +51,15 @@ The app stores the token encrypted with a non-exportable Android Keystore AES-GC
 
 ## Current limitations
 
-This branch now includes the Android WSS agent and enrollment UI, but this remains a development integration. The central service currently uses environment-provisioned credentials and an in-memory live-connection registry; it does not yet provide a durable device enrollment database, remote token rotation UI, or a web dashboard. Android compile CI and physical-device validation are required before field use. No phone is enrolled by default and no real call is initiated by installation.
+This branch includes the Android WSS agent, MongoDB-backed gateway enrollment registry, an Arabic admin dashboard, one-time enrollment-token creation, gateway disable/re-enable, and token rotation. Managed device tokens are stored as SHA-256 hashes; raw tokens are returned once. The dashboard uses the admin bearer token and does not expose device credentials. Environment-provisioned credentials remain supported for existing gateways. The dashboard is available at `/dashboard`; management APIs require MongoDB Atlas. Cross-instance disable takes effect on the next heartbeat for sockets attached to other function instances. CI must pass and physical-device validation is still required before field use. No production rollout, merge, or real call is performed by this branch.
+
+
+## Central admin dashboard and gateway lifecycle
+
+- Open `https://HOST/dashboard` and authenticate with the admin token (`MCP_ADMIN_TOKEN`), never a device token.
+- The dashboard shows per-device online state, last heartbeat, safe operational metadata and audit events.
+- Enroll: provide a unique gateway ID. The server creates a 256-bit random token, stores only its SHA-256 hash in `gateway_enrollments`, and returns the raw token once. Enter that token in the Android app's Central MCP settings.
+- Disable/re-enable: the server persists the enabled state. Disabled devices cannot reconnect or receive routed commands; a connection held by another Vercel instance closes on its next heartbeat.
+- Rotate token: the old token becomes invalid immediately and the new random token is returned once. Update the Android app configuration before expecting reconnection.
+- Every administrative action is recorded in `audit_events`. Device tokens and token hashes are never returned by the dashboard listing or audit API.
+- Vercel rewrites include `/dashboard`, `/admin/gateways`, and nested gateway management routes. Deployment remains separate and requires explicit approval.
