@@ -80,8 +80,12 @@ the gateway implementation does not control that provider-side behavior.
 - Set a strong registrar/SIP password in the gateway and configure the matching digest credentials
   on the PBX/softphone.
 - In built-in server mode, INVITEs without valid digest authentication are challenged/rejected
-  before target parsing or call creation.
-- Keep the existing source-IP brute-force throttling and `allowedPrefixes` policy enabled.
+  before target parsing or call creation; failed attempts retain the existing source-IP throttling.
+- In external-proxy/client mode, the built-in stack accepts signaling only from the configured
+  upstream server IP (`acceptOnlyFromServer`). This is a trusted-upstream network boundary, not a
+  digest challenge to the proxy. Restrict that upstream path with a firewall/VPN and use a provider
+  or PBX that authenticates its callers before forwarding calls.
+- Keep the existing `allowedPrefixes` policy enabled and as narrow as your business needs allow.
 - Do not expose the SIP/RTP ports to the public internet without a firewall/VPN and strong
   authentication.
 - Do not use this gateway to dial emergency services. Emergency destinations are refused.
