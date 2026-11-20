@@ -1,6 +1,8 @@
 name: Android build and tests
 
 on:
+  push:
+    branches: [audit/rtp-local-server-hardening]
   pull_request:
     branches: [main]
   workflow_dispatch:
