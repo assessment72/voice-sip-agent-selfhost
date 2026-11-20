@@ -5,7 +5,7 @@ import { WebSocket } from "ws";
 import { once } from "node:events";
 
 async function start(t, options = {}) {
-  const app = createCentralMcpServer({ adminToken: "admin-test-token", credentials: { gw01: "device-test-token" }, ...options });
+  const app = createCentralMcpServer({ adminToken: "admin-test-token", credentials: { gw01: "device-test-token", gw02: "device-test-token-2" }, ...options });
   await new Promise(resolve => app.httpServer.listen(0, "127.0.0.1", resolve));
   const port = app.httpServer.address().port;
   t.after(() => new Promise(resolve => app.httpServer.close(resolve)));
@@ -60,7 +60,7 @@ test("multiple gateways stay isolated and commands are sent only to the selected
   const wsUrl = url.replace("http://", "ws://") + "/v1/agent";
   const connect = async gatewayId => {
     const ws = new WebSocket(wsUrl, { headers: {
-      authorization: "Bearer device-test-token",
+      authorization: "Bearer " + (gatewayId === "gw02" ? "device-test-token-2" : "device-test-token"),
       "x-gateway-id": gatewayId
     }});
     await once(ws, "open");
