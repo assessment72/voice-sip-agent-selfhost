@@ -49,6 +49,9 @@ Do not send SIP passwords, SIM PINs, API keys, audio, or full caller numbers in 
 - `gateways_list`
 - `gateway_status`
 - `gateway_calls_list`
+- `gateway_set_takeover`
+- `gateway_restart_sip`
+- `gateway_set_earpiece_mute`
 - `gateway_pending_call_approvals`
 - `gateway_request_call_action`
 - `gateway_execute_approved_action`
