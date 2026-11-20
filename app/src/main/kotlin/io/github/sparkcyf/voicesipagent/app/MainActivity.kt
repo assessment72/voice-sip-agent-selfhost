@@ -84,6 +84,7 @@ import io.github.sparkcyf.voicesipagent.gateway.FinalCallAction
 import io.github.sparkcyf.voicesipagent.privileged.HealthKeys
 import io.github.sparkcyf.voicesipagent.privileged.AudioMethod
 import io.github.sparkcyf.voicesipagent.privileged.CallAccess
+import io.github.sparkcyf.voicesipagent.voice.CallerIdMode
 import io.github.sparkcyf.voicesipagent.privileged.ShizukuConnector
 
 class MainActivity : DialerRoleActivity() {
@@ -671,6 +672,7 @@ private fun SettingsSection(rt: GatewayRuntime) {
     var finalCallAction by remember(cur) { mutableStateOf(cur.finalCallAction) }
     var lease by remember(cur) { mutableStateOf(cur.registrarLeaseSec.toString()) }
     var regPassword by remember(cur) { mutableStateOf(cur.registrarPassword) }
+    var callerIdMode by remember(cur) { mutableStateOf(cur.callerIdMode) }
     var settingsMessage by remember { mutableStateOf("") }
     val builtin = stack == SipStack.BUILTIN
     Section(t("Настройки", "Settings")) {
@@ -734,6 +736,32 @@ private fun SettingsSection(rt: GatewayRuntime) {
             style = MaterialTheme.typography.bodySmall,
         )
         Field(t("Префиксы для исходящих (через запятую, пусто = любой)", "Allowed dial-out prefixes (comma separated, empty = any)"), prefixes, info = "prefixes") { prefixes = it }
+        Choice(
+            if (currentUiLang == UiLang.AR) "هوية المتصل للمكالمات الصادرة" else t("Идентификатор вызывающего", "Outgoing caller ID"),
+            CallerIdMode.entries,
+            callerIdMode,
+            {
+                if (currentUiLang == UiLang.AR) when (it) {
+                    CallerIdMode.NORMAL -> "إظهار الرقم العادي"
+                    CallerIdMode.PRIVATE -> "رقم خاص"
+                    CallerIdMode.UNKNOWN -> "رقم مجهول"
+                    CallerIdMode.HIDDEN -> "بدون رقم"
+                } else when (it) {
+                    CallerIdMode.NORMAL -> t("Показывать номер", "Show normal number")
+                    CallerIdMode.PRIVATE -> "Private Number"
+                    CallerIdMode.UNKNOWN -> "Unknown"
+                    CallerIdMode.HIDDEN -> "No Caller ID"
+                }
+            },
+            info = "caller_id",
+        ) { callerIdMode = it }
+        Text(
+            if (currentUiLang == UiLang.AR)
+                "تُرسل خيارات الإخفاء كطلب CLIR عبر SIM وPrivacy عبر SIP. ظهور Private أو Unknown أو No Caller ID يعتمد على دعم شركة الاتصالات ومزود SIP."
+            else
+                "Privacy choices request CLIR on SIM and SIP Privacy signalling. The carrier/PBX decides whether the receiver sees Private, Unknown, or No Caller ID.",
+            style = MaterialTheme.typography.bodySmall,
+        )
         Choice(t("Второй звонок при занятости", "Second call while busy"), BusyPolicy.entries, busy,
             { when (it) { BusyPolicy.REJECT -> t("Отклонять", "Reject"); BusyPolicy.IGNORE -> t("Отдать звонилке", "Leave to phone") } }, info = "busy") {
             busy = it
@@ -766,7 +794,7 @@ private fun SettingsSection(rt: GatewayRuntime) {
                     registrarLeaseSec = lease.toIntOrNull()?.takeIf { it in 30..86400 } ?: cur.registrarLeaseSec,
                     registrarPassword = regPassword,
                     server = server, port = port.toIntOrNull() ?: transport.defaultPort, username = user, password = password,
-                    allowedPrefixes = prefixes, domain = domain,
+                    allowedPrefixes = prefixes, callerIdMode = callerIdMode, domain = domain,
                     sipStack = stack, sipTransport = transport.id, srtp = srtp.id, busyPolicy = busy,
                     fallbackExtensionsCsv = fallbackExtensions,
                     maxCallAttempts = attempts ?: cur.maxCallAttempts,
