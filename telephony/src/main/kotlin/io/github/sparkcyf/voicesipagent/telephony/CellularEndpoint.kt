@@ -15,6 +15,7 @@ import android.telephony.TelephonyManager
 import android.telephony.SubscriptionManager
 import android.telephony.SmsManager
 import io.github.sparkcyf.voicesipagent.voice.CallEndpoint
+import io.github.sparkcyf.voicesipagent.voice.CallerIdMode
 import io.github.sparkcyf.voicesipagent.voice.CallLeg
 import io.github.sparkcyf.voicesipagent.voice.EndpointStatus
 import io.github.sparkcyf.voicesipagent.voice.EndpointStatusListener
@@ -40,6 +41,7 @@ class CellularEndpoint(
     private val logger: (String) -> Unit,
     private val main: Handler = Handler(Looper.getMainLooper()),
     internal val audioExecutor: Executor = CellularLeg.audioExecutor,
+    private val callerIdMode: () -> CallerIdMode = { CallerIdMode.NORMAL },
 ) : CallEndpoint {
     override val name = "cellular"
 
@@ -148,12 +150,12 @@ class CellularEndpoint(
                 log("CALL_PHONE not granted")
                 leg.failPlacement(HangupCause.INTERNAL_ERROR)
             }
-            else -> main.post { place(leg, digits) }
+            else -> main.post { place(leg, digits, callerIdMode()) }
         }
         return leg
     }
 
-    private fun place(leg: CellularLeg, digits: String) {
+    private fun place(leg: CellularLeg, digits: String, mode: CallerIdMode) {
         if (leg.stopping) return
         if (closed) { leg.failPlacement(HangupCause.UNAVAILABLE); return }
         if (!status.ready) { leg.failPlacement(HangupCause.UNAVAILABLE); return }
@@ -179,8 +181,10 @@ class CellularEndpoint(
             val extras = Bundle().apply {
                 putParcelable(TelecomManager.EXTRA_PHONE_ACCOUNT_HANDLE, sim2Account)
             }
-            telecom.placeCall(Uri.fromParts("tel", digits, null), extras)
-            log("placeCall via SIM 2 ${redactNumber(digits)} (leg ${leg.id})")
+            val dialAddress = CellularCallerIdPolicy.dialString(digits, mode)
+            telecom.placeCall(Uri.fromParts("tel", dialAddress, null), extras)
+            if (mode.requestsRestriction) log("CLIR requested for SIM call (mode=${mode.id}); carrier confirmation unavailable")
+            log("placeCall via SIM 2 ${redactNumber(digits)} (leg ${leg.id}, callerId=${mode.id})")
         } catch (e: SecurityException) {
             pending -= p
             reportCalls()
@@ -359,8 +363,8 @@ class CellularEndpoint(
     }
 
     private fun sameNumber(a: String, b: String): Boolean {
-        val da = a.filter(Char::isDigit)
-        val db = b.filter(Char::isDigit)
+        val da = CellularCallerIdPolicy.numberForMatching(a).filter(Char::isDigit)
+        val db = CellularCallerIdPolicy.numberForMatching(b).filter(Char::isDigit)
         if (da.isEmpty() || db.isEmpty()) return false
         val n = minOf(da.length, db.length, 8)
         return da.takeLast(n) == db.takeLast(n)
