@@ -24,6 +24,10 @@
     {
       "source": "/admin/audit",
       "destination": "/api/admin/audit"
+    },
+    {
+      "source": "/admin/gateways/:path*",
+      "destination": "/api/admin/gateways/:path*"
     }
   ],
   "functions": {
