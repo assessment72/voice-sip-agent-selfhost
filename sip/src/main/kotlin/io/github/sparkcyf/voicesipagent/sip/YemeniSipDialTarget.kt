@@ -28,15 +28,19 @@ internal object YemeniSipDialTarget {
 
     private val supportedMobilePrefixes = setOf("70", "71", "73", "77", "78")
 
-    fun resolve(request: SipRequest): Result {
+    fun resolve(request: SipRequest, fixedGatewayUser: String? = "gateway"): Result {
         val candidates = listOf(
-            Candidate("X-VSA-Dial", request.headers["X-VSA-Dial"]),
+            Candidate("X-VSA-Dial", request.headers["X-VSA-Dial"]?.let(::xVsaUser)),
             Candidate("To", request.headers["To"]?.let(::nameAddrUser)),
             Candidate("P-Called-Party-ID", request.headers["P-Called-Party-ID"]?.let(::nameAddrUser)),
             Candidate("Request-URI", SipUri.parse(request.uri)?.user),
         )
-        val selected = candidates.firstOrNull { !it.raw.isNullOrBlank() }
-            ?: return Result.Rejected(Invalid("none", "no dynamic target was supplied"))
+        // Proxies commonly keep the gateway AoR in To or Request-URI. Treat that fixed account
+        // identity as routing metadata, not as a destination; continue to the next source.
+        val fixedUsers = setOfNotNull("gateway", fixedGatewayUser?.lowercase())
+        val selected = candidates.firstOrNull {
+            !it.raw.isNullOrBlank() && it.raw.trim().lowercase() !in fixedUsers
+        } ?: return Result.Rejected(Invalid("none", "no dynamic target was supplied"))
 
         val encoded = selected.raw!!.trim()
         if (!encoded.startsWith("sip", ignoreCase = true)) {
@@ -62,4 +66,13 @@ internal object YemeniSipDialTarget {
 
     private fun nameAddrUser(value: String): String? =
         NameAddr.parse(value)?.sipUri?.user
+
+    private fun xVsaUser(value: String): String {
+        val raw = value.trim()
+        if (raw.contains("@") || raw.startsWith("<")) {
+            NameAddr.parse(raw)?.sipUri?.user?.let { return it }
+            return raw.substringBefore("@").trim().trim('<', '>')
+        }
+        return raw
+    }
 }
