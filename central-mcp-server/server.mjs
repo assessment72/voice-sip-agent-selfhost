@@ -257,19 +257,13 @@ export function createCentralMcpServer(options = {}) {
   httpServer.on("upgrade", (req, socket, head) => {
     const url = new URL(req.url ?? "/", "http://localhost");
     if (url.pathname !== `${basePath}/v1/agent`) {
-      socket.write("HTTP/1.1 404 Not Found\r
-Connection: close\r
-\r
-");
+      socket.write("HTTP/1.1 404 Not Found\r\nConnection: close\r\n\r\n");
       socket.destroy();
       return;
     }
     const gatewayId = registeredGateway(req);
     if (!gatewayId) {
-      socket.write("HTTP/1.1 401 Unauthorized\r
-Connection: close\r
-\r
-");
+      socket.write("HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n");
       socket.destroy();
       return;
     }
