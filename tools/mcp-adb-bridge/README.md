@@ -23,7 +23,7 @@ Configure the MCP client to launch the command above as a stdio server. If more 
 ## Available tools
 
 - sip_gateway_status — read gateway health
-- sip_list_calls — list active calls and recent history
+- sip_list_calls — list active calls and recent history\n- sip_pending_call_approvals — list pending approval requests
 - sip_request_call_action — create a pending DIAL / ANSWER / REJECT / HANGUP / DTMF approval
 - sip_approve_call_action — explicitly approve the exact pending operation
 - sip_reject_call_action — reject a pending operation
