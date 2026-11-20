@@ -430,7 +430,7 @@ private fun CallApprovalsSection(rt: GatewayRuntime) {
             }
             val target = when (spec.action.name) {
                 "DIAL" -> "${t("Номер", "Number")}: ${spec.target}"
-                "DTMF" -> "${t("Вызов", "Call")}: ${spec.callId} · ${t("Номер", "Digit")}: ${spec.dtmf}"
+                "DTMF" -> "${t("Вызов", "Call")}: ${spec.callId} · ${t("Цифра", "Digit")}: ${spec.dtmf}"
                 else -> "${t("ID вызова", "Call ID")}: ${spec.callId}"
             }
             Card(Modifier.fillMaxWidth()) {
