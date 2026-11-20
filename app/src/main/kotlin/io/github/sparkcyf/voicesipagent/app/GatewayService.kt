@@ -77,7 +77,7 @@ class GatewayService : Service() {
         if (statusJob == null) {
             val nm = getSystemService(NotificationManager::class.java)
             statusJob = scope.launch {
-                runtime.health.map { it.needsForegroundService to summary(it) }.distinctUntilChanged().collect { (needed, text) ->
+                runtime.health.map { (it.needsForegroundService || CentralMcpConfigStore(this@GatewayService).load().enabled) to summary(it) }.distinctUntilChanged().collect { (needed, text) ->
                     if (needed) nm.notify(NOTIFICATION_ID, build(text)) else stopGateway()
                 }
             }
