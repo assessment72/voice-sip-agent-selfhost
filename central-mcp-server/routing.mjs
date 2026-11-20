@@ -10,6 +10,7 @@ export function selectGateway(gateways, policy = {}, now = Date.now(), maxHeartb
   for (const [gatewayId, entry] of gateways.entries()) {
     const cfg = policy[gatewayId] ?? {};
     if (cfg.enabled === false) continue;
+    if (Number.isFinite(entry.routingReservedUntil) && entry.routingReservedUntil > now) continue;
     if (entry.ws?.readyState !== 1) continue;
     const lastSeen = Date.parse(entry.lastSeen ?? "");
     if (!Number.isFinite(lastSeen) || now - lastSeen > maxHeartbeatAgeMs || lastSeen > now + 5_000) continue;
