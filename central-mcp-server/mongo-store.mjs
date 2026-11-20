@@ -13,7 +13,9 @@ export class MongoGatewayStore {
     if (!this.ready) this.ready = (async () => {
       await this.client.connect();
       await this.client.db(this.databaseName).command({ ping: 1 });
-      return this.client.db(this.databaseName);
+      const db = this.client.db(this.databaseName);
+      await db.collection("gateway_enrollments").createIndex({ gateway_id: 1 }, { unique: true });
+      return db;
     })().catch(error => { this.ready = null; throw error; });
     return this.ready;
   }
