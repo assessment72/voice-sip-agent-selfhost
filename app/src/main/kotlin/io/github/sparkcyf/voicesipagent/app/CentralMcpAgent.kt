@@ -244,7 +244,21 @@ object CentralMcpAgent {
                 .put("call_active", health.session != null || health.calls.owned > 0)
                 .put("call_summary", health.calls.summary)
                 .put("server_mode", runtime.settings.serverMode)
-                .put("gateway_status", runtime.statusReport())
+        }
+        "sip_calls_list" -> {
+            fun callJson(call: io.github.sparkcyf.voicesipagent.voice.ManagedCall) = JSONObject()
+                .put("id", call.id)
+                .put("kind", call.kind)
+                .put("direction", call.direction.name)
+                .put("remote_number", call.remoteNumber ?: JSONObject.NULL)
+                .put("display_name", call.displayName ?: JSONObject.NULL)
+                .put("target", call.target ?: JSONObject.NULL)
+                .put("state", call.state.name)
+                .put("end_cause", call.endCause?.name ?: JSONObject.NULL)
+                .put("observed_at", call.observedAt.toString())
+            JSONObject()
+                .put("active", JSONArray(runtime.callControl.activeCalls().map(::callJson)))
+                .put("history", JSONArray(runtime.callControl.callHistory(args.optInt("limit", 100).coerceIn(1, 500)).map(::callJson)))
         }
         "sip_pending_call_approvals" -> JSONObject().put(
             "approvals",
