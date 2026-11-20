@@ -61,6 +61,15 @@ class CallApprovalManagerTest {
         assertTrue(manager.auditLog().any { it.detail == "approval requested" })
     }
 
+    @Test fun callTargetRejectsShellControlCharacters() {
+        try {
+            CallActionSpec(CallAction.DIAL, target = "+967700000000;reboot")
+            fail("Expected unsafe call target to be rejected")
+        } catch (_: IllegalArgumentException) {
+            // The target is passed through the ADB command line and must remain a single safe token.
+        }
+    }
+
     @Test fun dtmfRequiresValidDigitAndCallId() {
         try {
             CallActionSpec(CallAction.DTMF, callId = "call-4", dtmf = 'Z')
