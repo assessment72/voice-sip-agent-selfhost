@@ -18,6 +18,8 @@ For a restricted outgoing cellular leg, the gateway prefixes the dial string wit
 (per-call CLIR invocation). `NORMAL` sends the number unchanged. The prefix is applied only to
 gateway-originated calls; it does not alter the subscription-wide CLIR setting.
 
+A trusted/authenticated SIP caller may override the default for one SIP-to-SIM call with the INVITE header `X-VSA-Caller-ID-Mode: normal|private|unknown|hidden`. Unsupported values are rejected with SIP 400. In server mode the override is processed only after INVITE digest authentication succeeds.
+
 This is a request to the mobile network, not proof that the network accepted it. CLIR must be
 provisioned by the operator and may be overridden by operator policy or the called party's
 override category. The three privacy labels map to the same network-level CLIR request; GSM does
