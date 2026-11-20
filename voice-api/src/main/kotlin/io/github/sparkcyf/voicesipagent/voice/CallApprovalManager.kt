@@ -86,19 +86,19 @@ class CallApprovalManager(
 
     @Synchronized
     fun pending(): List<CallApproval> {
-        expirePending()
+        expireOutstanding()
         return approvals.values.filter { it.state == ApprovalState.PENDING }
     }
 
     @Synchronized
     fun get(id: String): CallApproval? {
-        expirePending()
+        expireOutstanding()
         return approvals[id]
     }
 
     @Synchronized
     fun approve(id: String): CallApproval? {
-        expirePending()
+        expireOutstanding()
         val current = approvals[id] ?: return null
         if (current.state != ApprovalState.PENDING) return current
         val updated = current.copy(state = ApprovalState.APPROVED, decidedAt = clock.instant())
@@ -109,7 +109,7 @@ class CallApprovalManager(
 
     @Synchronized
     fun reject(id: String): CallApproval? {
-        expirePending()
+        expireOutstanding()
         val current = approvals[id] ?: return null
         if (current.state != ApprovalState.PENDING) return current
         val updated = current.copy(state = ApprovalState.REJECTED, decidedAt = clock.instant())
@@ -124,7 +124,7 @@ class CallApprovalManager(
      */
     @Synchronized
     fun consumeApproved(id: String, actual: CallActionSpec): Boolean {
-        expirePending()
+        expireOutstanding()
         val current = approvals[id] ?: return false
         if (current.state != ApprovalState.APPROVED || current.spec != actual) {
             record(current, "execution blocked: approval missing, mismatched or already used")
