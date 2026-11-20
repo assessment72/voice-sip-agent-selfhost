@@ -23,7 +23,7 @@ data class CallActionSpec(
         require(route.isNotBlank())
         if (action == CallAction.DIAL) require(!target.isNullOrBlank()) { "DIAL requires a target" }
         if (action != CallAction.DIAL) require(!callId.isNullOrBlank()) { "$action requires a callId" }
-        if (action == CallAction.DTMF) require(dtmf in "0123456789*#ABCD") { "Invalid DTMF digit" }
+        if (action == CallAction.DTMF) require(dtmf != null && dtmf in "0123456789*#ABCD") { "Invalid DTMF digit" }
         else require(dtmf == null) { "DTMF digit is only valid for DTMF actions" }
     }
 }
