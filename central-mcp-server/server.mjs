@@ -60,6 +60,8 @@ export function createCentralMcpServer(options = {}) {
     const docs = await db.listGateways();
     const candidates = new Map();
     for (const doc of docs) {
+      const enrollment = await db.getEnrollment(doc.gateway_id);
+      if (enrollment && enrollment.enabled !== true) continue;
       const lease = await db.getLease(doc.gateway_id);
       candidates.set(doc.gateway_id, { ws: { readyState: doc.connected && doc.last_seen && Date.now() - new Date(doc.last_seen).getTime() <= 60_000 ? WebSocket.OPEN : WebSocket.CLOSED }, lastSeen: doc.last_seen, metadata: doc.metadata ?? {}, lastAssignedAt: doc.last_assigned_at ? new Date(doc.last_assigned_at).getTime() : 0, routingReservedUntil: lease ? new Date(lease.expires_at).getTime() : 0 });
     }
@@ -98,6 +100,8 @@ export function createCentralMcpServer(options = {}) {
   async function sendToGateway(gatewayId, name, args) {
     const db = await ensureStore();
     if (db) {
+      const enrollment = await db.getEnrollment(gatewayId);
+      if (enrollment && enrollment.enabled !== true) throw new Error("gateway_disabled");
       const gateway = await db.getGateway(gatewayId);
       if (!gateway || !gateway.connected || !gateway.instance_id || !gateway.last_seen || Date.now() - new Date(gateway.last_seen).getTime() > 60_000) throw new Error("gateway_offline");
       const commandId = await db.createCommand({ gatewayId, instanceId: gateway.instance_id, name, args, timeoutMs: requestTimeoutMs });
@@ -123,7 +127,10 @@ export function createCentralMcpServer(options = {}) {
   }
   async function listGateways() {
     const db = await ensureStore();
-    if (db) return (await db.listGateways()).map(({ gateway_id, connected, connected_at, last_seen, metadata }) => ({ gateway_id, connected: Boolean(connected && last_seen && Date.now() - new Date(last_seen).getTime() <= 60_000), connected_at, last_seen, metadata }));
+    if (db) return Promise.all((await db.listGateways()).map(async ({ gateway_id, connected, connected_at, last_seen, metadata }) => {
+      const enrollment = await db.getEnrollment(gateway_id);
+      return { gateway_id, connected: Boolean(connected && enrollment?.enabled !== false && last_seen && Date.now() - new Date(last_seen).getTime() <= 60_000), connected_at, last_seen, metadata };
+    }));
     return [...gateways.entries()].map(([gateway_id, entry]) => ({
       gateway_id,
       connected: entry.ws.readyState === WebSocket.OPEN,
@@ -326,6 +333,7 @@ export function createCentralMcpServer(options = {}) {
           try { data = JSON.parse(body); } catch { return json(res, 400, { error: "invalid_json" }); }
           if (typeof data?.enabled !== "boolean") return json(res, 400, { error: "enabled_boolean_required" });
           await db.setEnrollmentEnabled(gatewayId, data.enabled);
+          if (!data.enabled) gateways.get(gatewayId)?.ws.close(4003, "gateway_disabled");
           return json(res, 200, { gateway_id: gatewayId, enabled: data.enabled });
         }
         if (action === "rotate-token" && req.method === "POST") {
@@ -387,8 +395,13 @@ export function createCentralMcpServer(options = {}) {
     const connectionToken = randomUUID();
     entry.connectionToken = connectionToken;
     ensureStore().then(async db => { await db?.registerGateway({ gateway_id: gatewayId, instance_id: instanceId, connection_token: connectionToken, connected_at: entry.connectedAt, last_seen: entry.lastSeen, metadata: entry.metadata }); if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: "server.ready", gateway_id: gatewayId })); }).catch(() => ws.close(1011, "persistent_storage_unavailable"));
-    ws.on("message", raw => {
+    ws.on("message", async raw => {
       if (gateways.get(gatewayId)?.ws !== ws) return;
+      try {
+        const db = await ensureStore();
+        const enrollment = await db?.getEnrollment(gatewayId);
+        if (enrollment && enrollment.enabled !== true) { ws.close(4003, "gateway_disabled"); return; }
+      } catch { ws.close(1011, "persistent_storage_unavailable"); return; }
       let message;
       try { message = JSON.parse(raw.toString()); } catch { return ws.close(1007, "invalid_json"); }
       if (!message || typeof message !== "object") return;
