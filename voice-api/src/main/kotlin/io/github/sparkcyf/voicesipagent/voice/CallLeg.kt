@@ -15,7 +15,7 @@ enum class LegState {
     ENDED,
 }
 
-data class Party(val number: String?, val displayName: String? = null)
+data class Party(val number: String?, val displayName: String? = null, val callerIdMode: CallerIdMode? = null)
 
 /**
  * One side of a call on one technology (cellular, SIP, an AI voice agent, ...).
