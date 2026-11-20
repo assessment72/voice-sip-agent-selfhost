@@ -268,6 +268,22 @@ object CentralMcpAgent {
                 .put("call_summary", health.calls.summary)
                 .put("server_mode", runtime.settings.serverMode)
         }
+        "sip_set_takeover" -> {
+            val enabled = args.opt("enabled")
+            require(enabled is Boolean) { "enabled_boolean_required" }
+            runtime.setTakeover(enabled)
+            JSONObject().put("ok", true).put("takeover_requested", enabled)
+        }
+        "sip_restart" -> {
+            runtime.restartSip()
+            JSONObject().put("ok", true).put("sip_restart_requested", true)
+        }
+        "sip_set_earpiece_mute" -> {
+            val muted = args.opt("muted")
+            require(muted is Boolean) { "muted_boolean_required" }
+            runtime.setMuteEarpiece(muted)
+            JSONObject().put("ok", true).put("earpiece_mute_requested", muted)
+        }
         "sip_calls_list" -> {
             fun callJson(call: io.github.sparkcyf.voicesipagent.voice.ManagedCall) = JSONObject()
                 .put("id", call.id)
