@@ -8,7 +8,11 @@ async function start(t, options = {}) {
   const app = createCentralMcpServer({ adminToken: "admin-test-token", credentials: { gw01: "device-test-token", gw02: "device-test-token-2" }, ...options });
   await new Promise(resolve => app.httpServer.listen(0, "127.0.0.1", resolve));
   const port = app.httpServer.address().port;
-  t.after(() => new Promise(resolve => {\n    for (const entry of app.gateways.values()) entry.ws.terminate();\n    app.httpServer.closeAllConnections();\n    app.httpServer.close(resolve);\n  }));
+  t.after(() => new Promise(resolve => {
+    for (const entry of app.gateways.values()) entry.ws.terminate();
+    app.httpServer.closeAllConnections();
+    app.httpServer.close(resolve);
+  }));
   return { app, url: `http://127.0.0.1:${port}` };
 }
 async function mcp(url, method, params = {}, token = "admin-test-token") {
@@ -79,7 +83,9 @@ test("multiple gateways stay isolated and commands are sent only to the selected
   const command = JSON.parse(raw.toString());
   assert.equal(command.type, "command");
   assert.equal(command.name, "sip_gateway_status");
-  gw01.send(JSON.stringify({ type: "command_result", id: command.id, result: { ok: true, gateway_id: "spoofed-gw01" } }));\n  await new Promise(resolve => setTimeout(resolve, 25));\n  gw02.send(JSON.stringify({ type: "command_result", id: command.id, result: { ok: true, gateway_id: "gw02" } }));
+  gw01.send(JSON.stringify({ type: "command_result", id: command.id, result: { ok: true, gateway_id: "spoofed-gw01" } }));
+  await new Promise(resolve => setTimeout(resolve, 25));
+  gw02.send(JSON.stringify({ type: "command_result", id: command.id, result: { ok: true, gateway_id: "gw02" } }));
   const status = await (await statusPromise).json();
   assert.equal(JSON.parse(status.result.content[0].text).gateway_id, "gw02");
   assert.equal(gw01.readyState, WebSocket.OPEN);
