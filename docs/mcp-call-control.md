@@ -1,6 +1,6 @@
 # Local MCP call-control foundation
 
-This document describes the first, approval-gated call-control layer. It is not yet an MCP transport server.
+This document describes the approval-gated call-control layer and its local MCP-over-ADB stdio adapter.
 
 ## Current architecture
 
@@ -33,12 +33,14 @@ This is not multi-SIM load balancing. The current Android cellular endpoint and 
 Implemented:
 - JVM call registry, approval manager and approval-gated call controller.
 - Runtime wiring to observe both legs of existing bridge sessions.
-- Unit tests and CI coverage for the `voice-api` module.
+- Unit tests and CI coverage for the `voice-api` module and Python MCP bridge.
+- MCP JSON-RPC stdio server on a trusted computer, communicating through the DUMP-protected Android ADB receiver.
+- On-device approval UI: the MCP client can request and execute, but cannot approve.
 
 Not implemented yet:
-- MCP JSON-RPC transport and tool/resource declarations.
-- A hardened local transport with authenticated clients, localhost-only binding, origin checks and request-size/time limits.
-- Durable approval/audit storage (the on-device approval UI is now present).
+- Durable approval/audit storage; pending approvals and audit entries are currently in memory.
+- Android device-level validation of ordered-broadcast result data and the full call lifecycle.
+- Stronger input validation and operational limits for the local stdio bridge.
 - A verified Android device test matrix for SIP and cellular answer/reject/hangup/DTMF.
 - Explicit Android `PhoneAccountHandle` discovery and multi-SIM route selection.
 
