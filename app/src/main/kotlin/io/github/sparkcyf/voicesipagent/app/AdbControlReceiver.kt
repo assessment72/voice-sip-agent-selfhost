@@ -52,7 +52,7 @@ class AdbControlReceiver : BroadcastReceiver() {
                     ),
                 )
             }
-            "call-list", "call-request", "call-approve", "call-reject",
+            "call-list", "call-pending", "call-request", "call-approve", "call-reject",
             "call-execute", "call-audit", "call-status" -> {
                 val response = runCatching { handleCallControl(rt, intent, op) }
                     .getOrElse { JSONObject().put("ok", false).put("error", it.message ?: "invalid request") }
@@ -72,6 +72,8 @@ class AdbControlReceiver : BroadcastReceiver() {
             .put("ok", true)
             .put("active", JSONArray(runtime.callControl.activeCalls().map(::callJson)))
             .put("history", JSONArray(runtime.callControl.callHistory().map(::callJson)))
+        "call-pending" -> JSONObject().put("ok", true)
+            .put("approvals", JSONArray(runtime.callControl.pendingApprovals().map(::approvalJson)))
         "call-request" -> {
             val action = CallAction.valueOf(intent.getStringExtra("action")
                 ?.uppercase() ?: error("action is required"))
