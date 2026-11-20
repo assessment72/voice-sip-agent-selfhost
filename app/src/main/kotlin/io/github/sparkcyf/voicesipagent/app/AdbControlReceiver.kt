@@ -52,7 +52,7 @@ class AdbControlReceiver : BroadcastReceiver() {
                     ),
                 )
             }
-            "call-list", "call-pending", "call-request", "call-approve", "call-reject",
+            "call-list", "call-pending", "call-request", "call-reject",
             "call-execute", "call-audit", "call-status" -> {
                 val response = runCatching { handleCallControl(rt, intent, op) }
                     .getOrElse { JSONObject().put("ok", false).put("error", it.message ?: "invalid request") }
@@ -73,7 +73,7 @@ class AdbControlReceiver : BroadcastReceiver() {
             .put("active", JSONArray(runtime.callControl.activeCalls().map(::callJson)))
             .put("history", JSONArray(runtime.callControl.callHistory().map(::callJson)))
         "call-pending" -> JSONObject().put("ok", true)
-            .put("approvals", JSONArray(runtime.callControl.pendingApprovals().map(::approvalJson)))
+            .put("approvals", JSONArray(runtime.pendingCallApprovals.value.map(::approvalJson)))
         "call-request" -> {
             val action = CallAction.valueOf(intent.getStringExtra("action")
                 ?.uppercase() ?: error("action is required"))
@@ -85,17 +85,11 @@ class AdbControlReceiver : BroadcastReceiver() {
                 route = intent.getStringExtra("route") ?: "auto",
                 dtmf = digit,
             )
-            JSONObject().put("ok", true).put("approval", approvalJson(runtime.callControl.request(spec)))
-        }
-        "call-approve" -> {
-            val id = intent.getStringExtra("approval_id") ?: error("approval_id is required")
-            val approval = runtime.callControl.approve(id) ?: error("approval not found")
-            JSONObject().put("ok", approval.state == ApprovalState.APPROVED)
-                .put("approval", approvalJson(approval))
+            JSONObject().put("ok", true).put("approval", approvalJson(runtime.requestCallApproval(spec)))
         }
         "call-reject" -> {
             val id = intent.getStringExtra("approval_id") ?: error("approval_id is required")
-            val approval = runtime.callControl.reject(id) ?: error("approval not found")
+            val approval = runtime.rejectCallApproval(id) ?: error("approval not found")
             JSONObject().put("ok", approval.state == ApprovalState.REJECTED)
                 .put("approval", approvalJson(approval))
         }
