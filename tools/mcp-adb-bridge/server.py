@@ -97,19 +97,6 @@ TOOLS = [
         },
     },
     {
-        "name": "sip_approve_call_action",
-        "description": (
-            "Approve one pending call action only after the user explicitly confirms the exact "
-            "number/call and route. Approval expires after 90 seconds and is single-use."
-        ),
-        "inputSchema": {
-            "type": "object",
-            "properties": {"approval_id": {"type": "string"}},
-            "required": ["approval_id"],
-            "additionalProperties": False,
-        },
-    },
-    {
         "name": "sip_reject_call_action",
         "description": "Reject a pending call-action approval. Does not affect an active call.",
         "inputSchema": {
@@ -122,7 +109,7 @@ TOOLS = [
     {
         "name": "sip_execute_approved_action",
         "description": (
-            "Execute a previously approved call action. The Android controller rechecks the exact "
+            "Execute an action only after the user has tapped Approve for that exact request in the Android app. The Android controller rechecks the exact "
             "operation and consumes the approval atomically; replay or mismatch is blocked."
         ),
         "inputSchema": {
@@ -152,16 +139,31 @@ def invoke_tool(name: str, args: dict[str, Any]) -> dict[str, Any]:
     if name == "sip_pending_call_approvals":
         return broadcast("call-pending")
     if name == "sip_request_call_action":
+        action = args.get("action")
+        if action not in {"DIAL", "ANSWER", "REJECT", "HANGUP", "DTMF"}:
+            raise ValueError("action must be DIAL, ANSWER, REJECT, HANGUP or DTMF")
+        target = args.get("target")
+        call_id = args.get("call_id")
+        digit = args.get("digit")
+        route = args.get("route", "auto")
+        if action == "DIAL" and (not isinstance(target, str) or not target.strip()):
+            raise ValueError("DIAL requires a non-empty target")
+        if action != "DIAL" and (not isinstance(call_id, str) or not call_id.strip()):
+            raise ValueError(f"{action} requires a non-empty call_id")
+        if action == "DTMF" and (not isinstance(digit, str) or len(digit) != 1 or digit not in "0123456789*#ABCD"):
+            raise ValueError("DTMF requires one valid digit")
+        if action != "DTMF" and digit is not None:
+            raise ValueError("digit is only valid for DTMF")
+        if not isinstance(route, str) or not re.fullmatch(r"[A-Za-z0-9._-]{1,64}", route):
+            raise ValueError("route contains unsupported characters")
         extras = {
-            "action": args.get("action"),
-            "call_id": args.get("call_id"),
-            "target": args.get("target"),
-            "route": args.get("route", "auto"),
-            "digit": args.get("digit"),
+            "action": action,
+            "call_id": call_id,
+            "target": target,
+            "route": route,
+            "digit": digit,
         }
         return broadcast("call-request", extras)
-    if name == "sip_approve_call_action":
-        return broadcast("call-approve", {"approval_id": args["approval_id"]})
     if name == "sip_reject_call_action":
         return broadcast("call-reject", {"approval_id": args["approval_id"]})
     if name == "sip_execute_approved_action":
