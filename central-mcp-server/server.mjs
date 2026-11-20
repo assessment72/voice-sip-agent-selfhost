@@ -61,7 +61,7 @@ export function createCentralMcpServer(options = {}) {
     const candidates = new Map();
     for (const doc of docs) {
       const enrollment = await db.getEnrollment(doc.gateway_id);
-      if (enrollment && enrollment.enabled !== true) continue;
+      if (enrollment && (enrollment.enabled !== true || (typeof enrollment.token_hash === "string" && doc.auth_token_hash !== enrollment.token_hash))) continue;
       const lease = await db.getLease(doc.gateway_id);
       candidates.set(doc.gateway_id, { ws: { readyState: doc.connected && doc.last_seen && Date.now() - new Date(doc.last_seen).getTime() <= 60_000 ? WebSocket.OPEN : WebSocket.CLOSED }, lastSeen: doc.last_seen, metadata: doc.metadata ?? {}, lastAssignedAt: doc.last_assigned_at ? new Date(doc.last_assigned_at).getTime() : 0, routingReservedUntil: lease ? new Date(lease.expires_at).getTime() : 0 });
     }
@@ -103,6 +103,7 @@ export function createCentralMcpServer(options = {}) {
       const enrollment = await db.getEnrollment(gatewayId);
       if (enrollment && enrollment.enabled !== true) throw new Error("gateway_disabled");
       const gateway = await db.getGateway(gatewayId);
+      if (enrollment && typeof enrollment.token_hash === "string" && gateway?.auth_token_hash !== enrollment.token_hash) throw new Error("gateway_credentials_revoked");
       if (!gateway || !gateway.connected || !gateway.instance_id || !gateway.last_seen || Date.now() - new Date(gateway.last_seen).getTime() > 60_000) throw new Error("gateway_offline");
       const commandId = await db.createCommand({ gatewayId, instanceId: gateway.instance_id, name, args, timeoutMs: requestTimeoutMs });
       return await db.waitForCommand(commandId, requestTimeoutMs);
@@ -129,7 +130,10 @@ export function createCentralMcpServer(options = {}) {
     const db = await ensureStore();
     if (db) return Promise.all((await db.listGateways()).map(async ({ gateway_id, connected, connected_at, last_seen, metadata }) => {
       const enrollment = await db.getEnrollment(gateway_id);
-      return { gateway_id, connected: Boolean(connected && enrollment?.enabled !== false && last_seen && Date.now() - new Date(last_seen).getTime() <= 60_000), connected_at, last_seen, metadata };
+      const currentEnrollment = enrollment;
+      const stored = await db.getGateway(gateway_id);
+      const tokenCurrent = !currentEnrollment || typeof currentEnrollment.token_hash !== "string" || stored?.auth_token_hash === currentEnrollment.token_hash;
+      return { gateway_id, connected: Boolean(connected && currentEnrollment?.enabled !== false && tokenCurrent && last_seen && Date.now() - new Date(last_seen).getTime() <= 60_000), connected_at, last_seen, metadata };
     }));
     return [...gateways.entries()].map(([gateway_id, entry]) => ({
       gateway_id,
@@ -391,17 +395,18 @@ export function createCentralMcpServer(options = {}) {
   agentServer.on("connection", (ws, gatewayId) => {
     const previous = gateways.get(gatewayId);
     if (previous?.ws.readyState === WebSocket.OPEN) previous.ws.close(4001, "replaced_by_new_connection");
-    const entry = { ws, connectedAt: new Date().toISOString(), lastSeen: new Date().toISOString(), metadata: {} };
+    const entry = { ws, deviceTokenHash: createHash("sha256").update(bearer(req)).digest("hex"), connectedAt: new Date().toISOString(), lastSeen: new Date().toISOString(), metadata: {} };
     gateways.set(gatewayId, entry);
     const connectionToken = randomUUID();
     entry.connectionToken = connectionToken;
-    ensureStore().then(async db => { await db?.registerGateway({ gateway_id: gatewayId, instance_id: instanceId, connection_token: connectionToken, connected_at: entry.connectedAt, last_seen: entry.lastSeen, metadata: entry.metadata }); if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: "server.ready", gateway_id: gatewayId })); }).catch(() => ws.close(1011, "persistent_storage_unavailable"));
+    ensureStore().then(async db => { await db?.registerGateway({ gateway_id: gatewayId, instance_id: instanceId, connection_token: connectionToken, auth_token_hash: entry.deviceTokenHash, connected_at: entry.connectedAt, last_seen: entry.lastSeen, metadata: entry.metadata }); if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: "server.ready", gateway_id: gatewayId })); }).catch(() => ws.close(1011, "persistent_storage_unavailable"));
     ws.on("message", async raw => {
       if (gateways.get(gatewayId)?.ws !== ws) return;
       try {
         const db = await ensureStore();
         const enrollment = await db?.getEnrollment(gatewayId);
         if (enrollment && enrollment.enabled !== true) { ws.close(4003, "gateway_disabled"); return; }
+        if (enrollment && typeof enrollment.token_hash === "string" && entry.deviceTokenHash !== enrollment.token_hash) { ws.close(4003, "gateway_credentials_revoked"); return; }
       } catch { ws.close(1011, "persistent_storage_unavailable"); return; }
       let message;
       try { message = JSON.parse(raw.toString()); } catch { return ws.close(1007, "invalid_json"); }
