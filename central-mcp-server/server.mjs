@@ -257,13 +257,19 @@ export function createCentralMcpServer(options = {}) {
   httpServer.on("upgrade", (req, socket, head) => {
     const url = new URL(req.url ?? "/", "http://localhost");
     if (url.pathname !== `${basePath}/v1/agent`) {
-      socket.write("HTTP/1.1 404 Not Found\r\nConnection: close\r\n\r\n");
+      socket.write("HTTP/1.1 404 Not Found\r
+Connection: close\r
+\r
+");
       socket.destroy();
       return;
     }
     const gatewayId = registeredGateway(req);
     if (!gatewayId) {
-      socket.write("HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n");
+      socket.write("HTTP/1.1 401 Unauthorized\r
+Connection: close\r
+\r
+");
       socket.destroy();
       return;
     }
@@ -305,7 +311,11 @@ export function createCentralMcpServer(options = {}) {
   return { httpServer, gateways, tools, callTool, instanceId, close: async () => { stopCommandWatch?.(); await store?.close?.(); } };
 }
 
-// Vercel Node.js Server entrypoint. The server instance is exported for the platform runtime.\nconst vercelServer = createCentralMcpServer({ requirePersistentStore: true });\nexport default vercelServer.httpServer;\n\nif (process.argv[1] && new URL(import.meta.url).pathname === process.argv[1]) {
+// Vercel Node.js Server entrypoint. The server instance is exported for the platform runtime.
+const vercelServer = createCentralMcpServer({ requirePersistentStore: true });
+export default vercelServer.httpServer;
+
+if (process.argv[1] && new URL(import.meta.url).pathname === process.argv[1]) {
   const server = createCentralMcpServer();
   const port = Number(process.env.PORT ?? 8788);
   server.httpServer.listen(port, "0.0.0.0", () => {
