@@ -914,13 +914,13 @@ private fun ClinicEmployeeStatusSection(rt: GatewayRuntime) {
                 EmployeeCallStatus.REGISTERED -> t("مسجّل", "Registered")
                 EmployeeCallStatus.BUSY -> t("مشغول", "Busy")
                 EmployeeCallStatus.OFFLINE -> t("غير متصل", "Offline")
-                EmployeeCallStatus.UNKNOWN -> t("غير معروف", "Unknown")
+                EmployeeCallStatus.UNKNOWN -> t("غير قابل للتحقق", "Not verifiable")
             }
             Text("${item.employee.displayName} · ${item.employee.extension}: $state")
         }
         snapshot.error?.let {
-            Text(t("يمكن التحقق فقط من مستخدم SIP المطابق للمسجل المحلي حتى انتهاء مدة REGISTER الممنوحة؛ الوجهات الخارجية تبقى «غير معروف». التسجيل لا يضمن الرد.",
-                "Only a matching user on this device's local SIP registrar can be verified until its granted REGISTER expiry; external endpoints remain UNKNOWN. Registration does not guarantee an answer."),
+            Text(t("معلومة: لا يمكن لهذا الجهاز التحقق من تسجيل وجهات SIP الخارجية؛ هذه الحالة لا تعني أن المكالمة ستفشل. التسجيل يثبت الوصول فقط ولا يضمن الرد.",
+                "Info: this device cannot verify registration for external SIP endpoints; this does not mean the call will fail. Registration proves reachability only and does not guarantee an answer."),
                 style = MaterialTheme.typography.bodySmall)
         }
     }

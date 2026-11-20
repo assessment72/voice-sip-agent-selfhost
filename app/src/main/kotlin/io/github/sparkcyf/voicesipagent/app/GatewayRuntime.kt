@@ -827,11 +827,15 @@ class GatewayRuntime private constructor(context: Context) {
             EmployeeStatusItem(employee, status, now)
         }
         val cannotProbe = employees.any { it.destination is io.github.sparkcyf.voicesipagent.gateway.EmployeeDestination.Sip }
+        val hasUnknown = items.any { it.status == EmployeeCallStatus.UNKNOWN }
         _employeeStatuses.value = EmployeeStatusSnapshot(
             items = items,
             updatedAtMs = now,
-            error = if (cannotProbe) "SIP registration per employee is not exposed by the configured endpoint; unverified states remain UNKNOWN." else
-                "Mobile destination status cannot be checked by this SIP endpoint; unverified states remain UNKNOWN.",
+            error = if (!hasUnknown) null else if (cannotProbe) {
+                "SIP registration for external endpoints cannot be verified by this device; UNKNOWN is informational and does not mean the call will fail."
+            } else {
+                "Mobile destination status cannot be checked by this SIP endpoint; UNKNOWN is informational and does not mean the call will fail."
+            },
         )
     }
 
