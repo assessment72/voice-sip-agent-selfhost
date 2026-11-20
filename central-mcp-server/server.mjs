@@ -1,5 +1,6 @@
 import http from "node:http";
-import { timingSafeEqual } from "node:crypto";
+import { timingSafeEqual, randomUUID } from "node:crypto";
+import { MongoGatewayStore } from "./mongo-store.mjs";
 import { WebSocket, WebSocketServer } from "ws";
 import { selectGateway } from "./routing.mjs";
 
@@ -39,10 +40,30 @@ export function createCentralMcpServer(options = {}) {
   const routingPolicy = options.routingPolicy ?? parseJsonEnv(process.env.GATEWAY_ROUTING_POLICY_JSON, {});
   const requestTimeoutMs = options.requestTimeoutMs ?? DEFAULT_TIMEOUT_MS;
   const basePath = normalizeBasePath(options.basePath ?? process.env.CENTRAL_BASE_PATH ?? "");
+  const instanceId = options.instanceId ?? randomUUID();
+  const store = options.store ?? (process.env.MONGODB_URI ? new MongoGatewayStore({ uri: process.env.MONGODB_URI, database: process.env.MONGODB_DATABASE ?? "voice_sip_central" }) : null);
+  const requirePersistentStore = options.requirePersistentStore ?? false;
+  let storeReady = null;
+  let stopCommandWatch = null;
+  async function ensureStore() {
+    if (!store) { if (requirePersistentStore) throw new Error("persistent_storage_not_configured"); return null; }
+    if (!storeReady) storeReady = (async () => { await store.connect(); stopCommandWatch = store.watchCommands(instanceId, async command => { const entry = gateways.get(command.gateway_id); if (!entry || entry.ws.readyState !== WebSocket.OPEN) return store.completeCommand(command.command_id, command.gateway_id, null, "gateway_connection_not_on_this_instance"); try { entry.ws.send(JSON.stringify({ type: "command", id: command.command_id, name: command.name, arguments: command.arguments })); } catch (error) { await store.completeCommand(command.command_id, command.gateway_id, null, error.message); } }); return store; })().catch(error => { storeReady = null; throw error; });
+    return storeReady;
+  }
   const gateways = new Map();
   const pending = new Map();
   let nextId = 1;
-  function chooseGateway() { return selectGateway(gateways, routingPolicy); }
+  async function chooseGateway() {
+    const db = await ensureStore();
+    if (!db) return selectGateway(gateways, routingPolicy);
+    const docs = await db.listGateways();
+    const candidates = new Map();
+    for (const doc of docs) {
+      const lease = await db.getLease(doc.gateway_id);
+      candidates.set(doc.gateway_id, { ws: { readyState: doc.connected && doc.last_seen && Date.now() - new Date(doc.last_seen).getTime() <= 60_000 ? WebSocket.OPEN : WebSocket.CLOSED }, lastSeen: doc.last_seen, metadata: doc.metadata ?? {}, lastAssignedAt: doc.last_assigned_at ? new Date(doc.last_assigned_at).getTime() : 0, routingReservedUntil: lease ? new Date(lease.expires_at).getTime() : 0 });
+    }
+    return selectGateway(candidates, routingPolicy);
+  }
 
   function authorizedAdmin(req) {
     const token = bearer(req);
@@ -63,7 +84,14 @@ export function createCentralMcpServer(options = {}) {
     if (error) item.reject(new Error(String(error)));
     else item.resolve(result ?? {});
   }
-  function sendToGateway(gatewayId, name, args) {
+  async function sendToGateway(gatewayId, name, args) {
+    const db = await ensureStore();
+    if (db) {
+      const gateway = await db.getGateway(gatewayId);
+      if (!gateway || !gateway.connected || !gateway.instance_id || !gateway.last_seen || Date.now() - new Date(gateway.last_seen).getTime() > 60_000) throw new Error("gateway_offline");
+      const commandId = await db.createCommand({ gatewayId, instanceId: gateway.instance_id, name, args, timeoutMs: requestTimeoutMs });
+      return await db.waitForCommand(commandId, requestTimeoutMs);
+    }
     const entry = gateways.get(gatewayId);
     if (!entry || entry.ws.readyState !== WebSocket.OPEN) throw new Error("gateway_offline");
     const id = `cmd_${nextId++}`;
@@ -82,7 +110,9 @@ export function createCentralMcpServer(options = {}) {
       }
     });
   }
-  function listGateways() {
+  async function listGateways() {
+    const db = await ensureStore();
+    if (db) return (await db.listGateways()).map(({ gateway_id, connected, connected_at, last_seen, metadata }) => ({ gateway_id, connected, connected_at, last_seen, metadata }));
     return [...gateways.entries()].map(([gateway_id, entry]) => ({
       gateway_id,
       connected: entry.ws.readyState === WebSocket.OPEN,
@@ -107,26 +137,32 @@ export function createCentralMcpServer(options = {}) {
   ];
 
   async function callTool(name, args) {
-    if (name === "gateways_list") return { gateways: listGateways() };
+    if (name === "gateways_list") return { gateways: await listGateways() };
     if (name === "gateway_route_preview") {
-      const selected = chooseGateway();
+      const selected = await chooseGateway();
       return { selected_gateway_id: selected, eligible: selected !== null, policy: "priority_then_oldest_assignment", execution: "none" };
     }
     if (name === "gateway_request_routed_call") {
       if (typeof args.target !== "string" || !args.target.trim() || args.target.length > 64) throw new Error("valid_dial_target_required");
       const route = args.route ?? "auto";
       if (typeof route !== "string" || !/^[A-Za-z0-9._-]{1,64}$/.test(route)) throw new Error("invalid_route");
-      const gatewayId = chooseGateway();
+      const gatewayId = await chooseGateway();
       if (!gatewayId) throw new Error("no_eligible_gateway");
+      const db = await ensureStore();
+      const leaseToken = db ? await db.acquireLease(gatewayId, instanceId, 90_000) : null;
       const entry = gateways.get(gatewayId);
-      if (!entry || entry.routingReservedUntil > Date.now()) throw new Error("gateway_already_reserved");
-      entry.routingReservedUntil = Date.now() + 90_000;
+      if (db && !leaseToken) throw new Error("gateway_already_reserved");
+      if (!db && (!entry || entry.routingReservedUntil > Date.now())) throw new Error("gateway_already_reserved");
+      if (!db) entry.routingReservedUntil = Date.now() + 90_000;
       try {
         const approval = await sendToGateway(gatewayId, "sip_request_call_action", { action: "DIAL", target: args.target.trim(), route });
-        entry.lastAssignedAt = Date.now();
+        const assignedAt = new Date();
+        if (db) await db.markAssigned(gatewayId, assignedAt);
+        else entry.lastAssignedAt = assignedAt.getTime();
         return { selected_gateway_id: gatewayId, approval, requires_local_approval: true, call_executed: false };
       } catch (error) {
-        entry.routingReservedUntil = 0;
+        if (db && leaseToken) await db.releaseLease(gatewayId, leaseToken);
+        if (!db) entry.routingReservedUntil = 0;
         throw error;
       }
     }
@@ -144,7 +180,7 @@ export function createCentralMcpServer(options = {}) {
       return await sendToGateway(gatewayId, "sip_set_earpiece_mute", { muted: args.muted });
     }
     if (name === "gateway_pending_call_approvals") return await sendToGateway(gatewayId, "sip_pending_call_approvals", {});
-    if (name === "gateway_call_audit") return await sendToGateway(gatewayId, "sip_call_audit", { limit: args.limit ?? 100 });
+    if (name === "gateway_call_audit") { const db = await ensureStore(); if (db) return { records: await db.listAudit(gatewayId, args.limit ?? 100) }; return await sendToGateway(gatewayId, "sip_call_audit", { limit: args.limit ?? 100 }); }
     if (name === "gateway_request_call_action") {
       if (!ACTIONS.has(args.action)) throw new Error("invalid_call_action");
       if (args.action === "DIAL" && (typeof args.target !== "string" || !args.target.trim())) throw new Error("dial_target_required");
@@ -191,9 +227,10 @@ export function createCentralMcpServer(options = {}) {
 
   const httpServer = http.createServer(async (req, res) => {
     const requestPath = new URL(req.url ?? "/", "http://localhost").pathname;
-    if (req.method === "GET" && requestPath === `${basePath}/healthz`) return json(res, 200, { ok: true, service: "voice-sip-central-mcp", connected_gateways: gateways.size, state_backend: "instance_memory", multi_instance_safe: false });
+    if (req.method === "GET" && requestPath === `${basePath}/healthz`) { try { const db = await ensureStore(); if (db) await db.health(); return json(res, 200, { ok: true, service: "voice-sip-central-mcp", connected_gateways: db ? (await db.listGateways()).filter(g => g.connected && g.last_seen && Date.now() - new Date(g.last_seen).getTime() <= 60_000).length : gateways.size, state_backend: db ? "mongodb_atlas" : "instance_memory", multi_instance_safe: Boolean(db) }); } catch { return json(res, 503, { ok: false, service: "voice-sip-central-mcp", state_backend: "unavailable", multi_instance_safe: false }); } }
     if (requestPath !== `${basePath}/mcp`) return json(res, 404, { error: "not_found" });
     if (req.method !== "POST") return json(res, 405, { error: "method_not_allowed" });
+    try { await ensureStore(); } catch { return json(res, 503, { error: "persistent_storage_unavailable" }); }
     if (!authorizedAdmin(req)) return json(res, 401, { error: "unauthorized" });
     let body = "";
     req.setEncoding("utf8");
@@ -236,6 +273,9 @@ export function createCentralMcpServer(options = {}) {
     if (previous?.ws.readyState === WebSocket.OPEN) previous.ws.close(4001, "replaced_by_new_connection");
     const entry = { ws, connectedAt: new Date().toISOString(), lastSeen: new Date().toISOString(), metadata: {} };
     gateways.set(gatewayId, entry);
+    const connectionToken = randomUUID();
+    entry.connectionToken = connectionToken;
+    ensureStore().then(db => db?.registerGateway({ gateway_id: gatewayId, instance_id: instanceId, connection_token: connectionToken, connected_at: entry.connectedAt, last_seen: entry.lastSeen, metadata: entry.metadata })).catch(() => ws.close(1011, "persistent_storage_unavailable"));
     ws.send(JSON.stringify({ type: "server.ready", gateway_id: gatewayId }));
     ws.on("message", raw => {
       if (gateways.get(gatewayId)?.ws !== ws) return;
@@ -245,21 +285,24 @@ export function createCentralMcpServer(options = {}) {
       entry.lastSeen = new Date().toISOString();
       if (message.type === "heartbeat") {
         if (message.metadata && typeof message.metadata === "object" && !Array.isArray(message.metadata)) entry.metadata = message.metadata;
+        ensureStore().then(db => db?.heartbeat(gatewayId, instanceId, entry.metadata, entry.lastSeen)).catch(() => {});
         return;
       }
       if (message.type === "command_result" && typeof message.id === "string") {
-        settlePending(message.id, message.result, message.error, gatewayId);
+        if (store) store.completeCommand(message.id, gatewayId, message.result, message.error).catch(() => {});
+        else settlePending(message.id, message.result, message.error, gatewayId);
       }
     });
     ws.on("close", () => {
       if (gateways.get(gatewayId)?.ws !== ws) return;
       gateways.delete(gatewayId);
+      if (store) store.disconnectGateway(gatewayId, instanceId, new Date()).catch(() => {});
       for (const [id, item] of pending) if (item.gatewayId === gatewayId) settlePending(id, null, "gateway_disconnected", gatewayId);
     });
     ws.on("error", () => {});
   });
 
-  return { httpServer, gateways, tools, callTool };
+  return { httpServer, gateways, tools, callTool, instanceId, close: async () => { stopCommandWatch?.(); await store?.close?.(); } };
 }
 
 if (process.argv[1] && new URL(import.meta.url).pathname === process.argv[1]) {

@@ -61,7 +61,7 @@ Every command other than listing gateways requires an explicit `gateway_id`; the
 
 ## Current implementation boundary
 
-The branch includes the authenticated central MCP coordinator, Android outbound WSS agent, per-device credential configuration, heartbeat/status reporting, and approval-gated device commands. The live registry is currently in memory; device enrollment credentials are configured through server secrets. A durable database-backed registry, credential rotation workflow, central web dashboard, and physical-device validation remain future work.
+The branch includes the authenticated central MCP coordinator, Android outbound WSS agent, per-device credential configuration, heartbeat/status reporting, and approval-gated device commands. Live device state, command queue, leases, and audit events are persisted in MongoDB Atlas. Device enrollment credentials remain server secrets. Credential rotation workflow, central web dashboard, and physical-device validation remain future work.
 
 ## Automatic gateway routing
 
@@ -86,7 +86,13 @@ The foreground gateway service keeps the WSS agent alive even when call takeover
 Call actions are approval-gated: MCP creates a pending request, the user approves it in the phone UI, then the MCP client may execute the exact one-time approval. No action is executed merely because a command arrived.
 
 
-## Vercel deployment adapter (preview only)
+## Vercel deployment adapter
+
+The adapter uses MongoDB Atlas as the shared gateway registry, command queue, lease store, and audit log. Configure `MONGODB_URI` and `MONGODB_DATABASE=voice_sip_central` as encrypted Vercel environment variables. Each function instance watches its own command stream; admin requests are persisted and delivered to the instance holding the device WebSocket. Command results are persisted and awaited by the requesting instance. MongoDB change streams require a replica-set-capable Atlas cluster.
+
+**Deployment remains blocked until the database URI and secrets are configured in Vercel and the multi-instance WebSocket/change-stream smoke test passes.** The existing Atlas collections and indexes are provisioned in the selected production account. Do not use an Atlas connection string with embedded credentials in source control or chat.
+
+## Vercel deployment adapter
 
 This directory includes a Vercel Functions adapter. Set the Vercel project Root Directory to `central-mcp-server` and use Node.js 22. The adapter preserves the Android app's existing endpoint paths through rewrites:
 
@@ -96,7 +102,7 @@ This directory includes a Vercel Functions adapter. Set the Vercel project Root 
 
 The catch-all Node.js function has a 300-second maximum duration. Vercel WebSocket connections are pinned to the function instance that accepted them and close when that invocation reaches its maximum duration; the Android agent already reconnects with exponential backoff and sends a heartbeat every 20 seconds.
 
-**Important multi-device limitation:** this server currently stores live gateway sockets, pending commands, and routing reservations in process memory. Vercel does not guarantee that separate phone connections and admin requests will reach the same function instance. The health endpoint therefore reports `state_backend: "instance_memory"` and `multi_instance_safe: false`. This adapter is suitable only for a controlled preview/smoke test, not production multi-gateway routing. Before production use, implement and configure a shared state/command bus (for example Redis or the selected durable database) and test cross-instance command delivery. Do not infer multi-device readiness from a successful Vercel deployment.
+**Important multi-device limitation:** this server currently stores live gateway sockets, pending commands, and routing reservations in process memory. Vercel does not guarantee that separate phone connections and admin requests will reach the same function instance. The health endpoint reports `state_backend: "mongodb_atlas"` and `multi_instance_safe: true` only when Atlas is reachable and the shared command watcher is configured. WebSocket lifetime is still bounded by the Vercel function duration, so Android reconnection remains required.
 
 No Vercel project is created or deployed by this change. Configure `MCP_ADMIN_TOKEN`, `GATEWAY_CREDENTIALS_JSON`, and optional `GATEWAY_ROUTING_POLICY_JSON` as encrypted Vercel environment variables; never commit their values.
 

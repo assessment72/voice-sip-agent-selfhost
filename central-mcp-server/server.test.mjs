@@ -115,3 +115,10 @@ test("accepts the Vercel-mounted device WebSocket path", async t => {
   assert.equal(ws.readyState, WebSocket.OPEN);
   ws.close();
 });
+
+test("fails closed on Vercel health when persistent storage is required but missing", async t => {
+  const { url } = await start(t, { basePath: "/api", requirePersistentStore: true, store: null });
+  const response = await fetch(url + "/api/healthz");
+  assert.equal(response.status, 503);
+  assert.equal((await response.json()).multi_instance_safe, false);
+});
