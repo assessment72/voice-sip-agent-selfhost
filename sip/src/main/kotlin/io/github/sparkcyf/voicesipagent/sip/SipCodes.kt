@@ -16,6 +16,7 @@ object SipCodes {
         480 -> "Temporarily Unavailable"
         481 -> "Call/Transaction Does Not Exist"
         482 -> "Loop Detected"
+        484 -> "Address Incomplete"
         486 -> "Busy Here"
         487 -> "Request Terminated"
         488 -> "Not Acceptable Here"
