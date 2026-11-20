@@ -1,0 +1,22 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "rewrites": [
+    {
+      "source": "/mcp",
+      "destination": "/api/mcp"
+    },
+    {
+      "source": "/healthz",
+      "destination": "/api/healthz"
+    },
+    {
+      "source": "/v1/agent",
+      "destination": "/api/v1/agent"
+    }
+  ],
+  "functions": {
+    "api/[...path].mjs": {
+      "maxDuration": 300
+    }
+  }
+}

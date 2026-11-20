@@ -27,7 +27,7 @@ test("health is readable and reveals no credentials", async t => {
   const { url } = await start(t);
   const response = await fetch(url + "/healthz");
   assert.equal(response.status, 200);
-  assert.deepEqual(await response.json(), { ok: true, service: "voice-sip-central-mcp", connected_gateways: 0 });
+  assert.deepEqual(await response.json(), { ok: true, service: "voice-sip-central-mcp", connected_gateways: 0, state_backend: "instance_memory", multi_instance_safe: false });
 });
 test("MCP endpoint rejects missing admin authentication", async t => {
   const { url } = await start(t);
@@ -92,4 +92,26 @@ test("multiple gateways stay isolated and commands are sent only to the selected
   const status = await (await statusPromise).json();
   assert.equal(JSON.parse(status.result.content[0].text).gateway_id, "gw02");
   assert.equal(gw01.readyState, WebSocket.OPEN);
+});
+
+test("supports a mounted path for Vercel catch-all routing", async t => {
+  const { url } = await start(t, { basePath: "/api" });
+  const health = await fetch(url + "/api/healthz");
+  assert.equal(health.status, 200);
+  const body = await health.json();
+  assert.equal(body.state_backend, "instance_memory");
+  assert.equal(body.multi_instance_safe, false);
+  assert.equal((await fetch(url + "/healthz")).status, 404);
+  const denied = await fetch(url + "/api/mcp", { method: "POST" });
+  assert.equal(denied.status, 401);
+});
+
+test("accepts the Vercel-mounted device WebSocket path", async t => {
+  const { url } = await start(t, { basePath: "/api" });
+  const ws = new WebSocket(url.replace("http://", "ws://") + "/api/v1/agent", {
+    headers: { authorization: "Bearer device-test-token", "x-gateway-id": "gw01" }
+  });
+  await once(ws, "open");
+  assert.equal(ws.readyState, WebSocket.OPEN);
+  ws.close();
 });

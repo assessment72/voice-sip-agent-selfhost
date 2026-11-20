@@ -28,12 +28,17 @@ function parseJsonEnv(value, fallback) {
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("credential JSON must be an object");
   return parsed;
 }
+function normalizeBasePath(value = "") {
+  const parts = String(value).split("/").filter(Boolean);
+  return parts.length ? `/${parts.join("/")}` : "";
+}
 
 export function createCentralMcpServer(options = {}) {
   const adminToken = options.adminToken ?? process.env.MCP_ADMIN_TOKEN ?? "";
   const credentials = options.credentials ?? parseJsonEnv(process.env.GATEWAY_CREDENTIALS_JSON, {});
   const routingPolicy = options.routingPolicy ?? parseJsonEnv(process.env.GATEWAY_ROUTING_POLICY_JSON, {});
   const requestTimeoutMs = options.requestTimeoutMs ?? DEFAULT_TIMEOUT_MS;
+  const basePath = normalizeBasePath(options.basePath ?? process.env.CENTRAL_BASE_PATH ?? "");
   const gateways = new Map();
   const pending = new Map();
   let nextId = 1;
@@ -185,8 +190,9 @@ export function createCentralMcpServer(options = {}) {
   }
 
   const httpServer = http.createServer(async (req, res) => {
-    if (req.method === "GET" && req.url === "/healthz") return json(res, 200, { ok: true, service: "voice-sip-central-mcp", connected_gateways: gateways.size });
-    if (req.url !== "/mcp") return json(res, 404, { error: "not_found" });
+    const requestPath = new URL(req.url ?? "/", "http://localhost").pathname;
+    if (req.method === "GET" && requestPath === `${basePath}/healthz`) return json(res, 200, { ok: true, service: "voice-sip-central-mcp", connected_gateways: gateways.size, state_backend: "instance_memory", multi_instance_safe: false });
+    if (requestPath !== `${basePath}/mcp`) return json(res, 404, { error: "not_found" });
     if (req.method !== "POST") return json(res, 405, { error: "method_not_allowed" });
     if (!authorizedAdmin(req)) return json(res, 401, { error: "unauthorized" });
     let body = "";
@@ -212,7 +218,7 @@ export function createCentralMcpServer(options = {}) {
   const agentServer = new WebSocketServer({ noServer: true, maxPayload: MAX_AGENT_MESSAGE, perMessageDeflate: false });
   httpServer.on("upgrade", (req, socket, head) => {
     const url = new URL(req.url ?? "/", "http://localhost");
-    if (url.pathname !== "/v1/agent") {
+    if (url.pathname !== `${basePath}/v1/agent`) {
       socket.write("HTTP/1.1 404 Not Found\r\nConnection: close\r\n\r\n");
       socket.destroy();
       return;

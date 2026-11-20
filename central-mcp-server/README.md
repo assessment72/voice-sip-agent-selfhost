@@ -85,6 +85,21 @@ The foreground gateway service keeps the WSS agent alive even when call takeover
 
 Call actions are approval-gated: MCP creates a pending request, the user approves it in the phone UI, then the MCP client may execute the exact one-time approval. No action is executed merely because a command arrived.
 
+
+## Vercel deployment adapter (preview only)
+
+This directory includes a Vercel Functions adapter. Set the Vercel project Root Directory to `central-mcp-server` and use Node.js 22. The adapter preserves the Android app's existing endpoint paths through rewrites:
+
+- `POST /mcp`
+- `GET /healthz`
+- `wss://HOST/v1/agent`
+
+The catch-all Node.js function has a 300-second maximum duration. Vercel WebSocket connections are pinned to the function instance that accepted them and close when that invocation reaches its maximum duration; the Android agent already reconnects with exponential backoff and sends a heartbeat every 20 seconds.
+
+**Important multi-device limitation:** this server currently stores live gateway sockets, pending commands, and routing reservations in process memory. Vercel does not guarantee that separate phone connections and admin requests will reach the same function instance. The health endpoint therefore reports `state_backend: "instance_memory"` and `multi_instance_safe: false`. This adapter is suitable only for a controlled preview/smoke test, not production multi-gateway routing. Before production use, implement and configure a shared state/command bus (for example Redis or the selected durable database) and test cross-instance command delivery. Do not infer multi-device readiness from a successful Vercel deployment.
+
+No Vercel project is created or deployed by this change. Configure `MCP_ADMIN_TOKEN`, `GATEWAY_CREDENTIALS_JSON`, and optional `GATEWAY_ROUTING_POLICY_JSON` as encrypted Vercel environment variables; never commit their values.
+
 ## Container deployment (not performed by this PR)
 
 Build and run on a server with a reverse proxy that terminates TLS:
