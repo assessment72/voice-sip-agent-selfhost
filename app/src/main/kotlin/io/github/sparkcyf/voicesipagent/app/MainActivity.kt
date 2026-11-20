@@ -794,7 +794,7 @@ private fun SettingsSection(rt: GatewayRuntime) {
                 settingsMessage = t("تحقق من ترتيب التحويلات وحد المحاولات (1–4).", "Check fallback extensions and attempt count (1–4).")
                 return@Button
             }
-            if (sipCallerId.isNotBlank() && !sipCallerId.matches(Regex("""^\\+[1-9][0-9]{6,14}$"""))) {
+            if (sipCallerId.isNotBlank() && !sipCallerId.matches(Regex("""^\+[1-9][0-9]{6,14}$"""))) {
                 settingsMessage = "رقم Caller ID يجب أن يكون بصيغة دولية صحيحة مثل +9677XXXXXXX، أو اتركه فارغاً."
                 return@Button
             }
