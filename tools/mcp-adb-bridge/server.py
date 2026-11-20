@@ -190,7 +190,7 @@ def handle(message: dict[str, Any]) -> dict[str, Any] | None:
         return None
     if method == "initialize":
         return response(request_id, {
-            "protocolVersion": params.get("protocolVersion", PROTOCOL_VERSION),
+            "protocolVersion": PROTOCOL_VERSION,
             "capabilities": {"tools": {"listChanged": False}},
             "serverInfo": {"name": "voice-sip-agent-adb-mcp", "version": "0.1.0"},
         })
@@ -202,6 +202,8 @@ def handle(message: dict[str, Any]) -> dict[str, Any] | None:
         name = params.get("name")
         args = params.get("arguments") or {}
         try:
+            if not isinstance(args, dict):
+                raise ValueError("tool arguments must be a JSON object")
             result = invoke_tool(name, args)
             return response(request_id, {
                 "content": [{"type": "text", "text": json.dumps(result, ensure_ascii=False)}],
