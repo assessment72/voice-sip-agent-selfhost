@@ -67,7 +67,7 @@ class CallApprovalManager(
 
     @Synchronized
     fun request(spec: CallActionSpec): CallApproval {
-        expirePending()
+        expireOutstanding()
         require(approvals.values.count { it.state == ApprovalState.PENDING } < maxPending) {
             "Too many pending call approvals"
         }
@@ -142,10 +142,10 @@ class CallApprovalManager(
         return audit.toList().takeLast(limit)
     }
 
-    private fun expirePending() {
+    private fun expireOutstanding() {
         val now = clock.instant()
         approvals.entries.toList().forEach { (id, current) ->
-            if (current.state == ApprovalState.PENDING && !now.isBefore(current.expiresAt)) {
+            if ((current.state == ApprovalState.PENDING || current.state == ApprovalState.APPROVED) && !now.isBefore(current.expiresAt)) {
                 val expired = current.copy(state = ApprovalState.EXPIRED, decidedAt = now)
                 approvals[id] = expired
                 record(expired, "approval expired")
