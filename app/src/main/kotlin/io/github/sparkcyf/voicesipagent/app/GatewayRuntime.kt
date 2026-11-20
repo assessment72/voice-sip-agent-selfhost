@@ -29,6 +29,13 @@ import io.github.sparkcyf.voicesipagent.telephony.CellularEndpoint
 import io.github.sparkcyf.voicesipagent.telephony.CallSnapshot
 import io.github.sparkcyf.voicesipagent.telephony.GatewayInCallService
 import io.github.sparkcyf.voicesipagent.voice.CallEndpoint
+import io.github.sparkcyf.voicesipagent.voice.CallLeg
+import io.github.sparkcyf.voicesipagent.voice.IncomingCallHandler
+import io.github.sparkcyf.voicesipagent.voice.ApprovedCallController
+import io.github.sparkcyf.voicesipagent.voice.CallApprovalManager
+import io.github.sparkcyf.voicesipagent.voice.CallRegistry
+import io.github.sparkcyf.voicesipagent.voice.Party
+import io.github.sparkcyf.voicesipagent.voice.ReadyEndpointRouter
 import io.github.sparkcyf.voicesipagent.voice.EndpointStatus
 import io.github.sparkcyf.voicesipagent.voice.HangupCause
 import io.github.sparkcyf.voicesipagent.voice.LegState
@@ -115,6 +122,29 @@ class GatewayRuntime private constructor(context: Context) {
     /** Built-in SIP user agent. */
     private var sip: CallEndpoint? = null
     private var bridge: CallBridge? = null
+
+    // Approval-gated call control is exposed to the local MCP adapter; it never owns RTP/audio.
+    private val callRegistry = CallRegistry()
+    private val callApprovals = CallApprovalManager()
+    private val sipControlEndpoint = object : CallEndpoint {
+        override val name: String get() = "sip"
+        override val status: EndpointStatus get() = sip?.status ?: EndpointStatus(false, "SIP not started")
+        override fun setIncomingCallHandler(handler: IncomingCallHandler?) { sip?.setIncomingCallHandler(handler) }
+        override fun addStatusListener(listener: io.github.sparkcyf.voicesipagent.voice.EndpointStatusListener) {
+            sip?.addStatusListener(listener)
+        }
+        override fun removeStatusListener(listener: io.github.sparkcyf.voicesipagent.voice.EndpointStatusListener) {
+            sip?.removeStatusListener(listener)
+        }
+        override fun dial(target: String, caller: Party): CallLeg =
+            sip?.dial(target, caller) ?: error("SIP endpoint is not ready")
+    }
+    val callControl = ApprovedCallController(
+        endpoints = listOf(cellular, sipControlEndpoint),
+        registry = callRegistry,
+        approvals = callApprovals,
+        router = ReadyEndpointRouter(),
+    )
     private var echo: EchoEndpoint? = null
     private var started = false
     private var pendingSettings: GatewaySettings? = null
@@ -640,6 +670,8 @@ class GatewayRuntime private constructor(context: Context) {
             log = { AppLog.i("bridge: $it") },
         )
         b.addListener { session ->
+            callControl.trackObserved(session.inbound)
+            session.outbound?.let(callControl::trackObserved)
             val description = describe(session)
             worker.execute {
                 if (bridge !== b) return@execute
