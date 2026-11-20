@@ -31,6 +31,7 @@ import kotlinx.coroutines.launch
 class GatewayService : Service() {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
     private var statusJob: Job? = null
+    private var networkJob: Job? = null
     private var foreground = false
     // Held while the gateway runs in the foreground, so Doze on an aggressive OEM (ZTE/Nubia,
     // Xiaomi, Transsion…) cannot suspend the SIP reader thread.  Without it the socket backs up
@@ -76,8 +77,15 @@ class GatewayService : Service() {
         if (statusJob == null) {
             val nm = getSystemService(NotificationManager::class.java)
             statusJob = scope.launch {
-                runtime.health.map { it.needsForegroundService to summary(it) }.distinctUntilChanged().collect { (needed, text) ->
+                runtime.health.map { it.needsForegroundService to summary(it, runtime.networkMetrics.value) }.distinctUntilChanged().collect { (needed, text) ->
                     if (needed) nm.notify(NOTIFICATION_ID, build(text)) else stopGateway()
+                }
+            }
+            networkJob = scope.launch {
+                runtime.networkMetrics.collect { metrics ->
+                    if (foreground && runtime.health.value.needsForegroundService) {
+                        nm.notify(NOTIFICATION_ID, build(summary(runtime.health.value, metrics)))
+                    }
                 }
             }
         }
@@ -88,9 +96,9 @@ class GatewayService : Service() {
         val nm = getSystemService(NotificationManager::class.java)
         nm.createNotificationChannel(NotificationChannel(CHANNEL, "Gateway status", NotificationManager.IMPORTANCE_LOW))
         if (Build.VERSION.SDK_INT >= 34) {
-            startForeground(NOTIFICATION_ID, build(summary(health)), ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE)
+            startForeground(NOTIFICATION_ID, build(summary(health, GatewayRuntime.get(this).networkMetrics.value)), ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE)
         } else {
-            startForeground(NOTIFICATION_ID, build(summary(health)))
+            startForeground(NOTIFICATION_ID, build(summary(health, GatewayRuntime.get(this).networkMetrics.value)))
         }
         foreground = true
         acquireWakeLock()
@@ -99,6 +107,8 @@ class GatewayService : Service() {
     private fun stopGateway(startId: Int? = null) {
         statusJob?.cancel()
         statusJob = null
+        networkJob?.cancel()
+        networkJob = null
         stopForeground(STOP_FOREGROUND_REMOVE)
         foreground = false
         releaseWakeLock()
@@ -131,14 +141,14 @@ class GatewayService : Service() {
         wakeLock = null
     }
 
-    private fun summary(h: HealthState): String = when {
+    private fun summary(h: HealthState, n: NetworkMetrics): String = when {
         h.session != null -> "In call · ${h.session}"
         !h.takeover && h.holdsDialer -> "Takeover off. Still your default phone app; change it in Settings."
         !h.takeover -> "Call takeover off"
         h.loopbackTest -> "Loopback test mode"
         !h.privilegedReady -> "Setup needed · Shizuku ${h.shizuku.name.lowercase()}"
         !h.sip.ready -> "SIP: ${h.sip.detail}"
-        else -> "Ready · ${h.sip.detail}"
+        else -> "Ready · ${h.sip.detail} · SIM2 ${n.sim2SignalLevel}/4 · ${n.internetTransport}"
     }
 
     private fun build(text: String): Notification {

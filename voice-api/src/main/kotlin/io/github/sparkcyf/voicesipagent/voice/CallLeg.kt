@@ -33,6 +33,8 @@ interface CallLeg {
     val target: String?
     val state: LegState
     val endCause: HangupCause?
+    /** Final SIP response when the backend exposes one; null for cellular/local outcomes. */
+    val endCode: Int? get() = null
 
     /** Present while audio can flow; announced through [Listener.onMediaChanged]. */
     val media: MediaPort?

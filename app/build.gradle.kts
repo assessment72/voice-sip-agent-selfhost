@@ -6,15 +6,15 @@ plugins {
 android {
     namespace = "io.github.sparkcyf.voicesipagent.app"
     compileSdk {
-        version = release(37)
+        version = release(36)
     }
 
     defaultConfig {
         applicationId = "io.github.sparkcyf.voicesipagent"
         minSdk = 30
         targetSdk = 36
-        versionCode = 104
-        versionName = "0.2.1-selfhost1"
+        versionCode = 108
+        versionName = "0.2.5-hold-recovery"
         // Filter all transitive JNI libraries as well as PJSIP's own module outputs.
         ndk {
             //abiFilters += listOf("arm64-v8a", "x86_64")

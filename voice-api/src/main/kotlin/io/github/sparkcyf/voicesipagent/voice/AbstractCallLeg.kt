@@ -17,6 +17,8 @@ abstract class AbstractCallLeg(
 
     @Volatile final override var endCause: HangupCause? = null
         private set
+    @Volatile final override var endCode: Int? = null
+        private set
 
     @Volatile final override var media: MediaPort? = null
         private set
@@ -30,11 +32,14 @@ abstract class AbstractCallLeg(
     }
 
     /** Moves forward to [next]; ignores regressions and anything after ENDED. Returns true if changed. */
-    protected fun transition(next: LegState, cause: HangupCause? = null): Boolean {
+    protected fun transition(next: LegState, cause: HangupCause? = null, code: Int? = null): Boolean {
         synchronized(this) {
             val cur = state
             if (cur == LegState.ENDED || next.ordinal <= cur.ordinal) return false
-            if (next == LegState.ENDED) endCause = cause ?: HangupCause.NORMAL
+            if (next == LegState.ENDED) {
+                endCause = cause ?: HangupCause.NORMAL
+                endCode = code
+            }
             state = next
         }
         if (next == LegState.ENDED) publishMedia(null)

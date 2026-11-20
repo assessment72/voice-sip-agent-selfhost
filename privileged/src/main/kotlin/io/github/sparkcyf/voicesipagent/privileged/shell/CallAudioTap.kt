@@ -54,9 +54,18 @@ internal class CallAudioTap(
     /** Frames whose peak exceeds [VOICE_THRESHOLD], i.e. not silence. */
     @Volatile var downVoiced = 0L; private set
     @Volatile var upVoiced = 0L; private set
+    /** Frames received from the app-side socket, whether or not AudioTrack accepted them. */
+    @Volatile var upSocketFrames = 0L; private set
+    /** Full frames accepted by AudioTrack; this is not proof of remote audibility. */
+    @Volatile var trackWrittenFrames = 0L; private set
+    @Volatile var trackWrittenBytes = 0L; private set
+    @Volatile var trackWriteErrors = 0L; private set
+    @Volatile var lastTrackWriteError = 0; private set
+    @Volatile var downSocketWriteErrors = 0L; private set
     private var windowDown = 0
     private var windowUp = 0
     @Volatile var error: String? = null; private set
+    @Volatile private var audioModeAtOpen = AudioManager.MODE_NORMAL
 
     /** Opens the audio paths and returns the app's end of the socket pair. */
     fun open(): ParcelFileDescriptor {
@@ -89,7 +98,7 @@ internal class CallAudioTap(
                     }
                 }
             }, "tap-mode").apply { isDaemon = true; start() }
-            Log.i(TAG, "tap open method=$usedMethod rate=$rate frameBytes=$frameBytes")
+            Log.i(TAG, "tap open ${stats()}")
             return pfd
         } catch (t: Throwable) {
             error = "open at $rate Hz: ${describe(t)}"
@@ -102,6 +111,7 @@ internal class CallAudioTap(
 
     private fun openAudio() {
         require(method in AudioMethod.AUTO..AudioMethod.LEGACY) { "unknown audio method $method" }
+        audioModeAtOpen = audioManager.mode
         check(isCellularMode(audioManager.mode)) { "not in a cellular call: audio mode=${audioManager.mode}" }
         val capabilities = AudioCapabilities.inspect(ctx)
         val failures = ArrayList<String>()
@@ -247,7 +257,12 @@ internal class CallAudioTap(
                 if (p > downPeak) downPeak = p
                 if (p > VOICE_THRESHOLD) downVoiced++
                 if (p > windowDown) windowDown = p
-                check(Os.write(local, buf, 0, frameBytes) == frameBytes) { "short downlink packet write" }
+                try {
+                    check(Os.write(local, buf, 0, frameBytes) == frameBytes) { "short downlink packet write" }
+                } catch (t: Throwable) {
+                    downSocketWriteErrors++
+                    throw t
+                }
                 if (++downFrames % 250 == 0L) {
                     // Every 5 s: levels only, never audio content.
                     Log.i(TAG, "levels t=${downFrames / 50}s downPeak5s=$windowDown upPeak5s=$windowUp up=$upFrames")
@@ -271,17 +286,36 @@ internal class CallAudioTap(
                 val n = Os.read(local, buf, 0, buf.size)
                 if (n <= 0) break // peer closed
                 check(n == frameBytes) { "uplink packet size $n, expected $frameBytes" }
+                upSocketFrames++
                 val p = peak(buf, n)
                 if (p > upPeak) upPeak = p
                 if (p > VOICE_THRESHOLD) upVoiced++
                 if (p > windowUp) windowUp = p
                 var off = 0
                 while (off < n && running) {
-                    val w = track.write(buf, off, n - off, AudioTrack.WRITE_BLOCKING)
-                    if (w <= 0) { error = "track write $w at $rate Hz"; running = false; break }
+                    val w = try {
+                        track.write(buf, off, n - off, AudioTrack.WRITE_BLOCKING)
+                    } catch (t: Throwable) {
+                        trackWriteErrors++
+                        lastTrackWriteError = TRACK_WRITE_EXCEPTION
+                        error = "AudioTrack write exception ${t.javaClass.simpleName}"
+                        running = false
+                        break
+                    }
+                    if (w <= 0) {
+                        trackWriteErrors++
+                        lastTrackWriteError = w
+                        error = "AudioTrack write error=$w at $rate Hz"
+                        running = false
+                        break
+                    }
+                    trackWrittenBytes += w
                     off += w
                 }
-                upFrames++
+                if (off == n) {
+                    trackWrittenFrames++
+                    upFrames = trackWrittenFrames
+                }
             }
         } catch (e: ErrnoException) {
             if (running && e.errno != OsConstants.ECONNRESET) error = "up: ${e.message}"
@@ -310,10 +344,17 @@ internal class CallAudioTap(
         runCatching(onClosed).onFailure { Log.w(TAG, "onClosed failed: $it") }
     }
 
-    fun stats() = "method=$usedMethod rate=$rate frameBytes=$frameBytes down=$downFrames up=$upFrames downPeak=$downPeak upPeak=$upPeak " +
+    fun stats() = "method=$usedMethod rate=$rate frameBytes=$frameBytes audioModeAtOpen=$audioModeAtOpen " +
+        "audioModeNow=${if (::record.isInitialized) runCatching { audioManager.mode }.getOrDefault(-1) else -1} " +
+        "downSocketFrames=$downFrames upSocketFrames=$upSocketFrames trackWrittenFrames=$trackWrittenFrames " +
+        "trackWrittenBytes=$trackWrittenBytes trackWriteErrors=$trackWriteErrors lastTrackWriteError=$lastTrackWriteError " +
+        "downSocketWriteErrors=$downSocketWriteErrors " +
+        "downPeak=$downPeak upPeak=$upPeak " +
         "downVoiced=$downVoiced upVoiced=$upVoiced" +
         " backendFailures=$backendFailures preferred=${if (::track.isInitialized) runCatching { track.preferredDevice?.type }.getOrNull() else null}" +
         " routed=${if (::track.isInitialized) runCatching { track.routedDevice?.type }.getOrNull() else null}" +
+        " trackState=${if (::track.isInitialized) runCatching { track.state }.getOrNull() else null}" +
+        " playState=${if (::track.isInitialized) runCatching { track.playState }.getOrNull() else null}" +
         (error?.let { " error=$it" } ?: "")
 
     private fun peak(b: ByteArray, size: Int = b.size): Int {
@@ -339,6 +380,7 @@ internal class CallAudioTap(
     companion object {
         private const val TAG = "VsaTap"
         private const val VOICE_THRESHOLD = 300
+        private const val TRACK_WRITE_EXCEPTION = Int.MIN_VALUE
         /** Hidden AudioAttributes.USAGE_CALL_ASSISTANT, as used by getCallUplinkInjectionAudioTrack. */
         private const val USAGE_CALL_ASSISTANT = 17
     }

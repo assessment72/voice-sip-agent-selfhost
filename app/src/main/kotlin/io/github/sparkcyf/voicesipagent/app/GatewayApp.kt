@@ -7,7 +7,8 @@ class GatewayApp : Application() {
         super.onCreate()
         // Telecom may start our process just to bind the InCallService, so the runtime (and with
         // it the CellularEndpoint) must exist before any activity or service runs.
-        GatewayRuntime.get(this).start()
+        val runtime = GatewayRuntime.get(this)
+        runtime.start()
         GatewayService.start(this)
     }
 }

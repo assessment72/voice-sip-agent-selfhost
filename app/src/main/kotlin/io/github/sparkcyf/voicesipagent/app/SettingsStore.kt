@@ -5,6 +5,7 @@ import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyProperties
 import android.util.Base64
 import io.github.sparkcyf.voicesipagent.gateway.BusyPolicy
+import io.github.sparkcyf.voicesipagent.gateway.FinalCallAction
 import io.github.sparkcyf.voicesipagent.privileged.AudioMethod
 import io.github.sparkcyf.voicesipagent.privileged.CallAccess
 import java.security.KeyStore
@@ -45,6 +46,10 @@ data class GatewaySettings(
     /** Comma-separated; empty = any number may be dialed out. */
     val allowedPrefixes: String = "",
     val busyPolicy: BusyPolicy = BusyPolicy.REJECT,
+    /** Caller-facing fallback extensions in order, e.g. "2,3". */
+    val fallbackExtensionsCsv: String = "2",
+    val maxCallAttempts: Int = 3,
+    val finalCallAction: FinalCallAction = FinalCallAction.RETURN_TO_IVR_ONCE,
     val audioMethod: Int = AudioMethod.AUTO,
     val callAccess: Int = CallAccess.AUTO,
     /** Which SIP implementation backs the PBX side. */
@@ -55,8 +60,19 @@ data class GatewaySettings(
      * [server]/[username]/[password] are not required.
      */
     val serverMode: Boolean = true,
-    /** UI language: "ru" or "en". Pure UI preference, no SIP restart. */
+    /** UI language: "ru", "en", or "ar". Pure UI preference, no SIP restart. */
     val uiLanguage: String = "ru",
+    /** Caller-facing local IVR text. These preferences never contain caller/employee audio. */
+    val ivrWelcome: String = "مرحباً بك. اضغط 1 للتحدث مع الطبيب، أو اضغط 2 للتحدث مع الاستقبال.",
+    val ivrDoctor: String = "يتم تحويلك الآن إلى الطبيب.",
+    val ivrReception: String = "يتم تحويلك الآن إلى الاستقبال.",
+    val ivrInvalid: String = "الاختيار غير صحيح. حاول مرة أخرى.",
+    val ivrTimeout: String = "لم يتم اختيار أي خيار.",
+    val ivrSource: String = "default",
+    val ivrSpeechRate: Float = 1.0f,
+    val ivrPitch: Float = 1.0f,
+    val ivrAudioFileName: String = "",
+    val ivrTtsVoice: String = "",
 ) {
     val sipConfigured: Boolean get() =
         serverMode || (server.isNotBlank() && username.isNotBlank() && password.isNotEmpty())
@@ -78,9 +94,13 @@ enum class SipStack(val id: String) {
     }
 }
 
-/** First-run UI language from the system locale: a Russian system → "ru", otherwise "en". */
+/** First-run UI language from the system locale. */
 private fun systemDefaultUiLang(): String =
-    if (java.util.Locale.getDefault().language == "ru") "ru" else "en"
+    when (java.util.Locale.getDefault().language) {
+        "ru" -> "ru"
+        "ar" -> "ar"
+        else -> "en"
+    }
 
 /** SharedPreferences, with the SIP password sealed by an Android Keystore AES-GCM key. */
 class SettingsStore(context: Context) {
@@ -104,13 +124,28 @@ class SettingsStore(context: Context) {
         inboundTarget = prefs.getString("inbound_target", "")!!,
         allowedPrefixes = prefs.getString("allowed_prefixes", "")!!,
         busyPolicy = runCatching { BusyPolicy.valueOf(prefs.getString("busy_policy", "REJECT")!!) }.getOrDefault(BusyPolicy.REJECT),
+        fallbackExtensionsCsv = prefs.getString("fallback_extensions", "2")!!,
+        maxCallAttempts = prefs.getInt("max_call_attempts", 3).takeIf { it in 1..4 } ?: 3,
+        finalCallAction = runCatching {
+            FinalCallAction.valueOf(prefs.getString("final_call_action", FinalCallAction.RETURN_TO_IVR_ONCE.name)!!)
+        }.getOrDefault(FinalCallAction.RETURN_TO_IVR_ONCE),
         audioMethod = prefs.getInt("audio_method", AudioMethod.AUTO).takeIf { it in 0..2 } ?: AudioMethod.AUTO,
         callAccess = prefs.getInt("call_access", CallAccess.AUTO).takeIf { it in 0..2 } ?: CallAccess.AUTO,
         sipStack = SipStack.of(prefs.getString("sip_stack", null)) ?: SipStack.BUILTIN,
         serverMode = prefs.getBoolean("server_mode", true),
-        // First run (key absent): default to the system language — Russian locale → "ru",
-        // anything else → "en". Once the user picks a language it is saved and always wins.
+        // First run (key absent): default to Russian, Arabic, or English system language.
+        // Once the user picks a language it is saved and always wins.
         uiLanguage = prefs.getString("ui_lang", null) ?: systemDefaultUiLang(),
+        ivrWelcome = prefs.getString("ivr_welcome", "مرحباً بك. اضغط 1 للتحدث مع الطبيب، أو اضغط 2 للتحدث مع الاستقبال.")!!,
+        ivrDoctor = prefs.getString("ivr_doctor", "يتم تحويلك الآن إلى الطبيب.")!!,
+        ivrReception = prefs.getString("ivr_reception", "يتم تحويلك الآن إلى الاستقبال.")!!,
+        ivrInvalid = prefs.getString("ivr_invalid", "الاختيار غير صحيح. حاول مرة أخرى.")!!,
+        ivrTimeout = prefs.getString("ivr_timeout", "لم يتم اختيار أي خيار.")!!,
+        ivrSource = prefs.getString("ivr_source", "default")!!.takeIf { it in setOf("tts", "file", "default") } ?: "default",
+        ivrSpeechRate = prefs.getFloat("ivr_speech_rate", 1f).takeIf { it in 0.5f..2f } ?: 1f,
+        ivrPitch = prefs.getFloat("ivr_pitch", 1f).takeIf { it in 0.5f..2f } ?: 1f,
+        ivrAudioFileName = prefs.getString("ivr_audio_name", "")!!,
+        ivrTtsVoice = prefs.getString("ivr_tts_voice", "")!!,
     )
 
     fun save(s: GatewaySettings) {
@@ -132,11 +167,24 @@ class SettingsStore(context: Context) {
             .putString("inbound_target", s.inboundTarget.trim())
             .putString("allowed_prefixes", s.allowedPrefixes.trim())
             .putString("busy_policy", s.busyPolicy.name)
+            .putString("fallback_extensions", s.fallbackExtensionsCsv.trim())
+            .putInt("max_call_attempts", s.maxCallAttempts.coerceIn(1, 4))
+            .putString("final_call_action", s.finalCallAction.name)
             .putInt("audio_method", s.audioMethod)
             .putInt("call_access", s.callAccess)
             .putString("sip_stack", s.sipStack.id)
             .putBoolean("server_mode", s.serverMode)
             .putString("ui_lang", s.uiLanguage)
+            .putString("ivr_welcome", s.ivrWelcome.take(500))
+            .putString("ivr_doctor", s.ivrDoctor.take(500))
+            .putString("ivr_reception", s.ivrReception.take(500))
+            .putString("ivr_invalid", s.ivrInvalid.take(500))
+            .putString("ivr_timeout", s.ivrTimeout.take(500))
+            .putString("ivr_source", s.ivrSource.takeIf { it in setOf("tts", "file", "default") } ?: "tts")
+            .putFloat("ivr_speech_rate", s.ivrSpeechRate.coerceIn(0.5f, 2f))
+            .putFloat("ivr_pitch", s.ivrPitch.coerceIn(0.5f, 2f))
+            .putString("ivr_audio_name", s.ivrAudioFileName.take(120))
+            .putString("ivr_tts_voice", s.ivrTtsVoice.take(160))
             .apply()
     }
 

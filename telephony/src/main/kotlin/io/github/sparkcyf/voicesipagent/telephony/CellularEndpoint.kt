@@ -12,6 +12,8 @@ import android.os.SystemClock
 import android.telecom.Call
 import android.telecom.TelecomManager
 import android.telephony.TelephonyManager
+import android.telephony.SubscriptionManager
+import android.telephony.SmsManager
 import io.github.sparkcyf.voicesipagent.voice.CallEndpoint
 import io.github.sparkcyf.voicesipagent.voice.CallLeg
 import io.github.sparkcyf.voicesipagent.voice.EndpointStatus
@@ -109,6 +111,30 @@ class CellularEndpoint(
         true
     }
 
+    /** Sends an SMS through the active SIM 2 subscription. Returns false on local failure. */
+    fun sendSms(number: String, text: String): Boolean {
+        if (app.checkSelfPermission(Manifest.permission.SEND_SMS) != PackageManager.PERMISSION_GRANTED) {
+            log("SEND_SMS not granted")
+            return false
+        }
+        val digits = number.trim()
+        if (digits.isEmpty() || text.isEmpty()) return false
+        return try {
+            val subscriptions = app.getSystemService(SubscriptionManager::class.java)
+            val sim2 = subscriptions.getActiveSubscriptionInfoForSimSlotIndex(SIM2_SLOT_INDEX)
+                ?: return false.also { log("SIM 2 is not active; refusing SMS") }
+            val sms = SmsManager.getSmsManagerForSubscriptionId(sim2.subscriptionId)
+            val parts = sms.divideMessage(text)
+            if (parts.size == 1) sms.sendTextMessage(digits, null, text, null, null)
+            else sms.sendMultipartTextMessage(digits, null, parts, null, null)
+            log("SMS sent via SIM 2 to ${redactNumber(digits)}")
+            true
+        } catch (e: Exception) {
+            log("SMS send failed: ${e.javaClass.simpleName}")
+            false
+        }
+    }
+
     override fun dial(target: String, caller: Party): CallLeg {
         val leg = CellularLeg("c${ids.getAndIncrement()}", LegDirection.OUTBOUND, Party(target), target, this, main)
         val digits = target.filter { it.isDigit() || it == '+' || it == '*' || it == '#' }
@@ -141,12 +167,20 @@ class CellularEndpoint(
             leg.failPlacement(HangupCause.BUSY)
             return
         }
+        val sim2Account = resolveSim2PhoneAccount()
+        if (sim2Account == null) {
+            leg.failPlacement(HangupCause.UNAVAILABLE)
+            return
+        }
         val p = Pending(leg, digits, SystemClock.elapsedRealtime())
         pending += p
         reportCalls()
         try {
-            telecom.placeCall(Uri.fromParts("tel", digits, null), Bundle())
-            log("placeCall ${redactNumber(digits)} (leg ${leg.id})")
+            val extras = Bundle().apply {
+                putParcelable(TelecomManager.EXTRA_PHONE_ACCOUNT_HANDLE, sim2Account)
+            }
+            telecom.placeCall(Uri.fromParts("tel", digits, null), extras)
+            log("placeCall via SIM 2 ${redactNumber(digits)} (leg ${leg.id})")
         } catch (e: SecurityException) {
             pending -= p
             reportCalls()
@@ -167,6 +201,33 @@ class CellularEndpoint(
                 leg.failPlacement(HangupCause.NETWORK_ERROR)
             }
         }, PLACEMENT_TIMEOUT_MS)
+    }
+
+    /**
+     * Resolve the active SIM in physical/logical slot 2 and explicitly route the PSTN call
+     * through its Telecom phone account. Never silently fall back to SIM 1/default SIM.
+     */
+    private fun resolveSim2PhoneAccount(): android.telecom.PhoneAccountHandle? {
+        return try {
+            val subscriptions = app.getSystemService(SubscriptionManager::class.java)
+            val sim2 = subscriptions.getActiveSubscriptionInfoForSimSlotIndex(SIM2_SLOT_INDEX)
+            if (sim2 == null) {
+                log("SIM 2 is not active; refusing cellular placement")
+                return null
+            }
+            val account = telecom.callCapablePhoneAccounts.firstOrNull { handle ->
+                runCatching { telephony.getSubscriptionId(handle) == sim2.subscriptionId }
+                    .getOrDefault(false)
+            }
+            if (account == null) log("no Telecom phone account found for SIM 2")
+            account
+        } catch (e: SecurityException) {
+            log("cannot resolve SIM 2 phone account: READ_PHONE_STATE unavailable")
+            null
+        } catch (e: Exception) {
+            log("cannot resolve SIM 2 phone account: ${e.javaClass.simpleName}")
+            null
+        }
     }
 
     // ------------------------------------------------------------ InCallService callbacks (main thread)
@@ -307,6 +368,7 @@ class CellularEndpoint(
 
     companion object {
         private const val PLACEMENT_TIMEOUT_MS = 10_000L
+        private const val SIM2_SLOT_INDEX = 1
 
         @Volatile internal var current: CellularEndpoint? = null
         @Volatile private var service: GatewayInCallService? = null

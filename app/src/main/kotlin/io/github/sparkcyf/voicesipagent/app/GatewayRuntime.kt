@@ -11,8 +11,10 @@ import android.content.ComponentName
 import android.content.pm.PackageManager
 import android.app.role.RoleManager
 import android.Manifest
+import java.io.File
 import io.github.sparkcyf.voicesipagent.gateway.BridgeSession
 import io.github.sparkcyf.voicesipagent.gateway.CallBridge
+import io.github.sparkcyf.voicesipagent.gateway.CallFallbackPolicy
 import io.github.sparkcyf.voicesipagent.gateway.EchoEndpoint
 import io.github.sparkcyf.voicesipagent.gateway.GatewayConfig
 import io.github.sparkcyf.voicesipagent.privileged.HealthKeys
@@ -25,6 +27,7 @@ import io.github.sparkcyf.voicesipagent.sip.SipAccount
 import io.github.sparkcyf.voicesipagent.sip.SipConfig
 import io.github.sparkcyf.voicesipagent.sip.SipLog
 import io.github.sparkcyf.voicesipagent.sip.SipUserAgent
+import io.github.sparkcyf.voicesipagent.sip.SipUri
 import io.github.sparkcyf.voicesipagent.telephony.CellularEndpoint
 import io.github.sparkcyf.voicesipagent.telephony.CallSnapshot
 import io.github.sparkcyf.voicesipagent.telephony.GatewayInCallService
@@ -33,6 +36,7 @@ import io.github.sparkcyf.voicesipagent.voice.EndpointStatus
 import io.github.sparkcyf.voicesipagent.voice.HangupCause
 import io.github.sparkcyf.voicesipagent.voice.LegState
 import io.github.sparkcyf.voicesipagent.voice.PcmFormat
+import io.github.sparkcyf.voicesipagent.voice.Party
 import io.github.sparkcyf.voicesipagent.voice.redactNumber
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -89,20 +93,72 @@ class GatewayRuntime private constructor(context: Context) {
     private val app = context.applicationContext
     private val worker = newWorker()
     val settingsStore = SettingsStore(app)
+    val clinicEmployeeStore = ClinicEmployeeStore(app)
+    private val callHistoryStore = CallHistoryStore(app)
+    private val ivrMenuPcm: ShortArray by lazy(LazyThreadSafetyMode.SYNCHRONIZED) {
+        val bytes = app.resources.openRawResource(R.raw.ivr_menu).use { it.readBytes() }
+        require(bytes.size % 2 == 0) { "IVR prompt PCM has an incomplete sample" }
+        ShortArray(bytes.size / 2) { i ->
+            val lo = bytes[i * 2].toInt() and 0xff
+            val hi = bytes[i * 2 + 1].toInt()
+            ((hi shl 8) or lo).toShort()
+        }.also { AppLog.i("ivr_prompt_generated source=default_pcm sampleRate=8000 channels=1 samples=${it.size}; remote audibility unverified") }
+    }
+    @Volatile private var preparedIvrPcm: Map<String, ShortArray> = emptyMap()
+    private fun configuredIvrPcm(kind: String): ShortArray? {
+        return preparedIvrPcm[kind] ?: if (kind == "welcome") ivrMenuPcm else null
+    }
+
+    /** Decode potentially compressed media away from the call-bridge frame/signal thread. */
+    private fun prepareIvrPcm() {
+        val s = settings
+        val result = linkedMapOf<String, ShortArray>()
+        val filesDir = runCatching { app.filesDir }.getOrNull()
+        when (s.ivrSource) {
+            "tts" -> if (filesDir != null) listOf("welcome", "doctor", "reception", "invalid", "timeout").forEach { kind ->
+                runCatching { IvrAudioDecoder.decodeWav(File(filesDir, "ivr_tts_$kind.wav")) }.getOrNull()?.let { result[kind] = it }
+            }
+            "file" -> if (filesDir != null) {
+                val ext = s.ivrAudioFileName.substringAfterLast('.', "").lowercase()
+                val file = when (ext) {
+                    "wav" -> File(filesDir, "ivr_custom.wav")
+                    "ogg" -> File(filesDir, "ivr_custom.ogg")
+                    else -> null
+                }
+                val samples = runCatching { file?.let { if (ext == "ogg") IvrAudioDecoder.decodeOgg(it) else IvrAudioDecoder.decodeWav(it) } }.getOrNull()
+                if (samples != null) listOf("welcome", "doctor", "reception", "invalid", "timeout").forEach { result[it] = samples }
+            }
+        }
+        if (result["welcome"] == null) {
+            if (s.ivrSource != "default") AppLog.w("configured IVR audio unavailable/invalid; built-in prompt remains available")
+            runCatching { ivrMenuPcm }.getOrNull()?.let { result["welcome"] = it }
+        }
+        result.forEach { (kind, pcm) ->
+            AppLog.i("ivr_prompt_generated prompt=$kind sampleRate=8000 channels=1 samples=${pcm.size}; remote audibility unverified")
+        }
+        preparedIvrPcm = result
+    }
     private val _settings = MutableStateFlow(settingsStore.load())
     val settingsFlow: StateFlow<GatewaySettings> = _settings
     val settings: GatewaySettings get() = _settings.value
 
-    // Service entry points can run before the worker initializes. Use the actual saved switch and
-    // role immediately so opening the app or receiving BOOT_COMPLETED cannot flash an idle notification.
-    private val _health = MutableStateFlow(run {
-        val holds = holdsDialer()
-        HealthState(takeover = settings.takeover, holdsDialer = holds,
-            effectiveCallAccess = CallAccess.effective(settings.callAccess, Build.VERSION.SDK_INT, holds))
-    })
+    // Keep construction free of synchronous Telecom binder calls. The actual dialer role is
+    // refreshed on the worker in start()/configureCallAccess before readiness is reported.
+    private val _health = MutableStateFlow(
+        HealthState(
+            takeover = settings.takeover,
+            effectiveCallAccess = CallAccess.effective(settings.callAccess, Build.VERSION.SDK_INT, false),
+        ),
+    )
     val health: StateFlow<HealthState> = _health
+    val networkMetrics: StateFlow<NetworkMetrics> get() = networkMonitor.metrics
     private val _dialerMessage = MutableStateFlow("")
     val dialerMessage: StateFlow<String> = _dialerMessage
+    private val _employeeStatuses = MutableStateFlow(EmployeeStatusSnapshot())
+    val employeeStatuses: StateFlow<EmployeeStatusSnapshot> = _employeeStatuses
+    private val _callHistory = MutableStateFlow(callHistoryStore.list())
+    val callHistory: StateFlow<List<CallHistoryEntry>> = _callHistory
+    private val recordedCallIds = mutableSetOf<Int>()
 
     val shizuku = ShizukuConnector(app) { AppLog.i(it) }
     // Built-in Kotlin SIP stack is G.711 (narrowband) only.
@@ -112,6 +168,8 @@ class GatewayRuntime private constructor(context: Context) {
         PrivilegedAudioOpener(shizuku, { settings.audioMethod }, { settings.muteEarpiece }, ::audioFormat),
         logger = { AppLog.i(it) },
     )
+    /** SIM 2 signal and default-network monitor; it is active only while the gateway service runs. */
+    private val networkMonitor = NetworkMonitor(app)
     /** Built-in SIP user agent. */
     private var sip: CallEndpoint? = null
     private var bridge: CallBridge? = null
@@ -245,8 +303,10 @@ class GatewayRuntime private constructor(context: Context) {
     private fun startBackgroundTasks() {
         if (healthCheck != null) return
         worker.allowCoreThreadTimeOut(false)
+        refreshEmployeeStatusesNow()
         shizuku.start()
         watchNetwork()
+        networkMonitor.start()
         // Telecom or Shizuku restarts can disrupt call access. Recheck health and repair companion
         // setup while idle if access is unavailable; a missing override alone does not trigger setup.
         healthCheck = worker.scheduleWithFixedDelay(::periodicCheck, 60, 60, TimeUnit.SECONDS)
@@ -262,6 +322,7 @@ class GatewayRuntime private constructor(context: Context) {
         if (callback != null) runCatching {
             app.getSystemService(ConnectivityManager::class.java).unregisterNetworkCallback(callback)
         }.onFailure { AppLog.w("network callback cleanup failed", it) }
+        networkMonitor.stop()
         setupPending = false
         worker.allowCoreThreadTimeOut(true)
     }
@@ -304,6 +365,7 @@ class GatewayRuntime private constructor(context: Context) {
             AppLog.w("health check failed", e)
         }
         _health.update { it.copy(inCallServiceBound = CellularEndpoint.isInCallServiceBound) }
+        refreshEmployeeStatusesNow()
     }
 
     private fun applyHealthBundle(b: Bundle) {
@@ -548,10 +610,14 @@ class GatewayRuntime private constructor(context: Context) {
                     serverMode = s.serverMode,
                     registrarLeaseSec = s.registrarLeaseSec,
                     registrarPassword = s.registrarPassword,
+                    // CallBridge owns the per-employee timer (5–120 s); the SIP leg must not
+                    // pre-empt it with the UA's shorter generic unanswered-call timeout.
+                    ringTimeoutMs = 120_000,
                 ),
                 sipLog,
             ).also { ua ->
                 ua.addStatusListener { ep, st -> sipStatus(ep, st) }
+                ua.setMessageHandler { from, text -> worker.execute { handleSipCommand(from, text) } }
                 ua.start()
             }
             sip = ep
@@ -578,6 +644,15 @@ class GatewayRuntime private constructor(context: Context) {
         val cm = app.getSystemService(ConnectivityManager::class.java)
         val callback = object : ConnectivityManager.NetworkCallback() {
             private var lastAddrs: String? = null
+            override fun onAvailable(network: Network) {
+                if (networkCallback === this) networkMonitor.onNetworkAvailable(network)
+            }
+            override fun onCapabilitiesChanged(network: Network, caps: android.net.NetworkCapabilities) {
+                if (networkCallback === this) networkMonitor.onCapabilitiesChanged(caps)
+            }
+            override fun onLost(network: Network) {
+                if (networkCallback === this) networkMonitor.onNetworkLost()
+            }
             override fun onLinkPropertiesChanged(network: Network, lp: LinkProperties) {
                 if (networkCallback !== this) return
                 val addrs = lp.linkAddresses.joinToString { it.address.hostAddress.orEmpty() }
@@ -611,6 +686,7 @@ class GatewayRuntime private constructor(context: Context) {
         stopBridge()
         if (!gatewayEnabled) return
         val s = settings
+        prepareIvrPcm()
         if (!s.takeover) {
             bridge = null
             AppLog.i("bridge idle: takeover off")
@@ -630,7 +706,17 @@ class GatewayRuntime private constructor(context: Context) {
             sideA = cellular,
             sideB = sideB,
             routeAtoB = { inboundTarget },
-            routeBtoA = { leg -> leg.target?.takeIf { it != s.username } },
+            // With SIP2SIP, the proxy commonly keeps the registered AoR in the
+            // Request-URI (for example sip:9665...@sip2sip.info). In that case
+            // the user part is also the cellular number to dial. Do not discard
+            // it merely because it equals our registered username; only apply
+            // this fallback when the username is dialable, so an alphanumeric
+            // SIP account cannot accidentally become a cellular destination.
+            routeBtoA = { leg ->
+                leg.target?.trim()?.takeIf { target ->
+                    target != s.username || target.isCellularDialTarget()
+                }
+            },
             config = GatewayConfig(
                 cellularInboundTarget = inboundTarget,
                 busyPolicy = s.busyPolicy,
@@ -638,19 +724,115 @@ class GatewayRuntime private constructor(context: Context) {
             ),
             dialPolicyForA = { n -> if (cellular.isEmergencyNumber(n)) HangupCause.FORBIDDEN else null },
             log = { AppLog.i("bridge: $it") },
+            localCellularIvr = !loopback,
+            ivrEmployees = clinicEmployeeStore::list,
+            ivrPromptSamples = { configuredIvrPcm("welcome") },
+            ivrEventPromptSamples = { kind -> configuredIvrPcm(kind) },
+            fallbackPolicy = runCatching {
+                CallFallbackPolicy(
+                    fallbackExtensions = s.fallbackExtensionsCsv.split(',').map { it.trim() }.filter { it.isNotEmpty() },
+                    maxAttempts = s.maxCallAttempts,
+                    finalAction = s.finalCallAction,
+                )
+            }.onFailure { AppLog.w("invalid fallback settings; using safe defaults") }
+                .getOrDefault(CallFallbackPolicy()),
+            audioDiagnostics = {
+                shizuku.service?.let { service ->
+                    runCatching { service.audioStats() }.getOrDefault("audio stats unavailable")
+                } ?: "audio tap unavailable"
+            },
         )
         b.addListener { session ->
             val description = describe(session)
             worker.execute {
                 if (bridge !== b) return@execute
                 _health.update { it.copy(session = description) }
+                if (session.endedAtMs != null && recordedCallIds.add(session.id)) recordCallHistory(session)
+                refreshEmployeeStatusesNow()
                 syncForegroundService()
                 if (session.endedAtMs != null && !cellular.hasCalls) applyDeferredChanges()
             }
         }
+        recordedCallIds.clear()
         bridge = b
         b.start()
         AppLog.i("bridge ready: cellular <-> ${sideB.name}")
+    }
+
+    private fun String.isCellularDialTarget(): Boolean =
+        isNotEmpty() && all { it.isDigit() || it == '+' || it == '*' || it == '#' }
+
+    private fun recordCallHistory(session: BridgeSession) {
+        val answered = session.connectedAtMs != null
+        val employees = session.ivrEmployees.associateBy { it.id }
+        val failed = session.attemptFailures.map { attempt ->
+            val label = employees[attempt.employeeId]?.displayName ?: "Employee"
+            "$label (${attempt.extension}):${attempt.sipResponseCode?.let { "SIP $it " } ?: ""}${attempt.cause}"
+        }.toMutableList()
+        val selected = session.selectedEmployeeId?.let(employees::get)
+        if (answered && selected != null && session.attemptFailures.none { it.employeeId == selected.id }) {
+            failed += "${selected.displayName} (${selected.extension}):ANSWERED"
+        }
+        val destination = selected?.let { "${it.displayName} (${it.extension})" }
+            ?: session.attemptFailures.lastOrNull()?.let { attempt ->
+                val label = employees[attempt.employeeId]?.displayName ?: "Employee"
+                "$label (${attempt.extension})"
+            }
+            ?: session.inbound.target?.let { target ->
+                if (target.isCellularDialTarget()) redactNumber(target) else "SIP route"
+            }
+            ?: "UNKNOWN"
+        val endedAt = session.endedAtMs ?: System.currentTimeMillis()
+        val durationSeconds = session.connectedAtMs?.let { ((endedAt - it).coerceAtLeast(0) / 1000) } ?: 0
+        callHistoryStore.add(
+            CallHistoryEntry(
+                sessionId = session.id,
+                startedAtMs = session.startedAtMs,
+                destinationLabel = destination,
+                maskedCaller = redactNumber(session.inbound.remote.number),
+                answered = answered,
+                endReason = CallHistoryStore.reason(session.endCause, session.inbound.endCause, answered),
+                sipResponseCode = session.attemptFailures.lastOrNull()?.sipResponseCode,
+                attemptSummary = failed.joinToString(" → "),
+                durationSeconds = durationSeconds,
+            ),
+        )
+        _callHistory.value = callHistoryStore.list()
+    }
+
+    /** Refresh employee reachability only from evidence the current SIP/Telecom APIs actually expose. */
+    fun refreshEmployeeStatuses() = worker.execute { refreshEmployeeStatusesNow() }
+
+    private fun refreshEmployeeStatusesNow() {
+        val now = System.currentTimeMillis()
+        val liveSession = bridge?.session
+        val employees = clinicEmployeeStore.list()
+        val items = employees.map { employee ->
+            val activeCall = liveSession?.selectedEmployeeId == employee.id && liveSession.employeeAnswered &&
+                liveSession.connectedAtMs != null
+            val explicitBusy = liveSession?.attemptFailures?.any {
+                it.employeeId == employee.id && it.cause == HangupCause.BUSY
+            } == true
+            val registration = (employee.destination as? io.github.sparkcyf.voicesipagent.gateway.EmployeeDestination.Sip)
+                ?.let { destination ->
+                    val uri = SipUri.parse(destination.uri)
+                    (sip as? SipUserAgent)?.isLocallyRegisteredPeer(uri?.user, uri?.host.orEmpty())
+                }
+            val status = when {
+                activeCall || explicitBusy -> EmployeeCallStatus.BUSY
+                registration == true -> EmployeeCallStatus.REGISTERED
+                registration == false -> EmployeeCallStatus.OFFLINE
+                else -> EmployeeCallStatus.UNKNOWN
+            }
+            EmployeeStatusItem(employee, status, now)
+        }
+        val cannotProbe = employees.any { it.destination is io.github.sparkcyf.voicesipagent.gateway.EmployeeDestination.Sip }
+        _employeeStatuses.value = EmployeeStatusSnapshot(
+            items = items,
+            updatedAtMs = now,
+            error = if (cannotProbe) "SIP registration per employee is not exposed by the configured endpoint; unverified states remain UNKNOWN." else
+                "Mobile destination status cannot be checked by this SIP endpoint; unverified states remain UNKNOWN.",
+        )
     }
 
     private fun describe(s: BridgeSession): String? {
@@ -672,11 +854,21 @@ class GatewayRuntime private constructor(context: Context) {
         val old = settings
         settingsStore.save(new)
         _settings.value = new
-        AppLog.i("settings saved ($new)")
+        AppLog.i("settings saved (serverMode=${new.serverMode}, takeover=${new.takeover}, audioMethod=${new.audioMethod}, callAccess=${new.callAccess}; SIP credentials and addresses omitted)")
+        val ivrChanged = old.ivrWelcome != new.ivrWelcome || old.ivrDoctor != new.ivrDoctor ||
+            old.ivrReception != new.ivrReception || old.ivrInvalid != new.ivrInvalid || old.ivrTimeout != new.ivrTimeout ||
+            old.ivrSource != new.ivrSource || old.ivrSpeechRate != new.ivrSpeechRate ||
+            old.ivrPitch != new.ivrPitch || old.ivrAudioFileName != new.ivrAudioFileName ||
+            old.ivrTtsVoice != new.ivrTtsVoice
         val platformOnly = old.copy(audioMethod = new.audioMethod, callAccess = new.callAccess,
             muteEarpiece = new.muteEarpiece, sipDebugLog = new.sipDebugLog,
-            keepDefaultDialer = new.keepDefaultDialer) == new
+            keepDefaultDialer = new.keepDefaultDialer, ivrWelcome = new.ivrWelcome,
+            ivrDoctor = new.ivrDoctor, ivrReception = new.ivrReception,
+            ivrInvalid = new.ivrInvalid, ivrTimeout = new.ivrTimeout, ivrSource = new.ivrSource,
+            ivrSpeechRate = new.ivrSpeechRate, ivrPitch = new.ivrPitch,
+            ivrAudioFileName = new.ivrAudioFileName, ivrTtsVoice = new.ivrTtsVoice) == new
         if (!platformOnly) { startSip(); rebuildBridge() }
+        else if (ivrChanged) rebuildBridge()
         configureCallAccess()
         runSetup()
         updateReadiness()
@@ -770,8 +962,13 @@ class GatewayRuntime private constructor(context: Context) {
             appendLine("privileged=${h.privileged} ${h.privilegedDetail}")
             appendLine("sip=${h.sip.detail} ready=${h.sip.ready} stack=builtin " +
                 "transport=${settings.sipTransport} srtp=${settings.srtp} debugLog=${settings.sipDebugLog}")
+            if (settings.serverMode) appendLine("externalPorts=UDP ${settings.localSipPort} SIP, UDP 10000-20000 RTP")
             appendLine("cellular=${cellular.status.detail} inCallServiceBound=${CellularEndpoint.isInCallServiceBound} " +
                 "service=${CellularEndpoint.boundServiceDescription ?: "none"}")
+            val n = networkMetrics.value
+            appendLine("sim2=${n.sim2Active} signal=${n.sim2SignalLevel} level dbm=${n.sim2Dbm ?: "?"} " +
+                "radio=${n.sim2Network} internet=${n.internetConnected} transport=${n.internetTransport} " +
+                "down=${n.downstreamKbps}kbps up=${n.upstreamKbps}kbps source=android-local")
             appendLine("sdk=${Build.VERSION.SDK_INT} callAccess=${settings.callAccess} effective=${h.effectiveCallAccess} " +
                 "defaultDialer=${h.holdsDialer} audioMethod=${settings.audioMethod} audioReady=${h.audioReady}")
             appendLine("dialerChangePending=${h.dialerChangePending} running=${h.dialerChangeRunning} ${_dialerMessage.value}")
@@ -788,6 +985,38 @@ class GatewayRuntime private constructor(context: Context) {
             AppLog.i("SMS forwarded to the registered phone")
         } else {
             AppLog.w("SMS not forwarded: no phone registered")
+        }
+    }
+
+    /** Handles authenticated text commands sent by the registered SIP phone. */
+    private fun handleSipCommand(from: String?, raw: String) {
+        val command = raw.trim()
+        when {
+            command.startsWith("SMS:", ignoreCase = true) -> {
+                val payload = command.substringAfter(':')
+                val split = payload.indexOf('|')
+                if (split <= 0 || split == payload.lastIndex) {
+                    (sip as? SipUserAgent)?.sendMessage(null, "ERROR SMS_FORMAT")
+                    return
+                }
+                val number = payload.substring(0, split).trim()
+                val text = payload.substring(split + 1).trim()
+                val ok = cellular.sendSms(number, text)
+                (sip as? SipUserAgent)?.sendMessage(null, if (ok) "OK SMS_SENT" else "ERROR SMS_FAILED")
+                AppLog.i("SIP SMS command from ${from ?: "unknown"}: ${if (ok) "sent" else "failed"}")
+            }
+            command.startsWith("CALL:", ignoreCase = true) -> {
+                val number = command.substringAfter(':').trim()
+                val endpoint = sip
+                val activeBridge = bridge
+                val ok = number.isNotEmpty() && endpoint != null && activeBridge != null &&
+                    activeBridge.startOutgoing(endpoint, "phone", cellular, number, Party(number))
+                (sip as? SipUserAgent)?.sendMessage(null, if (ok) "OK CALLING:$number" else "ERROR CALL_FAILED")
+                AppLog.i("SIP CALL command from ${from ?: "unknown"}: ${if (ok) "started" else "failed"}")
+            }
+            command.equals("STATUS", ignoreCase = true) ->
+                (sip as? SipUserAgent)?.sendMessage(null, "OK ${statusReport().replace('\n', ' ')}")
+            else -> (sip as? SipUserAgent)?.sendMessage(null, "ERROR UNKNOWN_COMMAND")
         }
     }
 

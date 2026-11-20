@@ -50,6 +50,16 @@ class MediaTest {
         assertTrue(Sdp.parse(hold)!!.isOnHold)
         assertEquals("recvonly", Sdp.answerDirection("sendonly"))
     }
+    @Test
+    fun sdpRejectsInvalidMediaPort() {
+        val invalid = "v=0\r\nc=IN IP4 192.168.0.53\r\nm=audio 70000 RTP/AVP 0\r\n"
+        assertEquals(null, Sdp.parse(invalid))
+    }
+    @Test
+    fun sdpToleratesWhitespaceAndDropsInvalidPayloadType() {
+        val offer = "v=0\r\nc=IN IP4 192.168.0.53\r\nm=audio   14000   RTP/AVP   0   128\r\n"
+        assertEquals(listOf(0), Sdp.parse(offer)!!.payloadTypes)
+    }
 
     private fun frame(v: Int) = ShortArray(VoiceFormat.FRAME_SAMPLES) { v.toShort() }
 

@@ -5,6 +5,7 @@ import io.github.sparkcyf.voicesipagent.voice.LegState
 import io.github.sparkcyf.voicesipagent.voice.PcmFormat
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -30,6 +31,32 @@ class CallBridgeTest {
 
     @Before fun setUp() = build()
     @After fun tearDown() = bridge.stop()
+
+    private fun buildLocalIvr(
+        inputTimeoutMs: Long = 10_000,
+        fallbackPolicy: CallFallbackPolicy = CallFallbackPolicy(),
+        eventPromptSamples: (String) -> ShortArray? = { null },
+    ) {
+        bridge = CallBridge(
+            sideA = cell,
+            sideB = sip,
+            routeAtoB = { "legacy-target" },
+            routeBtoA = { it.target },
+            config = GatewayConfig(cellularInboundTarget = "legacy-target"),
+            localCellularIvr = true,
+            ivrEmployees = {
+                listOf(
+                    CallCenterEmployee("doctor", "Doctor", EmployeeDestination.Sip("sip:doctor@example.invalid"), extension = "1"),
+                    CallCenterEmployee("reception", "Reception", EmployeeDestination.Sip("sip:reception@example.invalid"), extension = "2"),
+                )
+            },
+            ivrPromptSamples = { ShortArray(160) { 700 } },
+            ivrEventPromptSamples = eventPromptSamples,
+            ivrInputTimeoutMs = inputTimeoutMs,
+            fallbackPolicy = fallbackPolicy,
+        )
+        bridge.start()
+    }
 
     /** Waits for the bridge thread to drain, including tasks posted by the tasks it ran. */
     private fun settle() = repeat(3) { bridge.drain() }
@@ -60,6 +87,172 @@ class CallBridgeTest {
         assertEquals(LegState.ENDED, a.state)
         assertNull(bridge.session)
         assertNull("clock detached", cellPort.clock)
+    }
+
+    @Test
+    fun localIvrAnswersCellularBeforeDialingAndRoutesOneToDoctor() {
+        bridge.stop(); buildLocalIvr()
+        val caller = cell.incoming("+966500000001")
+        settle()
+        assertEquals(LegState.CONNECTED, caller.state)
+        assertTrue("employee must not be dialed before caller chooses", sip.dialed.isEmpty())
+
+        val cellPort = FakePort(isClockSource = true, fill = 0)
+        caller.mediaUp(cellPort); settle()
+        assertNotNull(bridge.session?.ivrPlayback)
+        caller.remoteDtmf('1'); settle()
+        assertEquals("sip:doctor@example.invalid", sip.dialed.single().target)
+        assertNull(bridge.session?.ivrPlayback)
+    }
+
+    @Test
+    fun localIvrRoutesTwoToReception() {
+        bridge.stop(); buildLocalIvr()
+        val caller = cell.incoming("+966500000002"); settle()
+        caller.mediaUp(FakePort(isClockSource = true, fill = 0)); settle()
+        caller.remoteDtmf('2'); settle()
+        assertEquals("sip:reception@example.invalid", sip.dialed.single().target)
+    }
+
+    @Test
+    fun localIvrPlaysDoctorConfirmationBeforeDialingWhenConfigured() {
+        bridge.stop()
+        buildLocalIvr(eventPromptSamples = { kind -> if (kind == "doctor") ShortArray(160) { 321 } else null })
+        val caller = cell.incoming("+966500000051"); settle()
+        val callerPort = FakePort(isClockSource = true, fill = 0)
+        caller.mediaUp(callerPort); settle()
+        caller.remoteDtmf('1'); settle()
+        assertTrue("confirmation must finish before dialing", sip.dialed.isEmpty())
+        callerPort.clock!!.onFrame(); settle()
+        assertEquals("sip:doctor@example.invalid", sip.dialed.single().target)
+    }
+
+    @Test
+    fun localIvrInvalidDigitAnnouncementKeepsCallReadyForMenuReplay() {
+        bridge.stop()
+        buildLocalIvr(eventPromptSamples = { kind -> if (kind == "invalid") ShortArray(160) { 123 } else null })
+        val caller = cell.incoming("+966500000052"); settle()
+        caller.mediaUp(FakePort(isClockSource = true, fill = 0)); settle()
+        caller.remoteDtmf('9'); settle()
+        assertTrue(sip.dialed.isEmpty())
+        assertNotNull(bridge.session?.ivrPlayback)
+    }
+
+    @Test
+    fun busyEmployeeKeepsCellularCallerConnectedAndStartsConfiguredFallback() {
+        bridge.stop(); buildLocalIvr()
+        val caller = cell.incoming("+966500000004"); settle()
+        caller.mediaUp(FakePort(isClockSource = true, fill = 0)); settle()
+        caller.remoteDtmf('1'); settle()
+        val doctor = sip.dialed.single()
+        doctor.remoteEnded(HangupCause.BUSY); settle()
+
+        assertEquals(LegState.CONNECTED, caller.state)
+        assertNull(caller.endCause)
+        assertEquals(2, sip.dialed.size)
+        assertEquals("sip:reception@example.invalid", sip.dialed.last().target)
+        assertEquals("reception", bridge.session?.selectedEmployeeId)
+        assertEquals(HangupCause.BUSY, bridge.session?.attemptFailures?.single()?.cause)
+    }
+
+    @Test
+    fun answeredFallbackCreatesOneMediaBridgeAndDoesNotRetryAfterAnswer() {
+        bridge.stop(); buildLocalIvr()
+        val callerPort = FakePort(isClockSource = true, fill = 11)
+        val caller = cell.incoming("+966500000005"); settle()
+        caller.mediaUp(callerPort); settle()
+        caller.remoteDtmf('1'); settle()
+        sip.dialed.single().remoteEnded(HangupCause.BUSY); settle()
+        val receptionist = sip.dialed.last()
+        receptionist.remoteAnswered(); settle()
+        receptionist.mediaUp(FakePort(isClockSource = false, fill = 22)); settle()
+        val media = bridge.session?.media
+        assertNotNull(media)
+        callerPort.clock!!.onFrame(); settle()
+        assertEquals(1, callerPort.written.size)
+        receptionist.remoteEnded(HangupCause.NORMAL); settle()
+        assertEquals(2, sip.dialed.size)
+        assertNull(bridge.session)
+    }
+
+    @Test
+    fun failedFallbackReplaysIvrOnceThenRunsBoundedFinalAction() {
+        bridge.stop(); buildLocalIvr(inputTimeoutMs = 25)
+        val caller = cell.incoming("+966500000006"); settle()
+        val cellPort = FakePort(isClockSource = true, fill = 0)
+        caller.mediaUp(cellPort); settle()
+        caller.remoteDtmf('1'); settle()
+        sip.dialed.first().remoteEnded(HangupCause.BUSY); settle()
+        sip.dialed.last().remoteEnded(HangupCause.UNAVAILABLE); settle()
+        assertEquals(LegState.CONNECTED, caller.state)
+        assertEquals(2, bridge.session?.ivrPromptAttempts)
+        assertNull(bridge.session?.outbound)
+
+        cellPort.clock!!.onFrame(); settle()
+        Thread.sleep(60); settle()
+        assertNull(bridge.session)
+        assertEquals(HangupCause.NO_ANSWER, caller.endCause)
+        assertEquals(2, sip.dialed.size)
+    }
+
+    @Test
+    fun callerHangupDuringEmployeeRingCancelsAttemptWithoutStartingFallback() {
+        bridge.stop(); buildLocalIvr()
+        val caller = cell.incoming("+966500000007"); settle()
+        caller.mediaUp(FakePort(isClockSource = true, fill = 0)); settle()
+        caller.remoteDtmf('1'); settle()
+        val doctor = sip.dialed.single()
+        caller.remoteEnded(HangupCause.NORMAL); settle()
+
+        assertNull(bridge.session)
+        assertEquals(1, sip.dialed.size)
+        assertEquals("hangup:CANCELLED", doctor.actions.last())
+    }
+
+    @Test
+    fun lateAnswerEventFromOldAttemptCannotChangeCurrentAttemptOrCreateBridge() {
+        bridge.stop(); buildLocalIvr()
+        val caller = cell.incoming("+966500000008"); settle()
+        caller.mediaUp(FakePort(isClockSource = true, fill = 0)); settle()
+        caller.remoteDtmf('1'); settle()
+        val doctor = sip.dialed.first()
+        doctor.remoteEnded(HangupCause.BUSY); settle()
+        doctor.fireLateStateForTest(LegState.CONNECTED); settle()
+
+        assertEquals("reception", bridge.session?.selectedEmployeeId)
+        assertFalse(bridge.session?.employeeAnswered ?: true)
+        assertNull(bridge.session?.media)
+        assertEquals(LegState.CONNECTED, caller.state)
+        assertEquals(2, sip.dialed.size)
+    }
+
+    @Test
+    fun networkFailureIsNotAutomaticallyRetriedAsAnEmployeeFallback() {
+        bridge.stop(); buildLocalIvr()
+        val caller = cell.incoming("+966500000009"); settle()
+        caller.mediaUp(FakePort(isClockSource = true, fill = 0)); settle()
+        caller.remoteDtmf('1'); settle()
+        sip.dialed.single().remoteEnded(HangupCause.NETWORK_ERROR); settle()
+
+        assertNull(bridge.session)
+        assertEquals(1, sip.dialed.size)
+        assertEquals(HangupCause.NETWORK_ERROR, caller.endCause)
+    }
+
+    @Test
+    fun localIvrRepeatsPromptOnceThenHangsUpAfterNoInput() {
+        bridge.stop(); buildLocalIvr(inputTimeoutMs = 30)
+        val caller = cell.incoming("+966500000003"); settle()
+        val cellPort = FakePort(isClockSource = true, fill = 0)
+        caller.mediaUp(cellPort); settle()
+        cellPort.clock!!.onFrame(); settle()
+        Thread.sleep(70); settle()
+        assertEquals(2, bridge.session?.ivrPromptAttempts)
+        cellPort.clock!!.onFrame(); settle()
+        Thread.sleep(70); settle()
+        assertNull(bridge.session)
+        assertEquals(HangupCause.NO_ANSWER, caller.endCause)
+        assertTrue(sip.dialed.isEmpty())
     }
 
     @Test
@@ -173,6 +366,23 @@ class CallBridgeTest {
                 assertTrue(port.written.last().all { it == 7.toShort() })
             } finally { mb.stop() }
         }
+    }
+
+    @Test
+    fun ivrCountersSeparateProducedFramesFromCallerChannelWriteFailures() {
+        val callerPort = FakePort(isClockSource = true, fill = 0).apply {
+            writeFailure = IllegalStateException("test failure")
+        }
+        val ivrPort = IvrMediaPort(ShortArray(320) { 123 }, {}, {})
+        val playback = MediaBridge(callerPort, ivrPort).also { it.start() }
+        try {
+            callerPort.clock!!.onFrame()
+            callerPort.clock!!.onFrame()
+            assertEquals(2L, ivrPort.framesProduced)
+            assertEquals(0L, playback.writesToA)
+            assertEquals(2L, playback.writeErrorsToA)
+            assertEquals("IllegalStateException", playback.lastWriteErrorToA)
+        } finally { playback.stop() }
     }
 
     @Test fun widebandCallBridgesWholeFramesInBothDirections() {

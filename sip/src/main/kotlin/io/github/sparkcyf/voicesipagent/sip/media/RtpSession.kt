@@ -9,6 +9,7 @@ import java.net.InetAddress
 import java.net.InetSocketAddress
 import java.net.SocketException
 import java.security.SecureRandom
+import kotlin.random.Random
 import java.util.concurrent.ConcurrentLinkedQueue
 
 data class RtpParams(
@@ -145,6 +146,10 @@ class RtpSession(
             val p = params
             val len = pkt.length
             if (len < 12 || (buf[0].toInt() and 0xc0) != 0x80) continue
+            // RTP is tied to the address and port advertised by this call's SDP. Checking only
+            // the address lets any process on the peer host inject audio or DTMF into this call.
+            // Symmetric-NAT deployments must advertise/forward the same RTP source port.
+            if (pkt.port != p.remote.port) continue
             if (pkt.address != p.remote.address && !isSameHostFallback(pkt.address, p.remote.address)) continue
             val cc = buf[0].toInt() and 0x0f
             val hasExt = (buf[0].toInt() and 0x10) != 0
@@ -224,9 +229,11 @@ class RtpSession(
     companion object {
         /** Binds an even UDP port in [range] on [bindAddress]. */
         fun bindSocket(bindAddress: InetAddress?, range: IntRange = 10000..20000): DatagramSocket {
-            val rnd = SecureRandom()
-            repeat(50) {
-                val port = (range.first + rnd.nextInt((range.last - range.first) / 2) * 2)
+            require(range.first in 1..65535 && range.last in 1..65535 && range.first <= range.last) {
+                "invalid RTP port range $range"
+            }
+            val ports = (range.first..range.last).filter { it % 2 == 0 }.shuffled(Random(System.nanoTime()))
+            for (port in ports) {
                 try {
                     return DatagramSocket(InetSocketAddress(bindAddress, port))
                 } catch (_: SocketException) {
