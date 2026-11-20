@@ -60,3 +60,13 @@ Every command other than listing gateways requires an explicit `gateway_id`; the
 This commit provides the central MCP coordinator and the authenticated device WebSocket protocol. It does not yet add the Android-side WSS agent, persistent enrollment UI, durable server-side registry, reverse-proxy deployment, or real-call/device validation. Until the Android agent is implemented, phones will not appear online. The existing local ADB MCP remains available and is not replaced by this service.
 
 No phone is contacted, no call is initiated, no production setting is changed, and no deployment is performed by tests or startup.
+
+## Android gateway enrollment
+
+Each Android installation now has a **Central MCP management** section. Enter the HTTPS base URL, its own gateway ID, and its own device token. The app opens an outbound WSS connection and stores the token encrypted with Android Keystore.
+
+Provision the exact ID/token pair in `GATEWAY_CREDENTIALS_JSON` on the server before connecting that phone. Generate a different random token for every gateway; do not share tokens. A newly installed app creates a gateway ID automatically, but the server operator must provision that ID and token.
+
+The foreground gateway service keeps the WSS agent alive even when call takeover is off, as long as central MCP is configured. The agent sends operational heartbeat metadata only and does not send SIP passwords, SIM PINs, call audio, transcripts, or caller numbers.
+
+Call actions are approval-gated: MCP creates a pending request, the user approves it in the phone UI, then the MCP client may execute the exact one-time approval. No action is executed merely because a command arrived.
