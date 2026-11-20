@@ -1,6 +1,7 @@
 import http from "node:http";
 import { timingSafeEqual } from "node:crypto";
 import { WebSocket, WebSocketServer } from "ws";
+import { selectGateway } from "./routing.mjs";
 
 const MAX_BODY = 64 * 1024;
 const MAX_AGENT_MESSAGE = 256 * 1024;
@@ -31,10 +32,12 @@ function parseJsonEnv(value, fallback) {
 export function createCentralMcpServer(options = {}) {
   const adminToken = options.adminToken ?? process.env.MCP_ADMIN_TOKEN ?? "";
   const credentials = options.credentials ?? parseJsonEnv(process.env.GATEWAY_CREDENTIALS_JSON, {});
+  const routingPolicy = options.routingPolicy ?? parseJsonEnv(process.env.GATEWAY_ROUTING_POLICY_JSON, {});
   const requestTimeoutMs = options.requestTimeoutMs ?? DEFAULT_TIMEOUT_MS;
   const gateways = new Map();
   const pending = new Map();
   let nextId = 1;
+  function chooseGateway() { return selectGateway(gateways, routingPolicy); }
 
   function authorizedAdmin(req) {
     const token = bearer(req);
@@ -85,6 +88,8 @@ export function createCentralMcpServer(options = {}) {
   }
   const tools = [
     { name: "gateways_list", description: "List all independently registered Android gateways and their online status. Read-only.", inputSchema: { type: "object", properties: {}, additionalProperties: false } },
+    { name: "gateway_route_preview", description: "Preview the best currently eligible gateway using heartbeat freshness, SIP readiness, takeover state, idle state and configured priority. Read-only; never initiates a call.", inputSchema: { type: "object", properties: {}, additionalProperties: false } },
+    { name: "gateway_request_routed_call", description: "Select one eligible gateway and create a DIAL approval request on that phone. The phone must obtain local human approval; this tool never executes the call.", inputSchema: { type: "object", properties: { target: { type: "string", minLength: 1, maxLength: 64 }, route: { type: "string", default: "auto" } }, required: ["target"], additionalProperties: false } },
     { name: "gateway_status", description: "Read status from one specific gateway. No call is started.", inputSchema: { type: "object", properties: { gateway_id: { type: "string", pattern: "^[A-Za-z0-9._-]{1,64}$" } }, required: ["gateway_id"], additionalProperties: false } },
     { name: "gateway_calls_list", description: "List active calls and recent call history from one selected gateway.", inputSchema: { type: "object", properties: { gateway_id: { type: "string" }, limit: { type: "integer", minimum: 1, maximum: 500 } }, required: ["gateway_id"], additionalProperties: false } },
     { name: "gateway_set_takeover", description: "Enable or disable call takeover on one selected gateway. This changes only that phone's local gateway mode.", inputSchema: { type: "object", properties: { gateway_id: { type: "string" }, enabled: { type: "boolean" } }, required: ["gateway_id", "enabled"], additionalProperties: false } },
@@ -98,6 +103,28 @@ export function createCentralMcpServer(options = {}) {
 
   async function callTool(name, args) {
     if (name === "gateways_list") return { gateways: listGateways() };
+    if (name === "gateway_route_preview") {
+      const selected = chooseGateway();
+      return { selected_gateway_id: selected, eligible: selected !== null, policy: "priority_then_oldest_assignment", execution: "none" };
+    }
+    if (name === "gateway_request_routed_call") {
+      if (typeof args.target !== "string" || !args.target.trim() || args.target.length > 64) throw new Error("valid_dial_target_required");
+      const route = args.route ?? "auto";
+      if (typeof route !== "string" || !/^[A-Za-z0-9._-]{1,64}$/.test(route)) throw new Error("invalid_route");
+      const gatewayId = chooseGateway();
+      if (!gatewayId) throw new Error("no_eligible_gateway");
+      const entry = gateways.get(gatewayId);
+      if (!entry || entry.routingReservedUntil > Date.now()) throw new Error("gateway_already_reserved");
+      entry.routingReservedUntil = Date.now() + 90_000;
+      try {
+        const approval = await sendToGateway(gatewayId, "sip_request_call_action", { action: "DIAL", target: args.target.trim(), route });
+        entry.lastAssignedAt = Date.now();
+        return { selected_gateway_id: gatewayId, approval, requires_local_approval: true, call_executed: false };
+      } catch (error) {
+        entry.routingReservedUntil = 0;
+        throw error;
+      }
+    }
     const gatewayId = args.gateway_id;
     if (typeof gatewayId !== "string" || !SAFE_ID.test(gatewayId)) throw new Error("valid_gateway_id_required");
     if (name === "gateway_status") return await sendToGateway(gatewayId, "sip_gateway_status", {});
