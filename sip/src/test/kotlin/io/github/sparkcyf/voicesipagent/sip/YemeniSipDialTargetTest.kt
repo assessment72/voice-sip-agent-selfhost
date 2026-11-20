@@ -50,6 +50,14 @@ class YemeniSipDialTargetTest {
         )
     }
 
+    @Test fun xVsaDialAcceptsAFullSipUriAsItsValue() {
+        accepted(
+            request(headers = SipHeaders().add("X-VSA-Dial", "sip:sip777405578@sip2sip.info")),
+            "+967777405578",
+            "X-VSA-Dial",
+        )
+    }
+
     @Test fun pCalledPartyIdIsUsedWhenToHasNoDynamicUser() {
         accepted(
             request(
