@@ -28,3 +28,27 @@ A call action is a two-step operation: request approval, then execute the return
 ## Protocol version
 
 Initial JSON envelope is intentionally small and versioned by the application release. Add an explicit compatibility field before the first Android agent release. Commands have bounded payloads and a timeout; offline or disconnected gateways fail closed.
+
+
+## Android gateway enrollment (implemented in this branch)
+
+1. Deploy the central service behind HTTPS/WSS. Do not expose its plain HTTP port directly.
+2. Generate a different high-entropy random token for each phone. Keep the gateway ID/token pairs in the server-side secret `GATEWAY_CREDENTIALS_JSON`.
+3. Open the gateway app, then the **Central MCP management** section.
+4. Copy the phone's generated gateway ID into the server credential map and assign that phone its own random token.
+5. Enter the HTTPS base URL (for example `https://mcp.example.net`), the exact gateway ID, and that device's token in the app. Save and connect.
+6. Confirm that the gateway appears online in the MCP `gateways_list` tool.
+
+The app stores the token encrypted with a non-exportable Android Keystore AES-GCM key. It opens an outbound WSS connection, sends a heartbeat every 20 seconds, and reconnects with bounded exponential backoff. The connection is maintained by the existing foreground gateway service, including when call takeover is switched off but central management remains configured.
+
+## Call-control approval sequence
+
+- MCP `gateway_request_call_action` sends a request to exactly one selected gateway.
+- The app adds the request to its existing on-device Call Control Approvals UI.
+- A person must explicitly approve it on that phone.
+- MCP `gateway_execute_approved_action` can then consume that one-time approval. The controller rejects pending, expired, mismatched, and replayed approvals.
+- The local SIP/SIM endpoints and route remain owned by the selected phone.
+
+## Current limitations
+
+This branch now includes the Android WSS agent and enrollment UI, but this remains a development integration. The central service currently uses environment-provisioned credentials and an in-memory live-connection registry; it does not yet provide a durable device enrollment database, remote token rotation UI, or a web dashboard. Android compile CI and physical-device validation are required before field use. No phone is enrolled by default and no real call is initiated by installation.
