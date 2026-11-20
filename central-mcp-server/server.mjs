@@ -87,6 +87,9 @@ export function createCentralMcpServer(options = {}) {
     { name: "gateways_list", description: "List all independently registered Android gateways and their online status. Read-only.", inputSchema: { type: "object", properties: {}, additionalProperties: false } },
     { name: "gateway_status", description: "Read status from one specific gateway. No call is started.", inputSchema: { type: "object", properties: { gateway_id: { type: "string", pattern: "^[A-Za-z0-9._-]{1,64}$" } }, required: ["gateway_id"], additionalProperties: false } },
     { name: "gateway_calls_list", description: "List active calls and recent call history from one selected gateway.", inputSchema: { type: "object", properties: { gateway_id: { type: "string" }, limit: { type: "integer", minimum: 1, maximum: 500 } }, required: ["gateway_id"], additionalProperties: false } },
+    { name: "gateway_set_takeover", description: "Enable or disable call takeover on one selected gateway. This changes only that phone's local gateway mode.", inputSchema: { type: "object", properties: { gateway_id: { type: "string" }, enabled: { type: "boolean" } }, required: ["gateway_id", "enabled"], additionalProperties: false } },
+    { name: "gateway_restart_sip", description: "Restart SIP registration on one selected gateway. Does not initiate a call.", inputSchema: { type: "object", properties: { gateway_id: { type: "string" } }, required: ["gateway_id"], additionalProperties: false } },
+    { name: "gateway_set_earpiece_mute", description: "Set local earpiece mute preference on one selected gateway.", inputSchema: { type: "object", properties: { gateway_id: { type: "string" }, muted: { type: "boolean" } }, required: ["gateway_id", "muted"], additionalProperties: false } },
     { name: "gateway_pending_call_approvals", description: "Read pending call approvals on one specific gateway.", inputSchema: { type: "object", properties: { gateway_id: { type: "string" } }, required: ["gateway_id"], additionalProperties: false } },
     { name: "gateway_request_call_action", description: "Request a call action on one gateway. The Android app must display the exact request and obtain local human approval; this request does not itself execute a call.", inputSchema: { type: "object", properties: { gateway_id: { type: "string" }, action: { type: "string", enum: ["DIAL", "ANSWER", "REJECT", "HANGUP", "DTMF"] }, call_id: { type: "string" }, target: { type: "string" }, route: { type: "string", default: "auto" }, digit: { type: "string", minLength: 1, maxLength: 1 } }, required: ["gateway_id", "action"], additionalProperties: false } },
     { name: "gateway_execute_approved_action", description: "Ask the selected Android gateway to execute a previously locally approved one-time action by approval_id.", inputSchema: { type: "object", properties: { gateway_id: { type: "string" }, approval_id: { type: "string" } }, required: ["gateway_id", "approval_id"], additionalProperties: false } },
@@ -99,6 +102,15 @@ export function createCentralMcpServer(options = {}) {
     if (typeof gatewayId !== "string" || !SAFE_ID.test(gatewayId)) throw new Error("valid_gateway_id_required");
     if (name === "gateway_status") return await sendToGateway(gatewayId, "sip_gateway_status", {});
     if (name === "gateway_calls_list") return await sendToGateway(gatewayId, "sip_calls_list", { limit: args.limit ?? 100 });
+    if (name === "gateway_set_takeover") {
+      if (typeof args.enabled !== "boolean") throw new Error("enabled_boolean_required");
+      return await sendToGateway(gatewayId, "sip_set_takeover", { enabled: args.enabled });
+    }
+    if (name === "gateway_restart_sip") return await sendToGateway(gatewayId, "sip_restart", {});
+    if (name === "gateway_set_earpiece_mute") {
+      if (typeof args.muted !== "boolean") throw new Error("muted_boolean_required");
+      return await sendToGateway(gatewayId, "sip_set_earpiece_mute", { muted: args.muted });
+    }
     if (name === "gateway_pending_call_approvals") return await sendToGateway(gatewayId, "sip_pending_call_approvals", {});
     if (name === "gateway_call_audit") return await sendToGateway(gatewayId, "sip_call_audit", { limit: args.limit ?? 100 });
     if (name === "gateway_request_call_action") {
