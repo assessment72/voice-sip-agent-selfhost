@@ -46,7 +46,9 @@ Approvals expire after 90 seconds, are bound to the exact operation, and can be 
 - The ADB/MCP path cannot approve requests. Approval is performed only by tapping the matching request in the Android app.
 - The app's call-control layer does not touch RTP/audio. The existing bridge remains responsible for media.
 - The first auto route uses the first ready endpoint (cellular then SIP in the app). It is not multi-SIM load balancing.
-- Approval and audit data are currently in memory and are lost when the app process restarts. Durable storage and a native approval UI remain follow-up work.
+- Approval and audit data are currently in memory and are lost when the app process restarts. Durable storage remains follow-up work.
 - The ADB result-data round trip must be verified on the target Android device before enabling real call operations. Start with status/list tools and test calls only after confirming the device-side behavior.
 
-The repository CI runs Python syntax checks and protocol-level unit tests for this bridge.\n\nThis integration does not alter SIP credentials or gateway settings and does not initiate any call during startup.
+The repository CI runs Python syntax checks and protocol-level unit tests for this bridge.
+
+This integration does not alter SIP credentials or gateway settings and does not initiate any call during startup.
