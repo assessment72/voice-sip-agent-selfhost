@@ -61,7 +61,7 @@ Every command other than listing gateways requires an explicit `gateway_id`; the
 
 ## Current implementation boundary
 
-The branch includes the authenticated central MCP coordinator, Android outbound WSS agent, per-device credential configuration, heartbeat/status reporting, approval-gated device commands, and an Arabic read-only web dashboard. Live device state, command queue, leases, and audit events are persisted in MongoDB Atlas. Device enrollment credentials remain server secrets. Physical-device validation remains future work.
+The branch includes the authenticated central MCP coordinator, Android outbound WSS agent, per-device credential configuration, heartbeat/status reporting, approval-gated device commands, and an Arabic read-only web dashboard. Live device state, command queue, leases, and audit events are persisted in MongoDB Atlas. Legacy environment-provisioned device credentials remain server secrets; managed enrollment stores only token hashes in MongoDB Atlas. Physical-device validation remains future work.
 
 ## Automatic gateway routing
 
