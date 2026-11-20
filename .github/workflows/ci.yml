@@ -40,7 +40,14 @@ jobs:
           yes | "$SDKMANAGER" --licenses >/dev/null || true
           "$SDKMANAGER" "platforms;android-36"
       - uses: gradle/actions/setup-gradle@v4
-      - run: ./gradlew -Pandroid.compileSdk=36 :app:compileDebugKotlin
+      - run: ./gradlew -Pandroid.compileSdk=36 :app:compileDebugKotlin :app:assembleDebug
+      - name: Upload debug APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: voice-sip-agent-debug-apk
+          path: app/build/outputs/apk/debug/*.apk
+          if-no-files-found: error
+          retention-days: 14
 
   voice-ai-relay:
     runs-on: ubuntu-latest
