@@ -62,7 +62,7 @@
             android:foregroundServiceType="specialUse">
             <property
                 android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
-                android:value="Keeps a SIP registration alive to bridge cellular calls to a PBX" />
+                android:value="Keeps the configured SIP gateway and secure central MCP management connection available for remote operations" />
         </service>
 
         <receiver
