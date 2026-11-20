@@ -10,6 +10,8 @@ import android.telecom.PhoneAccount
 import android.telecom.PhoneAccountHandle
 import android.telecom.TelecomManager
 import android.telephony.TelephonyManager
+import android.telephony.SubscriptionInfo
+import android.telephony.SubscriptionManager
 import io.github.sparkcyf.voicesipagent.voice.HangupCause
 import io.github.sparkcyf.voicesipagent.voice.LegState
 import io.github.sparkcyf.voicesipagent.voice.MediaPort
@@ -32,6 +34,8 @@ class CellularOwnershipTest {
     private val main = mock(Handler::class.java)
     private val context = mock(Context::class.java)
     private val telecom = mock(TelecomManager::class.java)
+    private val telephony = mock(TelephonyManager::class.java)
+    private val subscriptions = mock(SubscriptionManager::class.java)
     private val service = mock(GatewayInCallService::class.java)
     private lateinit var endpoint: CellularEndpoint
     private lateinit var leg: CellularLeg
@@ -57,10 +61,17 @@ class CellularOwnershipTest {
             .postDelayed(any(Runnable::class.java), any(), anyLong())
         doReturn(context).`when`(context).applicationContext
         doReturn(telecom).`when`(context).getSystemService(TelecomManager::class.java)
-        doReturn(mock(TelephonyManager::class.java)).`when`(context).getSystemService(TelephonyManager::class.java)
+        doReturn(telephony).`when`(context).getSystemService(TelephonyManager::class.java)
+        doReturn(subscriptions).`when`(context).getSystemService(SubscriptionManager::class.java)
+        val sim2 = mock(SubscriptionInfo::class.java)
+        doReturn(sim2).`when`(subscriptions).getActiveSubscriptionInfoForSimSlotIndex(1)
+        doReturn(2).`when`(sim2).subscriptionId
         val account = mock(PhoneAccount::class.java)
+        val accountHandle = mock(PhoneAccountHandle::class.java)
         doReturn(true).`when`(account).hasCapabilities(PhoneAccount.CAPABILITY_SIM_SUBSCRIPTION)
         doReturn(account).`when`(telecom).getPhoneAccount(any(PhoneAccountHandle::class.java))
+        doReturn(listOf(accountHandle)).`when`(telecom).callCapablePhoneAccounts
+        doReturn(2).`when`(telephony).getSubscriptionId(accountHandle)
         doAnswer { originalMute }.`when`(service).microphoneMuted
         endpoint = CellularEndpoint(context, CallAudioOpener { onLost ->
             openCount++

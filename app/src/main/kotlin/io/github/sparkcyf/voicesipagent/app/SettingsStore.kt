@@ -55,7 +55,7 @@ data class GatewaySettings(
      * [server]/[username]/[password] are not required.
      */
     val serverMode: Boolean = true,
-    /** UI language: "ru" or "en". Pure UI preference, no SIP restart. */
+    /** UI language: "ru", "en", or "ar". Pure UI preference, no SIP restart. */
     val uiLanguage: String = "ru",
 ) {
     val sipConfigured: Boolean get() =
@@ -78,9 +78,13 @@ enum class SipStack(val id: String) {
     }
 }
 
-/** First-run UI language from the system locale: a Russian system → "ru", otherwise "en". */
+/** First-run UI language from the system locale. */
 private fun systemDefaultUiLang(): String =
-    if (java.util.Locale.getDefault().language == "ru") "ru" else "en"
+    when (java.util.Locale.getDefault().language) {
+        "ru" -> "ru"
+        "ar" -> "ar"
+        else -> "en"
+    }
 
 /** SharedPreferences, with the SIP password sealed by an Android Keystore AES-GCM key. */
 class SettingsStore(context: Context) {
@@ -108,8 +112,8 @@ class SettingsStore(context: Context) {
         callAccess = prefs.getInt("call_access", CallAccess.AUTO).takeIf { it in 0..2 } ?: CallAccess.AUTO,
         sipStack = SipStack.of(prefs.getString("sip_stack", null)) ?: SipStack.BUILTIN,
         serverMode = prefs.getBoolean("server_mode", true),
-        // First run (key absent): default to the system language — Russian locale → "ru",
-        // anything else → "en". Once the user picks a language it is saved and always wins.
+        // First run (key absent): default to Russian, Arabic, or English system language.
+        // Once the user picks a language it is saved and always wins.
         uiLanguage = prefs.getString("ui_lang", null) ?: systemDefaultUiLang(),
     )
 
