@@ -167,6 +167,7 @@ class GatewayRuntime private constructor(context: Context) {
     val cellular = CellularEndpoint(app,
         PrivilegedAudioOpener(shizuku, { settings.audioMethod }, { settings.muteEarpiece }, ::audioFormat),
         logger = { AppLog.i(it) },
+        callerIdMode = { settings.callerIdMode },
     )
     /** SIM 2 signal and default-network monitor; it is active only while the gateway service runs. */
     private val networkMonitor = NetworkMonitor(app)
@@ -610,6 +611,7 @@ class GatewayRuntime private constructor(context: Context) {
                     serverMode = s.serverMode,
                     registrarLeaseSec = s.registrarLeaseSec,
                     registrarPassword = s.registrarPassword,
+                    callerIdMode = s.callerIdMode,
                     // CallBridge owns the per-employee timer (5–120 s); the SIP leg must not
                     // pre-empt it with the UA's shorter generic unanswered-call timeout.
                     ringTimeoutMs = 120_000,
