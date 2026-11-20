@@ -152,7 +152,7 @@ class CallBridgeTest {
     fun yemeniNationalPrefixAllowListMatchesNormalizedInternationalTarget() {
         bridge.stop()
         build(GatewayConfig(allowedDialPrefixes = listOf("77")))
-        val inbound = sip.incoming("caller", target = "+967777405578")
+        sip.incoming("caller", target = "+967777405578")
         settle()
         assertEquals("+967777405578", cell.dialed.single().target)
         assertTrue("SIP inbound leg remains owned by the bridge", bridge.session != null)
