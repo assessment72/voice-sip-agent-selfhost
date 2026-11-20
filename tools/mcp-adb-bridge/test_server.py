@@ -29,7 +29,7 @@ class McpProtocolTests(unittest.TestCase):
     def test_tools_list_contains_approval_gate(self):
         result = MODULE.handle({"jsonrpc": "2.0", "id": 2, "method": "tools/list"})
         names = {tool["name"] for tool in result["result"]["tools"]}
-        self.assertIn("sip_request_call_action", names)
+        self.assertIn("sip_request_call_action", names)\n        self.assertIn("sip_pending_call_approvals", names)
         self.assertIn("sip_approve_call_action", names)
         self.assertIn("sip_execute_approved_action", names)
 
