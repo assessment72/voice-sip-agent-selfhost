@@ -84,7 +84,7 @@ internal class SipCall(
     fun startOutbound(target: String, caller: Party) {
         val acct = config.account
         callerIdMode = caller.callerIdMode ?: config.callerIdMode
-        localUri = SipCallerIdPolicy.from(caller, acct.displayName, ua.aor, ua.selfDomain, ua.isServerMode, callerIdMode)
+        localUri = SipCallerIdPolicy.from(caller, acct.displayName, ua.aor, ua.selfDomain, ua.isServerMode, callerIdMode, config.sipCallerId)
         if (ua.isServerMode) {
             remoteUri = NameAddr(null, ua.serverPeerUri() ?: "sip:$target@${ua.selfDomain}")
         } else {
@@ -124,7 +124,7 @@ internal class SipCall(
         } else {
             callerForRetry?.let { caller ->
                 val d = config.account.domain.ifBlank { ua.selfDomain }
-                SipCallerIdPolicy.assertedIdentity(caller, d, callerIdMode)?.let {
+                SipCallerIdPolicy.assertedIdentity(caller, d, callerIdMode, config.sipCallerId)?.let {
                     req.headers.add("P-Asserted-Identity", it)
                 }
             }
