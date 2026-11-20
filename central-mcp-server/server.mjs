@@ -305,7 +305,7 @@ export function createCentralMcpServer(options = {}) {
   return { httpServer, gateways, tools, callTool, instanceId, close: async () => { stopCommandWatch?.(); await store?.close?.(); } };
 }
 
-if (process.argv[1] && new URL(import.meta.url).pathname === process.argv[1]) {
+// Vercel Node.js Server entrypoint. The server instance is exported for the platform runtime.\nconst vercelServer = createCentralMcpServer({ requirePersistentStore: true });\nexport default vercelServer.httpServer;\n\nif (process.argv[1] && new URL(import.meta.url).pathname === process.argv[1]) {
   const server = createCentralMcpServer();
   const port = Number(process.env.PORT ?? 8788);
   server.httpServer.listen(port, "0.0.0.0", () => {
