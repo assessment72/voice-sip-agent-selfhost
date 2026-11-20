@@ -20,6 +20,7 @@ button{cursor:pointer;background:#244d86;border-color:#315f9e}button.secondary{b
 .meta{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;margin-top:16px}.meta div{background:#0c1726;border-radius:10px;padding:10px;min-width:0}.meta small{display:block;color:var(--muted);margin-bottom:4px}.meta b{font-size:14px;overflow-wrap:anywhere}
 .empty,.error{padding:22px;border:1px dashed var(--line);border-radius:14px;color:var(--muted);text-align:center}.error{color:#ffaaaa;border-color:#75434a}
 .login{max-width:470px;margin:70px auto}.login h2{margin-top:0}.login input{width:100%;margin:12px 0}.login button{width:100%}
+.manage{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:12px;margin:12px 0 24px}.manage form{display:flex;gap:8px;flex-wrap:wrap}.manage input{flex:1;min-width:150px}.token-panel{margin:12px 0 20px;padding:15px;border:1px solid #496b9a;border-radius:14px;background:#10233b}.token-panel code{display:block;overflow-wrap:anywhere;user-select:all;padding:12px;background:#081321;border-radius:8px;margin:10px 0}.actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:14px}.actions button{font-size:13px;padding:8px 10px}.device.disabled{opacity:.7;border-color:#75434a}
 table{width:100%;border-collapse:collapse;background:#111d2d;border-radius:12px;overflow:hidden}th,td{text-align:right;padding:12px;border-bottom:1px solid var(--line);font-size:13px}th{color:#b5c5da;background:#18263a}td{color:#dce7f7}.table-wrap{overflow:auto}
 footer{margin-top:30px;color:var(--muted);font-size:12px}
 @media(max-width:700px){main{padding:20px 13px 45px}.stats{gap:8px}.stat{padding:12px}.stat strong{font-size:23px}.grid{grid-template-columns:1fr}.meta{gap:8px}h1{font-size:21px}.section{margin-top:22px}}
@@ -30,11 +31,14 @@ footer{margin-top:30px;color:var(--muted);font-size:12px}
 <section id="login" class="login" hidden><h2>دخول المدير</h2><p class="muted">أدخل رمز المدير للوصول إلى بيانات الأجهزة. لا تستخدم رمز جهاز Android هنا.</p><form id="loginForm"><input id="token" type="password" autocomplete="current-password" placeholder="رمز المدير MCP_ADMIN_TOKEN" required><button>دخول آمن</button></form><p id="loginError" class="muted"></p></section>
 <section id="app" hidden>
 <div class="stats"><div class="stat"><span>إجمالي البوابات</span><strong id="total">—</strong></div><div class="stat"><span>متصلة الآن</span><strong id="online">—</strong></div><div class="stat"><span>غير متصلة</span><strong id="offline">—</strong></div></div>
+<div class="section"><h2>إدارة التسجيل والأمان</h2></div>
+<div class="manage"><form id="enrollForm"><input id="newGatewayId" maxlength="64" pattern="[A-Za-z0-9._-]{1,64}" placeholder="معرّف البوابة الجديدة" required><button>تسجيل بوابة</button></form><div class="muted">يُنشأ رمز مستقل لكل هاتف. احفظ الرمز عند ظهوره؛ لن نعرضه مرة أخرى.</div></div>
+<div id="tokenPanel" class="token-panel" hidden><strong id="tokenTitle">رمز الجهاز الجديد</strong><code id="oneTimeToken"></code><button type="button" id="copyToken">نسخ الرمز</button> <button type="button" class="secondary" id="hideToken">إخفاء</button><p class="muted">أدخل هذا الرمز في إعدادات Central MCP على الهاتف مع معرّف البوابة نفسه.</p></div>
 <div class="section"><h2>الأجهزة المسجلة</h2><span id="updated" class="muted">—</span></div>
 <div id="devices" class="grid"><div class="empty">جارٍ تحميل الأجهزة...</div></div>
 <div class="section"><h2>سجل أوامر الإدارة</h2><select id="auditDevice" style="max-width:220px"><option value="">اختر بوابة</option></select></div>
 <div id="audit" class="table-wrap"><div class="empty">اختر بوابة لعرض السجل المتاح</div></div>
-</section><footer>الاتصال والأوامر تُدار عبر الخادم المركزي. هذه النسخة للقراءة والمراقبة فقط؛ لا تنفّذ مكالمات أو تغيّر إعدادات الهاتف.</footer>
+</section><footer>تتيح اللوحة مراقبة البوابات وإدارة تسجيلها وتعطيلها وتدوير رموزها. لا تنفّذ مكالمات ولا تغيّر إعدادات SIP على الهاتف.</footer>
 </main>
 <script>
 const $=id=>document.getElementById(id);let token=sessionStorage.getItem("central_admin_token")||"";let gateways=[];
@@ -42,13 +46,14 @@ const esc=value=>String(value??"—").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&
 const date=value=>value?new Date(value).toLocaleString("ar",{dateStyle:"medium",timeStyle:"short"}):"—";
 function showLogin(message=""){ $("login").hidden=false;$("app").hidden=true;$("loginError").textContent=message; }
 function showApp(){ $("login").hidden=true;$("app").hidden=false; }
-async function api(path){const r=await fetch(path,{headers:{Authorization:"Bearer "+token},cache:"no-store"});if(r.status===401)throw Error("unauthorized");if(!r.ok)throw Error("تعذر تحميل البيانات ("+r.status+")");return r.json();}
+async function api(path,options={}){const r=await fetch(path,{...options,headers:{Authorization:"Bearer "+token,...(options.headers||{})},cache:"no-store"});if(r.status===401)throw Error("unauthorized");const data=await r.json().catch(()=>({}));if(!r.ok)throw Error(data.error||"تعذر تنفيذ الطلب ("+r.status+")");return data;}
+function showToken(data,title){$("tokenTitle").textContent=title;$("oneTimeToken").textContent=data.device_token;$("tokenPanel").hidden=false;$("tokenPanel").scrollIntoView({behavior:"smooth",block:"center"});}
 function render(){const online=gateways.filter(g=>g.connected).length;$("total").textContent=gateways.length;$("online").textContent=online;$("offline").textContent=gateways.length-online;
 $("devices").innerHTML=gateways.length?gateways.map(g=>{const m=g.metadata||{};return \`<article class="device"><div class="device-head"><h3>\${esc(g.gateway_id)}</h3><span class="pill \${g.connected?"on":"off"}">\${g.connected?"متصل":"غير متصل"}</span></div><div class="meta">
 <div><small>آخر اتصال / نبضة</small><b>\${esc(date(g.last_seen))}</b></div><div><small>الشركة والطراز</small><b>\${esc([m.manufacturer,m.model].filter(Boolean).join(" ")||"غير معروف")}</b></div>
 <div><small>جاهزية SIP</small><b>\${m.sip_ready===true?"جاهز":m.sip_ready===false?"غير جاهز":"غير محدد"}</b></div><div><small>التحكم / الاستلام</small><b>\${m.takeover===true?"مفعّل":m.takeover===false?"متوقف":"غير محدد"}</b></div>
 <div><small>المكالمة الحالية</small><b>\${m.active_call===true?"يوجد اتصال":m.active_call===false?"لا يوجد":"غير محدد"}</b></div><div><small>إصدار التطبيق / أندرويد</small><b>\${esc([m.app_version,m.android_release].filter(Boolean).join(" / ")||"—")}</b></div>
-</div>\${m.sip_detail?'<p class="muted">'+esc(m.sip_detail)+'</p>':""}</article>\`;}).join(""):'<div class="empty">لا توجد بوابات مسجلة حتى الآن.</div>';
+</div>\${m.sip_detail?'<p class="muted">'+esc(m.sip_detail)+'</p>':""}<div class="actions"><button type="button" class="secondary" data-toggle="\${esc(g.gateway_id)}" data-enabled="\${g.enabled!==false}">\${g.enabled===false?"إعادة التفعيل":"إيقاف البوابة"}</button><button type="button" class="secondary" data-rotate="\${esc(g.gateway_id)}">تدوير الرمز</button></div></article>\`;}).join(""):'<div class="empty">لا توجد بوابات مسجلة حتى الآن.</div>';
 const selected=$("auditDevice").value;$("auditDevice").innerHTML='<option value="">اختر بوابة</option>'+gateways.map(g=>'<option value="'+esc(g.gateway_id)+'">'+esc(g.gateway_id)+'</option>').join("");if(selected&&gateways.some(g=>g.gateway_id===selected))$("auditDevice").value=selected;
 }
 async function load(){ $("refresh").disabled=true;try{const data=await api("/admin/gateways");gateways=data.gateways||[];render();$("updated").textContent="آخر تحديث: "+new Date().toLocaleTimeString("ar");}catch(e){if(e.message==="unauthorized"){sessionStorage.removeItem("central_admin_token");token="";showLogin("رمز المدير غير صحيح أو انتهت صلاحيته.");}else $("devices").innerHTML='<div class="error">'+esc(e.message)+'</div>';}finally{$("refresh").disabled=false;}}
@@ -56,5 +61,9 @@ async function loadAudit(){const id=$("auditDevice").value;if(!id){$("audit").in
 $("loginForm").addEventListener("submit",async e=>{e.preventDefault();token=$("token").value.trim();if(!token)return;sessionStorage.setItem("central_admin_token",token);showApp();await load();});
 $("refresh").addEventListener("click",load);$("logout").addEventListener("click",()=>{sessionStorage.removeItem("central_admin_token");token="";showLogin();});
 $("auditDevice").addEventListener("change",loadAudit);
+$("enrollForm").addEventListener("submit",async e=>{e.preventDefault();const gateway_id=$("newGatewayId").value.trim();try{const data=await api("/admin/gateways/enroll",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({gateway_id})});showToken(data,"تم تسجيل البوابة — انسخ الرمز الآن");$("newGatewayId").value="";await load();}catch(err){alert(err.message);}});
+$("devices").addEventListener("click",async e=>{const toggle=e.target.closest("[data-toggle]");const rotate=e.target.closest("[data-rotate]");try{if(toggle){const id=toggle.dataset.toggle;const enabled=toggle.dataset.enabled!=="true";if(!enabled&&!confirm("سيتم منع هذه البوابة من الاتصال بالخادم. متابعة؟"))return;await api("/admin/gateways/"+encodeURIComponent(id)+"/status",{method:"PATCH",headers:{"content-type":"application/json"},body:JSON.stringify({enabled})});await load();}else if(rotate){const id=rotate.dataset.rotate;if(!confirm("سيتم إبطال الرمز الحالي فوراً. يجب إدخال الرمز الجديد في الهاتف. متابعة؟"))return;const data=await api("/admin/gateways/"+encodeURIComponent(id)+"/rotate-token",{method:"POST"});showToken(data,"تم تدوير الرمز — أدخله في الهاتف الآن");await load();}}catch(err){alert(err.message);}});
+$("copyToken").addEventListener("click",async()=>{try{await navigator.clipboard.writeText($("oneTimeToken").textContent);$("copyToken").textContent="تم النسخ";}catch{$("copyToken").textContent="انسخ الرمز يدوياً";}});
+$("hideToken").addEventListener("click",()=>{$("oneTimeToken").textContent="";$("tokenPanel").hidden=true;});
 if(token){showApp();load();}else showLogin();setInterval(()=>{if(token&&!$("app").hidden)load();},15000);
 </script></body></html>`;
