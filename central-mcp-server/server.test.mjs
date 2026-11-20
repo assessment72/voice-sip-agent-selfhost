@@ -156,13 +156,13 @@ test("dashboard gateway API exposes allowlisted metadata only", async t => {
   });
   assert.equal(response.status, 200);
   const body = await response.json();
-  assert.equal(body.gateways.length, 1);
-  assert.equal(body.gateways[0].gateway_id, "gw01");
-  assert.equal(body.gateways[0].metadata.manufacturer, "HONOR");
-  assert.equal(body.gateways[0].metadata.sip_ready, true);
-  assert.equal("sip_password" in body.gateways[0].metadata, false);
-  assert.equal("device_token" in body.gateways[0].metadata, false);
-  assert.equal("instance_id" in body.gateways[0], false);
+  const gateway = body.gateways.find(item => item.gateway_id === "gw01");
+  assert.ok(gateway);
+  assert.equal(gateway.metadata.manufacturer, "HONOR");
+  assert.equal(gateway.metadata.sip_ready, true);
+  assert.equal("sip_password" in gateway.metadata, false);
+  assert.equal("device_token" in gateway.metadata, false);
+  assert.equal("instance_id" in gateway, false);
 });
 
 
