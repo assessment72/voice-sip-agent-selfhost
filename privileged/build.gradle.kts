@@ -1,3 +1,5 @@
+val compileSdkApi = providers.gradleProperty("android.compileSdk").orNull?.toInt() ?: 37
+
 plugins {
     alias(libs.plugins.android.library)
 }
@@ -5,7 +7,7 @@ plugins {
 android {
     namespace = "io.github.sparkcyf.voicesipagent.privileged"
     compileSdk {
-        version = release(37)
+        version = release(compileSdkApi)
     }
     defaultConfig {
         minSdk = 30
