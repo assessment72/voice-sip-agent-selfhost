@@ -46,7 +46,6 @@ data class GatewaySettings(
     val inboundTarget: String = "",
     /** Comma-separated; empty = any number may be dialed out. */
     val allowedPrefixes: String = "",
-    val callerIdMode: CallerIdMode = CallerIdMode.NORMAL,
     val busyPolicy: BusyPolicy = BusyPolicy.REJECT,
     /** Caller-facing fallback extensions in order, e.g. "2,3". */
     val fallbackExtensionsCsv: String = "2",
@@ -75,6 +74,8 @@ data class GatewaySettings(
     val ivrPitch: Float = 1.0f,
     val ivrAudioFileName: String = "",
     val ivrTtsVoice: String = "",
+    /** Default caller identity policy for outgoing SIP and cellular legs. */
+    val callerIdMode: CallerIdMode = CallerIdMode.NORMAL,
 ) {
     val sipConfigured: Boolean get() =
         serverMode || (server.isNotBlank() && username.isNotBlank() && password.isNotEmpty())
