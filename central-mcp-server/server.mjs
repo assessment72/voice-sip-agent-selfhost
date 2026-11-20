@@ -200,7 +200,7 @@ export function createCentralMcpServer(options = {}) {
         return;
       }
       if (message.type === "command_result" && typeof message.id === "string") {
-        settlePending(message.id, message.result, message.error);
+        settlePending(message.id, message.result, message.error, gatewayId);
       }
     });
     ws.on("close", () => {
