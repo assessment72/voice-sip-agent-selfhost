@@ -135,11 +135,11 @@ export class MongoGatewayStore {
           [{ $match: { operationType: "insert", "fullDocument.instance_id": instanceId } }],
           { fullDocument: "default" }
         );
-        const queued = await db.collection("commands").find({ instance_id: instanceId, status: "queued" }).toArray();
-        for (const command of queued) Promise.resolve(onCommand(command)).catch(onError);
         stream.on("change", change => {
           Promise.resolve(onCommand(change.fullDocument)).catch(onError);
         });
+        const queued = await db.collection("commands").find({ instance_id: instanceId, status: "queued" }).toArray();
+        for (const command of queued) Promise.resolve(onCommand(command)).catch(onError);
         stream.on("error", error => {
           onError(error);
           stream?.close().catch(() => {});

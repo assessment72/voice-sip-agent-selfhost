@@ -88,7 +88,7 @@ Call actions are approval-gated: MCP creates a pending request, the user approve
 
 ## Vercel deployment adapter
 
-The adapter uses MongoDB Atlas as the shared gateway registry, command queue, lease store, and audit log. Configure `MONGODB_URI` and `MONGODB_DATABASE=voice_sip_central` as encrypted Vercel environment variables. Each function instance watches its own command stream; admin requests are persisted and delivered to the instance holding the device WebSocket. Delivery uses an atomic queued-to-delivered claim to prevent duplicate sends, and queued commands are recovered after a watcher reconnect. Command results are persisted and awaited by the requesting instance. MongoDB change streams require a replica-set-capable Atlas cluster.
+The adapter uses MongoDB Atlas as the shared gateway registry, command queue, lease store, and audit log. Configure `MONGODB_URI` and `MONGODB_DATABASE=voice_sip_central` as encrypted Vercel environment variables. Each function instance watches its own command stream; admin requests are persisted and delivered to the instance holding the device WebSocket. Command results are persisted and awaited by the requesting instance. MongoDB change streams require a replica-set-capable Atlas cluster.
 
 **Deployment remains blocked until the database URI and secrets are configured in Vercel and the multi-instance WebSocket/change-stream smoke test passes.** The existing Atlas collections and indexes are provisioned in the selected production account. Do not use an Atlas connection string with embedded credentials in source control or chat.
 

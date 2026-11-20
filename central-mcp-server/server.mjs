@@ -149,7 +149,8 @@ export function createCentralMcpServer(options = {}) {
       const gatewayId = await chooseGateway();
       if (!gatewayId) throw new Error("no_eligible_gateway");
       const db = await ensureStore();
-      const leaseToken = db ? await db.acquireLease(gatewayId, instanceId, 90_000) : null;
+      const leaseOwner = randomUUID();
+      const leaseToken = db ? await db.acquireLease(gatewayId, leaseOwner, 90_000) : null;
       const entry = gateways.get(gatewayId);
       if (db && !leaseToken) throw new Error("gateway_already_reserved");
       if (!db && (!entry || entry.routingReservedUntil > Date.now())) throw new Error("gateway_already_reserved");
@@ -275,8 +276,7 @@ export function createCentralMcpServer(options = {}) {
     gateways.set(gatewayId, entry);
     const connectionToken = randomUUID();
     entry.connectionToken = connectionToken;
-    ensureStore().then(db => db?.registerGateway({ gateway_id: gatewayId, instance_id: instanceId, connection_token: connectionToken, connected_at: entry.connectedAt, last_seen: entry.lastSeen, metadata: entry.metadata })).catch(() => ws.close(1011, "persistent_storage_unavailable"));
-    ws.send(JSON.stringify({ type: "server.ready", gateway_id: gatewayId }));
+    ensureStore().then(async db => { await db?.registerGateway({ gateway_id: gatewayId, instance_id: instanceId, connection_token: connectionToken, connected_at: entry.connectedAt, last_seen: entry.lastSeen, metadata: entry.metadata }); if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: "server.ready", gateway_id: gatewayId })); }).catch(() => ws.close(1011, "persistent_storage_unavailable"));
     ws.on("message", raw => {
       if (gateways.get(gatewayId)?.ws !== ws) return;
       let message;
