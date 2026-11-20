@@ -29,6 +29,8 @@ import io.github.sparkcyf.voicesipagent.telephony.CellularEndpoint
 import io.github.sparkcyf.voicesipagent.telephony.CallSnapshot
 import io.github.sparkcyf.voicesipagent.telephony.GatewayInCallService
 import io.github.sparkcyf.voicesipagent.voice.CallEndpoint
+import io.github.sparkcyf.voicesipagent.voice.CallApproval
+import io.github.sparkcyf.voicesipagent.voice.CallActionSpec
 import io.github.sparkcyf.voicesipagent.voice.CallLeg
 import io.github.sparkcyf.voicesipagent.voice.IncomingCallHandler
 import io.github.sparkcyf.voicesipagent.voice.ApprovedCallController
@@ -145,6 +147,33 @@ class GatewayRuntime private constructor(context: Context) {
         approvals = callApprovals,
         router = ReadyEndpointRouter(),
     )
+    private val _pendingCallApprovals = MutableStateFlow<List<CallApproval>>(emptyList())
+    val pendingCallApprovals: StateFlow<List<CallApproval>> = _pendingCallApprovals
+
+    /** ADB/MCP may request an action, but only the on-device UI may approve it. */
+    fun requestCallApproval(spec: CallActionSpec): CallApproval {
+        val approval = callControl.request(spec)
+        refreshCallApprovals()
+        return approval
+    }
+
+    /** Called by the on-device approval UI after a deliberate tap. */
+    fun approveCallApproval(id: String): CallApproval? {
+        val approval = callControl.approve(id)
+        refreshCallApprovals()
+        return approval
+    }
+
+    /** Rejection is also available on-device; the MCP bridge may cancel its own request. */
+    fun rejectCallApproval(id: String): CallApproval? {
+        val approval = callControl.reject(id)
+        refreshCallApprovals()
+        return approval
+    }
+
+    fun refreshCallApprovals() {
+        _pendingCallApprovals.value = callControl.pendingApprovals()
+    }
     private var echo: EchoEndpoint? = null
     private var started = false
     private var pendingSettings: GatewaySettings? = null
