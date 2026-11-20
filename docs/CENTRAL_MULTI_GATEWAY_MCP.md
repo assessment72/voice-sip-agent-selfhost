@@ -63,3 +63,14 @@ This branch includes the Android WSS agent, MongoDB-backed gateway enrollment re
 - Rotate token: the old token becomes invalid immediately and the new random token is returned once. Update the Android app configuration before expecting reconnection.
 - Every administrative action is recorded in `audit_events`. Device tokens and token hashes are never returned by the dashboard listing or audit API.
 - Vercel rewrites include `/dashboard`, `/admin/gateways`, and nested gateway management routes. Deployment remains separate and requires explicit approval.
+
+## Arabic dashboard call controls
+
+The authenticated dashboard includes a per-gateway call panel:
+
+- Read active calls, recent call history and pending local approvals from one selected gateway.
+- Request a DIAL or HANGUP action. The request is displayed in the Android app and is not executed until locally approved.
+- After the exact approval appears in the phone's approval list and a person approves it there, the dashboard may send the one-time execution request using that approval ID.
+- The central API never creates or approves an approval on behalf of the phone. Expired, pending, mismatched and replayed approval IDs remain rejected by the Android call controller.
+- Admin endpoints: GET /admin/call-control?gateway_id=..., POST /admin/call-control/request, and POST /admin/call-control/execute. All require the admin bearer token and an online, enabled gateway.
+- Never treat the dashboard action as a substitute for local human approval. Real calls still require a separately authorized device and controlled physical validation.
