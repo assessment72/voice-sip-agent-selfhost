@@ -12,7 +12,7 @@
   to set everything up from scratch (Russian).
 - **Reference:** [app settings](docs/settings-ru.md) · [baresip client](docs/client-baresip.md) ·
   [Shizuku after a reboot](docs/shizuku-reboot.md) · [internet and security](docs/internet-security.md).
-- **For developers:** [building the APK](#building-the-apk).
+- **For developers:** [building the APK](#building-the-apk) · [caller ID privacy](docs/caller-id-privacy.md).
 
 A fairly recent old Android phone with your SIM sits at home on a charger and Wi-Fi. The incoming
 **voice calls and SMS** that arrive on its number are relayed to your phone over the internet -
