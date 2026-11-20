@@ -69,3 +69,10 @@ jobs:
       - run: npm install --ignore-scripts --no-audit --no-fund
       - run: npm run check
       - run: npm test
+
+  central-mcp-container:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build central MCP container
+        run: docker build -t voice-sip-central-mcp:test central-mcp-server
