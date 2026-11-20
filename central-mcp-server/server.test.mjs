@@ -130,6 +130,8 @@ test("Arabic dashboard is served and admin APIs require authentication", async t
   assert.equal(page.status, 200);
   assert.match(page.headers.get("content-type"), /text\/html/);
   assert.match(await page.text(), /مركز إدارة بوابات SIP/);
+  assert.match(await page.text(), /تسجيل بوابة/);
+  assert.match(await page.text(), /تدوير الرمز/);
   assert.equal((await fetch(url + "/api/admin/gateways")).status, 401);
   assert.equal((await fetch(url + "/api/admin/audit?gateway_id=gw01", {
     headers: { authorization: "Bearer admin-test-token" }
