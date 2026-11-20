@@ -419,7 +419,7 @@ private fun CentralMcpSection(rt: GatewayRuntime) {
     var gatewayId by remember { mutableStateOf(saved.gatewayId) }
     var token by remember { mutableStateOf(saved.token) }
     var message by remember { mutableStateOf("") }
-    Section(t("Управление عبر MCP المركزي", "Central MCP management"), info = "central_mcp") {
+    Section(t("Управление через центральный MCP", "Central MCP management"), info = "central_mcp") {
         Check(t("اتصال الخادم المركزي", "Central server connection"), centralStatus == "CONNECTED", centralStatus)
         Text(
             t(
