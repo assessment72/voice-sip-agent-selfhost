@@ -1,5 +1,5 @@
 import http from "node:http";
-import { timingSafeEqual, randomUUID } from "node:crypto";
+import { timingSafeEqual, randomUUID, randomBytes, createHash } from "node:crypto";
 import { MongoGatewayStore } from "./mongo-store.mjs";
 import { WebSocket, WebSocketServer } from "ws";
 import { selectGateway } from "./routing.mjs";
@@ -70,12 +70,22 @@ export function createCentralMcpServer(options = {}) {
     const token = bearer(req);
     return Boolean(adminToken && token && equalSecret(token, adminToken));
   }
-  function registeredGateway(req) {
+  async function registeredGateway(req) {
     const id = req.headers["x-gateway-id"];
     if (typeof id !== "string" || !SAFE_ID.test(id)) return null;
-    const expected = credentials[id];
     const token = bearer(req);
-    return typeof expected === "string" && token && equalSecret(token, expected) ? id : null;
+    if (!token) return null;
+    const db = await ensureStore();
+    const enrollment = db ? await db.getEnrollment(id) : null;
+    if (enrollment) {
+      if (enrollment.enabled !== true) return null;
+      if (typeof enrollment.token_hash === "string") {
+        const tokenHash = createHash("sha256").update(token).digest("hex");
+        return equalSecret(tokenHash, enrollment.token_hash) ? id : null;
+      }
+    }
+    const expected = credentials[id];
+    return typeof expected === "string" && equalSecret(token, expected) ? id : null;
   }
   function settlePending(id, result, error, sourceGatewayId = null) {
     const item = pending.get(id);
@@ -241,38 +251,91 @@ export function createCentralMcpServer(options = {}) {
       });
       return res.end(dashboardHtml);
     }
-    if (requestPath === basePath + "/admin/gateways" || requestPath === basePath + "/admin/audit") {
-      if (req.method !== "GET") return json(res, 405, { error: "method_not_allowed" });
+    const adminGatewayPrefix = basePath + "/admin/gateways";
+    if (requestPath === adminGatewayPrefix || requestPath === basePath + "/admin/audit" || requestPath.startsWith(adminGatewayPrefix + "/")) {
       if (!authorizedAdmin(req)) return json(res, 401, { error: "unauthorized" });
       let db;
       try { db = await ensureStore(); } catch { return json(res, 503, { error: "persistent_storage_unavailable" }); }
-      if (requestPath === basePath + "/admin/gateways") {
-        const rows = await listGateways();
-        const safeRows = rows.map(gateway => {
+      if (!db) return json(res, 503, { error: "persistent_storage_required" });
+      if (requestPath === adminGatewayPrefix && req.method === "GET") {
+        const [rows, enrollments] = await Promise.all([listGateways(), db.listEnrollments()]);
+        const enrollmentById = new Map(enrollments.map(item => [item.gateway_id, item]));
+        const merged = new Map(rows.map(gateway => [gateway.gateway_id, gateway]));
+        for (const id of Object.keys(credentials)) if (!merged.has(id)) merged.set(id, { gateway_id: id, connected: false, metadata: {} });
+        for (const item of enrollments) if (!merged.has(item.gateway_id)) merged.set(item.gateway_id, { gateway_id: item.gateway_id, connected: false, metadata: {} });
+        const safeRows = [...merged.values()].map(gateway => {
           const source = gateway.metadata && typeof gateway.metadata === "object" ? gateway.metadata : {};
           const metadata = {};
           for (const key of ["manufacturer", "model", "android_release", "app_version", "takeover", "sip_ready", "sip_detail", "server_mode", "active_call", "battery_level", "network_type"]) {
-            if (source[key] !== undefined && ["string", "number", "boolean"].includes(typeof source[key])) {
-              metadata[key] = typeof source[key] === "string" ? source[key].slice(0, 120) : source[key];
-            }
+            if (source[key] !== undefined && ["string", "number", "boolean"].includes(typeof source[key])) metadata[key] = typeof source[key] === "string" ? source[key].slice(0, 120) : source[key];
           }
           const fresh = Boolean(gateway.last_seen && Date.now() - new Date(gateway.last_seen).getTime() <= 60_000);
-          return { gateway_id: gateway.gateway_id, connected: Boolean(gateway.connected && fresh), connected_at: gateway.connected_at ?? null, last_seen: gateway.last_seen ?? null, metadata };
+          const enrollment = enrollmentById.get(gateway.gateway_id);
+          return {
+            gateway_id: gateway.gateway_id,
+            connected: Boolean(gateway.connected && fresh),
+            connected_at: gateway.connected_at ?? null,
+            last_seen: gateway.last_seen ?? null,
+            enabled: enrollment ? enrollment.enabled === true : true,
+            credential_source: enrollment?.credential_source ?? (credentials[gateway.gateway_id] ? "environment" : "database"),
+            token_rotated_at: enrollment?.token_rotated_at ?? null,
+            metadata
+          };
         });
         return json(res, 200, { gateways: safeRows });
       }
-      const query = new URL(req.url ?? "/", "http://localhost").searchParams;
-      const gatewayId = query.get("gateway_id") ?? "";
-      if (!SAFE_ID.test(gatewayId)) return json(res, 400, { error: "valid_gateway_id_required" });
-      const requestedLimit = Number(query.get("limit") ?? 50);
-      const limit = Number.isInteger(requestedLimit) ? Math.max(1, Math.min(100, requestedLimit)) : 50;
-      const records = db ? await db.listAudit(gatewayId, limit) : [];
-      return json(res, 200, { records: records.map(record => ({
-        event_type: String(record.event_type ?? "").slice(0, 80),
-        command_name: typeof record.command_name === "string" ? record.command_name.slice(0, 80) : null,
-        command_id: typeof record.command_id === "string" ? record.command_id.slice(0, 100) : null,
-        created_at: record.created_at ?? null
-      })) });
+      if (requestPath === basePath + "/admin/audit" && req.method === "GET") {
+        const query = new URL(req.url ?? "/", "http://localhost").searchParams;
+        const gatewayId = query.get("gateway_id") ?? "";
+        if (!SAFE_ID.test(gatewayId)) return json(res, 400, { error: "valid_gateway_id_required" });
+        const requestedLimit = Number(query.get("limit") ?? 50);
+        const limit = Number.isInteger(requestedLimit) ? Math.max(1, Math.min(100, requestedLimit)) : 50;
+        const records = await db.listAudit(gatewayId, limit);
+        return json(res, 200, { records: records.map(record => ({
+          event_type: String(record.event_type ?? "").slice(0, 80),
+          command_name: typeof record.command_name === "string" ? record.command_name.slice(0, 80) : null,
+          command_id: typeof record.command_id === "string" ? record.command_id.slice(0, 100) : null,
+          created_at: record.created_at ?? null
+        })) });
+      }
+      if (requestPath === adminGatewayPrefix + "/enroll" && req.method === "POST") {
+        let body = "";
+        req.setEncoding("utf8");
+        for await (const chunk of req) { body += chunk; if (Buffer.byteLength(body) > 4096) return json(res, 413, { error: "payload_too_large" }); }
+        let data;
+        try { data = JSON.parse(body); } catch { return json(res, 400, { error: "invalid_json" }); }
+        const gatewayId = data?.gateway_id;
+        if (typeof gatewayId !== "string" || !SAFE_ID.test(gatewayId)) return json(res, 400, { error: "valid_gateway_id_required" });
+        if (credentials[gatewayId] || await db.getEnrollment(gatewayId)) return json(res, 409, { error: "gateway_id_already_provisioned" });
+        const deviceToken = randomBytes(32).toString("base64url");
+        const tokenHash = createHash("sha256").update(deviceToken).digest("hex");
+        try { await db.createEnrollment({ gateway_id: gatewayId, token_hash: tokenHash }); }
+        catch (error) { if (error?.code === 11000) return json(res, 409, { error: "gateway_id_already_provisioned" }); throw error; }
+        return json(res, 201, { gateway_id: gatewayId, device_token: deviceToken, token_shown_once: true });
+      }
+      const actionMatch = requestPath.slice(adminGatewayPrefix.length).match(/^\/([A-Za-z0-9._-]{1,64})\/(status|rotate-token)$/);
+      if (actionMatch) {
+        const gatewayId = actionMatch[1], action = actionMatch[2];
+        const enrollment = await db.getEnrollment(gatewayId);
+        if (!enrollment && !credentials[gatewayId]) return json(res, 404, { error: "gateway_not_found" });
+        if (action === "status" && req.method === "PATCH") {
+          let body = "";
+          req.setEncoding("utf8");
+          for await (const chunk of req) { body += chunk; if (Buffer.byteLength(body) > 4096) return json(res, 413, { error: "payload_too_large" }); }
+          let data;
+          try { data = JSON.parse(body); } catch { return json(res, 400, { error: "invalid_json" }); }
+          if (typeof data?.enabled !== "boolean") return json(res, 400, { error: "enabled_boolean_required" });
+          await db.setEnrollmentEnabled(gatewayId, data.enabled);
+          return json(res, 200, { gateway_id: gatewayId, enabled: data.enabled });
+        }
+        if (action === "rotate-token" && req.method === "POST") {
+          const deviceToken = randomBytes(32).toString("base64url");
+          const tokenHash = createHash("sha256").update(deviceToken).digest("hex");
+          await db.rotateEnrollmentToken(gatewayId, tokenHash);
+          return json(res, 200, { gateway_id: gatewayId, device_token: deviceToken, token_shown_once: true, enabled: true });
+        }
+      }
+      return json(res, 405, { error: "method_not_allowed" });
     }
     if (requestPath !== `${basePath}/mcp`) return json(res, 404, { error: "not_found" });
     if (req.method !== "POST") return json(res, 405, { error: "method_not_allowed" });
@@ -299,14 +362,16 @@ export function createCentralMcpServer(options = {}) {
   });
 
   const agentServer = new WebSocketServer({ noServer: true, maxPayload: MAX_AGENT_MESSAGE, perMessageDeflate: false });
-  httpServer.on("upgrade", (req, socket, head) => {
+  httpServer.on("upgrade", async (req, socket, head) => {
     const url = new URL(req.url ?? "/", "http://localhost");
     if (url.pathname !== `${basePath}/v1/agent`) {
       socket.write("HTTP/1.1 404 Not Found\r\nConnection: close\r\n\r\n");
       socket.destroy();
       return;
     }
-    const gatewayId = registeredGateway(req);
+    let gatewayId;
+    try { gatewayId = await registeredGateway(req); }
+    catch { socket.write("HTTP/1.1 503 Service Unavailable\r\nConnection: close\r\n\r\n"); socket.destroy(); return; }
     if (!gatewayId) {
       socket.write("HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n");
       socket.destroy();
