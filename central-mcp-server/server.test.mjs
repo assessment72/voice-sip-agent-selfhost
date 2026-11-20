@@ -189,6 +189,7 @@ class MemoryEnrollmentStore {
   }
   async listEnrollments(){return [...this.enrollments.values()].map(({gateway_id,enabled,credential_source,created_at,updated_at,token_rotated_at})=>({gateway_id,enabled,credential_source,created_at,updated_at,token_rotated_at}));}
   async listGateways(){return [...this.gateways.values()];}
+  async getGateway(id){return this.gateways.get(id)||null;}
   async registerGateway(doc){this.gateways.set(doc.gateway_id,{...doc,connected:true});}
   async heartbeat(id,instance,metadata,lastSeen){const g=this.gateways.get(id);if(g){g.metadata=metadata;g.last_seen=lastSeen;}}
   async disconnectGateway(id,instance,at){const g=this.gateways.get(id);if(g){g.connected=false;g.last_seen=at;}}
@@ -238,4 +239,29 @@ test("gateway management endpoints reject unauthenticated and malformed requests
   assert.equal((await fetch(url+"/api/admin/gateways/enroll",{method:"POST",body:"{}"})).status,401);
   const invalid=await fetch(url+"/api/admin/gateways/enroll",{method:"POST",headers:{authorization:"Bearer admin-test-token","content-type":"application/json"},body:JSON.stringify({gateway_id:"bad id"})});
   assert.equal(invalid.status,400);
+});
+
+
+test("rotating a live gateway token invalidates the existing session and old credential", async t => {
+  const store=new MemoryEnrollmentStore();
+  const {url}=await start(t,{basePath:"/api",store});
+  const admin={authorization:"Bearer admin-test-token","content-type":"application/json"};
+  const created=await (await fetch(url+"/api/admin/gateways/enroll",{method:"POST",headers:admin,body:JSON.stringify({gateway_id:"gw-rotate"})})).json();
+  const ws=new WebSocket(url.replace("http://","ws://")+"/api/v1/agent",{headers:{authorization:"Bearer "+created.device_token,"x-gateway-id":"gw-rotate"}});
+  await once(ws,"open");
+  const rotatedResponse=await fetch(url+"/api/admin/gateways/gw-rotate/rotate-token",{method:"POST",headers:admin});
+  assert.equal(rotatedResponse.status,200);
+  const rotated=await rotatedResponse.json();
+  const listed=await (await fetch(url+"/api/admin/gateways",{headers:{authorization:"Bearer admin-test-token"}})).json();
+  assert.equal(listed.gateways.find(g=>g.gateway_id==="gw-rotate").connected,false);
+  const closed=once(ws,"close");
+  ws.send(JSON.stringify({type:"heartbeat",metadata:{sip_ready:true}}));
+  await closed;
+  const oldSocket=new WebSocket(url.replace("http://","ws://")+"/api/v1/agent",{headers:{authorization:"Bearer "+created.device_token,"x-gateway-id":"gw-rotate"}});
+  oldSocket.on("error",()=>{});
+  const oldRejected=await once(oldSocket,"unexpected-response");
+  assert.equal(oldRejected[1].statusCode,401);
+  const newSocket=new WebSocket(url.replace("http://","ws://")+"/api/v1/agent",{headers:{authorization:"Bearer "+rotated.device_token,"x-gateway-id":"gw-rotate"}});
+  await once(newSocket,"open");
+  newSocket.close();
 });
