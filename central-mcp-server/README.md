@@ -86,25 +86,23 @@ The foreground gateway service keeps the WSS agent alive even when call takeover
 Call actions are approval-gated: MCP creates a pending request, the user approves it in the phone UI, then the MCP client may execute the exact one-time approval. No action is executed merely because a command arrived.
 
 
-## Vercel deployment adapter
+## Vercel deployment
 
-The adapter uses MongoDB Atlas as the shared gateway registry, command queue, lease store, and audit log. Configure `MONGODB_URI` and `MONGODB_DATABASE=voice_sip_central` as encrypted Vercel environment variables. Each function instance watches its own command stream; admin requests are persisted and delivered to the instance holding the device WebSocket. Command results are persisted and awaited by the requesting instance. MongoDB change streams require a replica-set-capable Atlas cluster.
+The Vercel project is named `voice-sip-central-mcp`, with root directory `central-mcp-server`, Node.js runtime, Fluid Compute, region `sfo1`, and a 300-second function duration. The project is intentionally not connected to GitHub and has no deployment yet.
 
-**Deployment remains blocked until the database URI and secrets are configured in Vercel and the multi-instance WebSocket/change-stream smoke test passes.** The existing Atlas collections and indexes are provisioned in the selected production account. Do not use an Atlas connection string with embedded credentials in source control or chat.
-
-## Vercel deployment adapter
-
-This directory includes a Vercel Functions adapter. Set the Vercel project Root Directory to `central-mcp-server` and use Node.js 22. The adapter preserves the Android app's existing endpoint paths through rewrites:
+The adapter preserves the Android app's endpoint paths through rewrites:
 
 - `POST /mcp`
 - `GET /healthz`
 - `wss://HOST/v1/agent`
 
-The catch-all Node.js function has a 300-second maximum duration. Vercel WebSocket connections are pinned to the function instance that accepted them and close when that invocation reaches its maximum duration; the Android agent already reconnects with exponential backoff and sends a heartbeat every 20 seconds.
+MongoDB Atlas is the shared gateway registry, command queue, lease store, and audit log. Each Vercel function instance watches its own MongoDB change stream. Admin requests are persisted and delivered to the function instance holding the target device WebSocket; delivery uses an atomic queued-to-delivered claim and recovers queued commands after a watcher reconnect. Command results are persisted and awaited by the requesting function. The Atlas cluster is replica-set based and supports change streams.
 
-**Important multi-device limitation:** this server currently stores live gateway sockets, pending commands, and routing reservations in process memory. Vercel does not guarantee that separate phone connections and admin requests will reach the same function instance. The health endpoint reports `state_backend: "mongodb_atlas"` and `multi_instance_safe: true` only when Atlas is reachable and the shared command watcher is configured. WebSocket lifetime is still bounded by the Vercel function duration, so Android reconnection remains required.
+The Vercel project has sensitive/encrypted environment variables configured for `MONGODB_URI`, `MONGODB_DATABASE`, `MCP_ADMIN_TOKEN`, `GATEWAY_CREDENTIALS_JSON`, and `GATEWAY_ROUTING_POLICY_JSON`. The Atlas database user is scoped to `readWrite` on `voice_sip_central` only. Device credentials are currently an empty object; add a unique ID/token pair for each phone before enrollment.
 
-No Vercel project is created or deployed by this change. Configure `MCP_ADMIN_TOKEN`, `GATEWAY_CREDENTIALS_JSON`, and optional `GATEWAY_ROUTING_POLICY_JSON` as encrypted Vercel environment variables; never commit their values.
+**Not yet production-validated:** the project is not linked to the GitHub branch, no deployment has been made, and cross-instance WebSocket/change-stream delivery has not been smoke-tested. Vercel WebSocket connections are pinned to one function instance and close when the function reaches its maximum duration; Android reconnect/backoff and state resynchronization remain required. The health endpoint reports `multi_instance_safe: true` only when Atlas is reachable, but this is not a substitute for the multi-instance smoke test.
+
+Never put database credentials or device tokens in Git, an APK, or chat. Keep all secrets in Vercel's sensitive environment-variable store. Do not widen Atlas network access without reviewing the impact on other databases in the same cluster.
 
 ## Container deployment (not performed by this PR)
 
@@ -120,4 +118,4 @@ docker run -d --name voice-sip-central-mcp --restart unless-stopped \
 
 Configure the reverse proxy to forward HTTPS `/mcp` to the HTTP listener and upgrade WSS `/v1/agent` to the same listener. Preserve the `Authorization` and `X-Gateway-Id` headers and enable WebSocket upgrades. Expose only the TLS proxy publicly; the container listener is bound to localhost on the host in the example.
 
-The service uses an in-memory live gateway registry. After a server restart, Android agents reconnect automatically. Keep the `.env` file private and restrict access to it. Rotate credentials by changing the device token in the server secret and then updating that gateway's app configuration; a future phase will add a managed enrollment/rotation API.
+When `MONGODB_URI` is configured, the service persists gateway state, commands, leases and audit events in MongoDB Atlas; otherwise local development uses an in-memory registry. After a server restart, Android agents reconnect automatically. Keep the `.env` file private and restrict access to it. Rotate credentials by changing the device token in the server secret and then updating that gateway's app configuration; a managed enrollment/rotation API remains future work.
