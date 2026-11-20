@@ -14,9 +14,11 @@ The gateway reads the first non-empty field in this order:
 3. `P-Called-Party-ID`
 4. Request-URI
 
-The first present field is authoritative. If it is malformed, the INVITE is rejected; the gateway
-does not fall through to a lower-priority field. This prevents a malformed high-priority target
-from being silently replaced by a different destination.
+A fixed gateway AoR user (for example `gateway`, or the configured SIP account username) is
+treated as routing metadata and skipped in `To` / Request-URI so the next destination-bearing field
+can be considered. Otherwise, the first present field is authoritative: if it is malformed, the
+INVITE is rejected and the gateway does not fall through to a lower-priority field. This prevents
+a malformed high-priority target from being silently replaced by a different destination.
 
 Accepted user value:
 
