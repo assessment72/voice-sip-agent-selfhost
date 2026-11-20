@@ -54,6 +54,8 @@ data class SipConfig(
     /** Server mode: realm advertised in the auth challenge. */
     val registrarRealm: String = "voice-sip-agent",
     val callerIdMode: CallerIdMode = CallerIdMode.NORMAL,
+    /** Provider-authorized E.164 caller ID; used only for outbound external-PBX calls. */
+    val sipCallerId: String = "",
 )
 
 /** Minimal logging hook so the stack stays free of platform dependencies. */
