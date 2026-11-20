@@ -12,6 +12,18 @@
     {
       "source": "/v1/agent",
       "destination": "/api/v1/agent"
+    },
+    {
+      "source": "/dashboard",
+      "destination": "/api/dashboard"
+    },
+    {
+      "source": "/admin/gateways",
+      "destination": "/api/admin/gateways"
+    },
+    {
+      "source": "/admin/audit",
+      "destination": "/api/admin/audit"
     }
   ],
   "functions": {
