@@ -111,8 +111,10 @@ class ApprovedCallController(
     private val registryLegs = LinkedHashMap<String, CallLeg>()
 
     @Synchronized
-    fun trackIncoming(leg: CallLeg): ManagedCall {
+    fun trackObserved(leg: CallLeg): ManagedCall {
         registryLegs[leg.id] = leg
         return registry.track(leg)
     }
+
+    fun trackIncoming(leg: CallLeg): ManagedCall = trackObserved(leg)
 }
