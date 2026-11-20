@@ -71,3 +71,19 @@ Provision the exact ID/token pair in `GATEWAY_CREDENTIALS_JSON` on the server be
 The foreground gateway service keeps the WSS agent alive even when call takeover is off, as long as central MCP is configured. The agent sends operational heartbeat metadata only and does not send SIP passwords, SIM PINs, call audio, transcripts, or caller numbers.
 
 Call actions are approval-gated: MCP creates a pending request, the user approves it in the phone UI, then the MCP client may execute the exact one-time approval. No action is executed merely because a command arrived.
+
+## Container deployment (not performed by this PR)
+
+Build and run on a server with a reverse proxy that terminates TLS:
+
+```sh
+cp .env.example .env
+# Replace every placeholder with independently generated random secrets.
+docker build -t voice-sip-central-mcp:dev .
+docker run -d --name voice-sip-central-mcp --restart unless-stopped \
+  --env-file .env -p 127.0.0.1:8788:8788 voice-sip-central-mcp:dev
+```
+
+Configure the reverse proxy to forward HTTPS `/mcp` to the HTTP listener and upgrade WSS `/v1/agent` to the same listener. Preserve the `Authorization` and `X-Gateway-Id` headers and enable WebSocket upgrades. Expose only the TLS proxy publicly; the container listener is bound to localhost on the host in the example.
+
+The service uses an in-memory live gateway registry. After a server restart, Android agents reconnect automatically. Keep the `.env` file private and restrict access to it. Rotate credentials by changing the device token in the server secret and then updating that gateway's app configuration; a future phase will add a managed enrollment/rotation API.
