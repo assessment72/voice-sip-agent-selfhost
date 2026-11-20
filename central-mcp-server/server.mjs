@@ -306,7 +306,7 @@ export function createCentralMcpServer(options = {}) {
 }
 
 // Vercel Node.js Server entrypoint. The server instance is exported for the platform runtime.
-const vercelServer = createCentralMcpServer({ requirePersistentStore: true });
+const vercelServer = createCentralMcpServer({ basePath: "/api", requirePersistentStore: true });
 export default vercelServer.httpServer;
 
 if (process.argv[1] && new URL(import.meta.url).pathname === process.argv[1]) {
