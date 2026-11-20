@@ -71,6 +71,11 @@ TOOLS = [
         "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False},
     },
     {
+        "name": "sip_pending_call_approvals",
+        "description": "List pending call-action approvals awaiting an explicit user decision.",
+        "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False},
+    },
+    {
         "name": "sip_request_call_action",
         "description": (
             "Create a pending approval for one exact call action. This does NOT execute the call. "
@@ -144,6 +149,8 @@ def invoke_tool(name: str, args: dict[str, Any]) -> dict[str, Any]:
         return broadcast("call-status")
     if name == "sip_list_calls":
         return broadcast("call-list")
+    if name == "sip_pending_call_approvals":
+        return broadcast("call-pending")
     if name == "sip_request_call_action":
         extras = {
             "action": args.get("action"),
