@@ -3,10 +3,12 @@ plugins {
     alias(libs.plugins.kotlin.compose)
 }
 
+val compileSdkApi = providers.gradleProperty("android.compileSdk").orNull?.toInt() ?: 37
+
 android {
     namespace = "io.github.sparkcyf.voicesipagent.app"
     compileSdk {
-        version = release(37)
+        version = release(compileSdkApi)
     }
 
     defaultConfig {

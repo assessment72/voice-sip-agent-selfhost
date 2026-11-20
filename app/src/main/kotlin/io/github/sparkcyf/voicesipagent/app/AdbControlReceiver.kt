@@ -3,16 +3,18 @@ package io.github.sparkcyf.voicesipagent.app
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import org.json.JSONArray
+import org.json.JSONObject
+import io.github.sparkcyf.voicesipagent.voice.ApprovalState
+import io.github.sparkcyf.voicesipagent.voice.CallAction
+import io.github.sparkcyf.voicesipagent.voice.CallActionSpec
+import io.github.sparkcyf.voicesipagent.voice.CallApproval
+import io.github.sparkcyf.voicesipagent.voice.CallAuditEntry
+import io.github.sparkcyf.voicesipagent.voice.ManagedCall
 
 /**
- * adb-only control (protected by the DUMP permission). Examples:
- *   adb shell am broadcast -n io.github.sparkcyf.voicesipagent/io.github.sparkcyf.voicesipagent.app.AdbControlReceiver --es op status
- *   ... --es op provision --es server pbx.example.org --ei port 5060 --es user gateway --es password '***' [--es target gateway]
- *   ... --es op setup | sip-restart | loopback --ez on true | takeover --ez on false
- *   ... --es op earpiece-mute --ez on false
- *   ... --es op sip-stack --es stack pjsua2|builtin
- *   ... --es op provision --es server sip.example.org --ei port 5061 --es transport tls --es domain sip.example.org [--es srtp optional]
- *   ... --es op sip-debug --ez on true      (pjsip info-level logs; off by default)
+ * adb-only control (protected by the DUMP permission). Call-control replies use ordered-broadcast
+ * result data so an authorized local ADB client can bridge them to an MCP stdio process.
  */
 class AdbControlReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
@@ -50,7 +52,90 @@ class AdbControlReceiver : BroadcastReceiver() {
                     ),
                 )
             }
+            "call-list", "call-pending", "call-request", "call-reject",
+            "call-execute", "call-audit", "call-status" -> {
+                val response = runCatching { handleCallControl(rt, intent, op) }
+                    .getOrElse { JSONObject().put("ok", false).put("error", it.message ?: "invalid request") }
+                setResultCode(-1)
+                setResultData(response.toString())
+            }
             else -> AppLog.w("adb control: unknown op '$op'")
         }
     }
+
+    private fun handleCallControl(
+        runtime: GatewayRuntime,
+        intent: Intent,
+        op: String?,
+    ): JSONObject = when (op) {
+        "call-list" -> JSONObject()
+            .put("ok", true)
+            .put("active", JSONArray(runtime.callControl.activeCalls().map(::callJson)))
+            .put("history", JSONArray(runtime.callControl.callHistory().map(::callJson)))
+        "call-pending" -> JSONObject().put("ok", true)
+            .put("approvals", JSONArray(runtime.pendingCallApprovals.value.map(::approvalJson)))
+        "call-request" -> {
+            val action = CallAction.valueOf(intent.getStringExtra("action")
+                ?.uppercase() ?: error("action is required"))
+            val digit = intent.getStringExtra("digit")?.singleOrNull()
+            val spec = CallActionSpec(
+                action = action,
+                callId = intent.getStringExtra("call_id"),
+                target = intent.getStringExtra("target"),
+                route = intent.getStringExtra("route") ?: "auto",
+                dtmf = digit,
+            )
+            JSONObject().put("ok", true).put("approval", approvalJson(runtime.requestCallApproval(spec)))
+        }
+        "call-reject" -> {
+            val id = intent.getStringExtra("approval_id") ?: error("approval_id is required")
+            val approval = runtime.rejectCallApproval(id) ?: error("approval not found")
+            JSONObject().put("ok", approval.state == ApprovalState.REJECTED)
+                .put("approval", approvalJson(approval))
+        }
+        "call-execute" -> {
+            val id = intent.getStringExtra("approval_id") ?: error("approval_id is required")
+            val result = runtime.callControl.execute(id)
+            JSONObject().put("ok", result.executed)
+                .put("detail", result.detail)
+                .put("call", result.call?.let(::callJson) ?: JSONObject.NULL)
+        }
+        "call-audit" -> {
+            val limit = intent.getIntExtra("limit", 100).coerceIn(1, 500)
+            JSONObject().put("ok", true)
+                .put("entries", JSONArray(runtime.callControl.approvals.auditLog(limit).map(::auditJson)))
+        }
+        "call-status" -> JSONObject().put("ok", true).put("status", runtime.statusReport())
+        else -> JSONObject().put("ok", false).put("error", "unsupported call-control operation")
+    }
+
+    private fun callJson(call: ManagedCall) = JSONObject()
+        .put("id", call.id)
+        .put("kind", call.kind)
+        .put("direction", call.direction.name)
+        .put("remote_number", call.remoteNumber ?: JSONObject.NULL)
+        .put("display_name", call.displayName ?: JSONObject.NULL)
+        .put("target", call.target ?: JSONObject.NULL)
+        .put("state", call.state.name)
+        .put("end_cause", call.endCause?.name ?: JSONObject.NULL)
+        .put("observed_at", call.observedAt.toString())
+
+    private fun approvalJson(approval: CallApproval) = JSONObject()
+        .put("id", approval.id)
+        .put("action", approval.spec.action.name)
+        .put("call_id", approval.spec.callId ?: JSONObject.NULL)
+        .put("target", approval.spec.target ?: JSONObject.NULL)
+        .put("route", approval.spec.route)
+        .put("digit", approval.spec.dtmf?.toString() ?: JSONObject.NULL)
+        .put("state", approval.state.name)
+        .put("created_at", approval.createdAt.toString())
+        .put("expires_at", approval.expiresAt.toString())
+        .put("decided_at", approval.decidedAt?.toString() ?: JSONObject.NULL)
+
+    private fun auditJson(entry: CallAuditEntry) = JSONObject()
+        .put("approval_id", entry.approvalId)
+        .put("action", entry.action.name)
+        .put("outcome", entry.outcome.name)
+        .put("timestamp", entry.timestamp.toString())
+        .put("detail", entry.detail)
 }

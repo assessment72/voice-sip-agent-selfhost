@@ -151,6 +151,7 @@ private fun Screen(rt: GatewayRuntime, modifier: Modifier, requestDialer: () -> 
             Text(h.calls.summary)
             Text(h.session ?: t("Нет активной сессии", "No active session"))
         }
+        CallApprovalsSection(rt)
         SettingsSection(rt)
         Section(t("Журнал", "Log")) {
             Text(log.takeLast(60).reversed().joinToString("\n"), fontFamily = FontFamily.Monospace,
@@ -401,6 +402,53 @@ private fun Section(title: String, info: String? = null, content: @Composable ()
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             LabelWithInfo(title, info, style = MaterialTheme.typography.titleMedium)
             content()
+        }
+    }
+}
+
+@Composable
+private fun CallApprovalsSection(rt: GatewayRuntime) {
+    val approvals by rt.pendingCallApprovals.collectAsState()
+    if (approvals.isEmpty()) return
+    Section(t("Подтверждение управления вызовами", "Call-control approvals"), info = "mcp_approval") {
+        Text(
+            t(
+                "Запросы поступили через MCP. Действие не выполнится, пока вы не подтвердите его здесь, на телефоне.",
+                "These requests came from MCP. Nothing will execute until you approve it here on the phone.",
+            ),
+            style = MaterialTheme.typography.bodySmall,
+        )
+        approvals.forEach { approval ->
+            val spec = approval.spec
+            val action = when (spec.action.name) {
+                "DIAL" -> t("Исходящий вызов", "Outbound call")
+                "ANSWER" -> t("Ответить на вызов", "Answer call")
+                "REJECT" -> t("Отклонить вызов", "Reject call")
+                "HANGUP" -> t("Завершить вызов", "Hang up call")
+                "DTMF" -> t("Отправить DTMF", "Send DTMF")
+                else -> spec.action.name
+            }
+            val target = when (spec.action.name) {
+                "DIAL" -> "${t("Номер", "Number")}: ${spec.target}"
+                "DTMF" -> "${t("Вызов", "Call")}: ${spec.callId} · ${t("Цифра", "Digit")}: ${spec.dtmf}"
+                else -> "${t("ID вызова", "Call ID")}: ${spec.callId}"
+            }
+            Card(Modifier.fillMaxWidth()) {
+                Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Text(action, style = MaterialTheme.typography.titleSmall)
+                    Text(target)
+                    if (spec.action.name == "DIAL") Text("${t("Маршрут", "Route")}: ${spec.route}")
+                    Text("${t("Срок подтверждения", "Approval expires")}: ${approval.expiresAt}", style = MaterialTheme.typography.bodySmall)
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Button(onClick = { rt.approveCallApproval(approval.id) }) {
+                            Text(t("Подтвердить", "Approve"))
+                        }
+                        OutlinedButton(onClick = { rt.rejectCallApproval(approval.id) }) {
+                            Text(t("Отклонить запрос", "Reject request"))
+                        }
+                    }
+                }
+            }
         }
     }
 }
