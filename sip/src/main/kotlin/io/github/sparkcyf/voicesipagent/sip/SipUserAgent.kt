@@ -353,11 +353,19 @@ class SipUserAgent(
         val handler = incomingHandler
         // X-VSA-Dial: the number to dial when the PBX keeps the Request-URI user as our own AoR
         // (needed behind registrar-based proxies such as Flexisip).
-        val encodedTarget = req.headers["X-VSA-Dial"]?.trim()?.takeIf { it.isNotEmpty() }
-            ?: SipUri.parse(req.uri)?.user ?: req.to?.sipUri?.user
+        // A proxy may route the INVITE to the registered gateway user in the
+        // Request-URI while preserving the originally dialled user in To.
+        // Prefer the explicit header, then the called identity, then the
+        // routed Request-URI so the destination is not lost behind a proxy.
+        val encodedCandidates = listOfNotNull(
+            req.headers["X-VSA-Dial"]?.trim()?.takeIf { it.isNotEmpty() },
+            req.to?.sipUri?.user,
+            SipUri.parse(req.uri)?.user,
+        )
+        val encodedTarget = encodedCandidates.firstOrNull { YemenNumber.normalize(it) != null }
         val target = YemenNumber.normalize(encodedTarget)
         if (target == null) {
-            log.warn("rejecting INVITE with invalid Yemen target: ${redactNumber(encodedTarget)}")
+            log.warn("rejecting INVITE with invalid Yemen target: ${encodedCandidates.joinToString(",") { redactNumber(it) }}")
             tx.respond(buildResponse(req, 484, toTag = newTag()))
             return
         }
