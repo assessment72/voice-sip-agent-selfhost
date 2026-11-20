@@ -120,7 +120,7 @@ class GatewayRuntime private constructor(context: Context) {
         logger = { AppLog.i(it) },
     )
     /** Built-in SIP user agent. */
-    private var sip: CallEndpoint? = null
+    @Volatile private var sip: CallEndpoint? = null
     private var bridge: CallBridge? = null
 
     // Approval-gated call control is exposed to the local MCP adapter; it never owns RTP/audio.
