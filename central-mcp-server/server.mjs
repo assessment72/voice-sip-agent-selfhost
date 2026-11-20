@@ -263,9 +263,8 @@ export function createCentralMcpServer(options = {}) {
       if (!authorizedAdmin(req)) return json(res, 401, { error: "unauthorized" });
       let db;
       try { db = await ensureStore(); } catch { return json(res, 503, { error: "persistent_storage_unavailable" }); }
-      if (!db) return json(res, 503, { error: "persistent_storage_required" });
       if (requestPath === adminGatewayPrefix && req.method === "GET") {
-        const [rows, enrollments] = await Promise.all([listGateways(), db.listEnrollments()]);
+        const [rows, enrollments] = await Promise.all([listGateways(), db ? db.listEnrollments() : []]);
         const enrollmentById = new Map(enrollments.map(item => [item.gateway_id, item]));
         const merged = new Map(rows.map(gateway => [gateway.gateway_id, gateway]));
         for (const id of Object.keys(credentials)) if (!merged.has(id)) merged.set(id, { gateway_id: id, connected: false, metadata: {} });
@@ -297,7 +296,7 @@ export function createCentralMcpServer(options = {}) {
         if (!SAFE_ID.test(gatewayId)) return json(res, 400, { error: "valid_gateway_id_required" });
         const requestedLimit = Number(query.get("limit") ?? 50);
         const limit = Number.isInteger(requestedLimit) ? Math.max(1, Math.min(100, requestedLimit)) : 50;
-        const records = await db.listAudit(gatewayId, limit);
+        const records = db ? await db.listAudit(gatewayId, limit) : [];
         return json(res, 200, { records: records.map(record => ({
           event_type: String(record.event_type ?? "").slice(0, 80),
           command_name: typeof record.command_name === "string" ? record.command_name.slice(0, 80) : null,
@@ -306,6 +305,7 @@ export function createCentralMcpServer(options = {}) {
         })) });
       }
       if (requestPath === adminGatewayPrefix + "/enroll" && req.method === "POST") {
+        if (!db) return json(res, 503, { error: "persistent_storage_required" });
         let body = "";
         req.setEncoding("utf8");
         for await (const chunk of req) { body += chunk; if (Buffer.byteLength(body) > 4096) return json(res, 413, { error: "payload_too_large" }); }
@@ -322,6 +322,7 @@ export function createCentralMcpServer(options = {}) {
       }
       const actionMatch = requestPath.slice(adminGatewayPrefix.length).match(/^\/([A-Za-z0-9._-]{1,64})\/(status|rotate-token)$/);
       if (actionMatch) {
+        if (!db) return json(res, 503, { error: "persistent_storage_required" });
         const gatewayId = actionMatch[1], action = actionMatch[2];
         const enrollment = await db.getEnrollment(gatewayId);
         if (!enrollment && !credentials[gatewayId]) return json(res, 404, { error: "gateway_not_found" });
