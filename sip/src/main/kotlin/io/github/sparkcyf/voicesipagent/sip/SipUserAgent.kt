@@ -8,6 +8,7 @@ import io.github.sparkcyf.voicesipagent.voice.HangupCause
 import io.github.sparkcyf.voicesipagent.voice.IncomingCallHandler
 import io.github.sparkcyf.voicesipagent.voice.LegDirection
 import io.github.sparkcyf.voicesipagent.voice.Party
+import io.github.sparkcyf.voicesipagent.voice.CallerIdMode
 import io.github.sparkcyf.voicesipagent.voice.redactNumber
 import java.net.DatagramSocket
 import java.net.InetAddress
@@ -369,11 +370,21 @@ class SipUserAgent(
             tx.respond(buildResponse(req, 484, toTag = newTag()))
             return
         }
+        val requestedCallerId = req.headers["X-VSA-Caller-ID-Mode"]?.trim()?.lowercase()
+        val perCallMode = requestedCallerId?.let { value ->
+            CallerIdMode.entries.firstOrNull { it.id == value }
+        }
+        if (requestedCallerId != null && perCallMode == null) {
+            tx.respond(buildResponse(req, 400, toTag = newTag()))
+            log.warn("rejecting INVITE with unsupported X-VSA-Caller-ID-Mode")
+            return
+        }
         val pai = req.headers["P-Asserted-Identity"]?.let(NameAddr::parse)
         val fromAddr = req.from!!
         val caller = Party(
             number = pai?.sipUri?.user ?: fromAddr.sipUri?.user,
             displayName = pai?.displayName ?: fromAddr.displayName,
+            callerIdMode = perCallMode,
         )
         val call = SipCall(this, LegDirection.INBOUND, caller, target, req.callId!!, newTag())
         log.info("incoming INVITE to ${redactNumber(target)} from ${redactNumber(caller.number)}")
