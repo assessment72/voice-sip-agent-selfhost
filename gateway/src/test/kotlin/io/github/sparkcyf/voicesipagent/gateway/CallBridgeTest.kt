@@ -112,6 +112,17 @@ class CallBridgeTest {
     }
 
     @Test
+    fun normalizedYemeniE164TargetIsPassedToCellularEndpoint() {
+        val inbound = sip.incoming("302", target = "+967777405578")
+        settle()
+        assertEquals("+967777405578", cell.dialed.single().target)
+        val outbound = cell.dialed.single()
+        outbound.remoteAnswered()
+        settle()
+        assertEquals(LegState.CONNECTED, inbound.state)
+    }
+
+    @Test
     fun cellularBusyMapsToSip() {
         cell.onDial = { it.remoteEnded(HangupCause.BUSY) }
         val a = sip.incoming("302", target = "13800005678")
