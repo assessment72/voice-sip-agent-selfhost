@@ -612,6 +612,7 @@ class GatewayRuntime private constructor(context: Context) {
                     registrarLeaseSec = s.registrarLeaseSec,
                     registrarPassword = s.registrarPassword,
                     callerIdMode = s.callerIdMode,
+                    sipCallerId = s.sipCallerId,
                     // CallBridge owns the per-employee timer (5–120 s); the SIP leg must not
                     // pre-empt it with the UA's shorter generic unanswered-call timeout.
                     ringTimeoutMs = 120_000,
