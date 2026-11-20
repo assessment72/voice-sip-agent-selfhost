@@ -1,5 +1,7 @@
 package io.github.sparkcyf.voicesipagent.voice
 
+import java.util.LinkedHashMap
+
 data class CallCommandResult(
     val executed: Boolean,
     val detail: String,
@@ -48,7 +50,7 @@ class ApprovedCallController(
             return CallCommandResult(false, "explicit approval is required")
         }
         val spec = approval.spec
-        val leg = spec.callId?.let { registry.get(it)?.let { _ -> findLeg(it) } }
+        val leg = spec.callId?.let(::findLeg)
 
         // Preflight before consuming the one-time approval.
         val endpoint = if (spec.action == CallAction.DIAL) {
@@ -76,6 +78,7 @@ class ApprovedCallController(
             when (spec.action) {
                 CallAction.DIAL -> {
                     val created = endpoint!!.dial(spec.target!!, caller)
+                    registryLegs[created.id] = created
                     val snapshot = registry.track(created)
                     CallCommandResult(true, "dial request submitted", snapshot)
                 }
