@@ -41,6 +41,7 @@ test("MCP initialize and tools/list expose central multi-gateway tools", async t
   const listing = await (await mcp(url, "tools/list")).json();
   const names = listing.result.tools.map(tool => tool.name);
   assert.ok(names.includes("gateways_list"));
+  assert.ok(names.includes("gateway_calls_list"));
   assert.ok(names.includes("gateway_request_call_action"));
   assert.ok(names.includes("gateway_execute_approved_action"));
 });
