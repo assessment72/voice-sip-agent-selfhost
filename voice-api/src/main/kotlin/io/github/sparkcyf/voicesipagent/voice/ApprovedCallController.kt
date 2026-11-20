@@ -80,6 +80,7 @@ class ApprovedCallController(
                     val created = endpoint!!.dial(spec.target!!, caller)
                     registryLegs[created.id] = created
                     val snapshot = registry.track(created)
+                    pruneMissingLegs()
                     CallCommandResult(true, "dial request submitted", snapshot)
                 }
                 CallAction.ANSWER -> {
@@ -105,7 +106,12 @@ class ApprovedCallController(
     }
 
     /** Resolve the live object only from the controller's private registry. */
-    private fun findLeg(callId: String): CallLeg? = registryLegs[callId]
+    private fun findLeg(callId: String): CallLeg? =
+        if (registry.get(callId) == null) null else registryLegs[callId]
+
+    private fun pruneMissingLegs() {
+        registryLegs.keys.removeAll { registry.get(it) == null }
+    }
 
     // Kept separate from public snapshots: remote clients never receive CallLeg references.
     private val registryLegs = LinkedHashMap<String, CallLeg>()
@@ -113,7 +119,9 @@ class ApprovedCallController(
     @Synchronized
     fun trackObserved(leg: CallLeg): ManagedCall {
         registryLegs[leg.id] = leg
-        return registry.track(leg)
+        val snapshot = registry.track(leg)
+        pruneMissingLegs()
+        return snapshot
     }
 
     fun trackIncoming(leg: CallLeg): ManagedCall = trackObserved(leg)
