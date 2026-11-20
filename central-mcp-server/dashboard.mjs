@@ -1,4 +1,4 @@
-export const dashboardHtml = String.raw\`<!doctype html>
+export const dashboardHtml = String.raw`<!doctype html>
 <html lang="ar" dir="rtl">
 <head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
@@ -44,11 +44,11 @@ function showLogin(message=""){ $("login").hidden=false;$("app").hidden=true;$("
 function showApp(){ $("login").hidden=true;$("app").hidden=false; }
 async function api(path){const r=await fetch(path,{headers:{Authorization:"Bearer "+token},cache:"no-store"});if(r.status===401)throw Error("unauthorized");if(!r.ok)throw Error("تعذر تحميل البيانات ("+r.status+")");return r.json();}
 function render(){const online=gateways.filter(g=>g.connected).length;$("total").textContent=gateways.length;$("online").textContent=online;$("offline").textContent=gateways.length-online;
-$("devices").innerHTML=gateways.length?gateways.map(g=>{const m=g.metadata||{};return \`<article class="device"><div class="device-head"><h3>\${esc(g.gateway_id)}</h3><span class="pill \${g.connected?"on":"off"}">\${g.connected?"متصل":"غير متصل"}</span></div><div class="meta">
+$("devices").innerHTML=gateways.length?gateways.map(g=>{const m=g.metadata||{};return `<article class="device"><div class="device-head"><h3>\${esc(g.gateway_id)}</h3><span class="pill \${g.connected?"on":"off"}">\${g.connected?"متصل":"غير متصل"}</span></div><div class="meta">
 <div><small>آخر اتصال / نبضة</small><b>\${esc(date(g.last_seen))}</b></div><div><small>الشركة والطراز</small><b>\${esc([m.manufacturer,m.model].filter(Boolean).join(" ")||"غير معروف")}</b></div>
 <div><small>جاهزية SIP</small><b>\${m.sip_ready===true?"جاهز":m.sip_ready===false?"غير جاهز":"غير محدد"}</b></div><div><small>التحكم / الاستلام</small><b>\${m.takeover===true?"مفعّل":m.takeover===false?"متوقف":"غير محدد"}</b></div>
 <div><small>المكالمة الحالية</small><b>\${m.active_call===true?"يوجد اتصال":m.active_call===false?"لا يوجد":"غير محدد"}</b></div><div><small>إصدار التطبيق / أندرويد</small><b>\${esc([m.app_version,m.android_release].filter(Boolean).join(" / ")||"—")}</b></div>
-</div>\${m.sip_detail?'<p class="muted">'+esc(m.sip_detail)+'</p>':""}</article>\`;}).join(""):'<div class="empty">لا توجد بوابات مسجلة حتى الآن.</div>';
+</div>\${m.sip_detail?'<p class="muted">'+esc(m.sip_detail)+'</p>':""}</article>`;}).join(""):'<div class="empty">لا توجد بوابات مسجلة حتى الآن.</div>';
 const selected=$("auditDevice").value;$("auditDevice").innerHTML='<option value="">اختر بوابة</option>'+gateways.map(g=>'<option value="'+esc(g.gateway_id)+'">'+esc(g.gateway_id)+'</option>').join("");if(selected&&gateways.some(g=>g.gateway_id===selected))$("auditDevice").value=selected;
 }
 async function load(){ $("refresh").disabled=true;try{const data=await api("/admin/gateways");gateways=data.gateways||[];render();$("updated").textContent="آخر تحديث: "+new Date().toLocaleTimeString("ar");}catch(e){if(e.message==="unauthorized"){sessionStorage.removeItem("central_admin_token");token="";showLogin("رمز المدير غير صحيح أو انتهت صلاحيته.");}else $("devices").innerHTML='<div class="error">'+esc(e.message)+'</div>';}finally{$("refresh").disabled=false;}}
@@ -57,4 +57,4 @@ $("loginForm").addEventListener("submit",async e=>{e.preventDefault();token=$("t
 $("refresh").addEventListener("click",load);$("logout").addEventListener("click",()=>{sessionStorage.removeItem("central_admin_token");token="";showLogin();});
 $("auditDevice").addEventListener("change",loadAudit);
 if(token){showApp();load();}else showLogin();setInterval(()=>{if(token&&!$("app").hidden)load();},15000);
-</script></body></html>\`;
+</script></body></html>`;
