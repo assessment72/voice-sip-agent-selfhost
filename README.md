@@ -11,6 +11,7 @@
 - **For users:** [`docs/КАК-НАСТРОИТЬ.md`](docs/КАК-НАСТРОИТЬ.md) - the single page that's enough
   to set everything up from scratch (Russian).
 - **Reference:** [app settings](docs/settings-ru.md) · [baresip client](docs/client-baresip.md) ·
+  [dynamic SIP target → Yemeni SIM](docs/dynamic-sip-target.md) ·
   [Shizuku after a reboot](docs/shizuku-reboot.md) · [internet and security](docs/internet-security.md).
 - **For developers:** [building the APK](#building-the-apk).
 
