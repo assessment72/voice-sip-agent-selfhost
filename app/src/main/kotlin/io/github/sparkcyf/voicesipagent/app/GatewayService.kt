@@ -59,7 +59,7 @@ class GatewayService : Service() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         val runtime = GatewayRuntime.get(this)
-        if (!runtime.health.value.needsForegroundService) {
+        if (!runtime.health.value.needsForegroundService && !CentralMcpConfigStore(this).load().enabled) {
             stopGateway(startId)
             return START_NOT_STICKY
         }
@@ -169,7 +169,7 @@ class GatewayService : Service() {
 
         /** Used for both explicit launches and runtime switch/role changes. */
         internal fun sync(context: Context, health: HealthState): Boolean {
-            if (!health.needsForegroundService) {
+            if (!health.needsForegroundService && !CentralMcpConfigStore(context).load().enabled) {
                 context.stopService(Intent(context, GatewayService::class.java))
                 return true
             }
