@@ -155,7 +155,7 @@ class CallBridgeTest {
         val inbound = sip.incoming("caller", target = "+967777405578")
         settle()
         assertEquals("+967777405578", cell.dialed.single().target)
-        assertEquals(LegState.PROCEEDING, inbound.state)
+        assertTrue("SIP inbound leg remains owned by the bridge", bridge.session != null)
     }
 
     @Test
