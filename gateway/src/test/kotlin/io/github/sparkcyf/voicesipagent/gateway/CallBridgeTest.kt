@@ -138,6 +138,25 @@ class CallBridgeTest {
     }
 
     @Test
+    fun yemeniNationalPrefixAllowListMatchesNormalizedInternationalTarget() {
+        bridge.stop()
+        build(GatewayConfig(allowedDialPrefixes = listOf("77")))
+        val inbound = sip.incoming("caller", target = "+967777405578")
+        settle()
+        assertEquals("+967777405578", cell.dialed.single().target)
+        assertEquals(LegState.PROCEEDING, inbound.state)
+    }
+
+    @Test
+    fun yemeniInternationalPrefixAllowListMatchesNormalizedTarget() {
+        bridge.stop()
+        build(GatewayConfig(allowedDialPrefixes = listOf("+96777")))
+        sip.incoming("caller", target = "+967777405579")
+        settle()
+        assertEquals("+967777405579", cell.dialed.single().target)
+    }
+
+    @Test
     fun secondCallWhileBusy() {
         cell.incoming("13800001234")
         settle()
