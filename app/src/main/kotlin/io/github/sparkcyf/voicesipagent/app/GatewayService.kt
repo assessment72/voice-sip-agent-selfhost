@@ -50,6 +50,7 @@ class GatewayService : Service() {
         super.onCreate()
         val runtime = GatewayRuntime.get(this)
         runtime.start()
+        CentralMcpAgent.start(this, runtime)
         runtime.onServiceCreated(runtimeToken)
         ContextCompat.registerReceiver(this, roleReceiver,
             IntentFilter(TelecomManager.ACTION_DEFAULT_DIALER_CHANGED), ContextCompat.RECEIVER_EXPORTED)
@@ -108,6 +109,7 @@ class GatewayService : Service() {
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onDestroy() {
+        CentralMcpAgent.stop()
         GatewayRuntime.get(this).onForegroundStopped(runtimeToken)
         unregisterReceiver(roleReceiver)
         scope.cancel()
