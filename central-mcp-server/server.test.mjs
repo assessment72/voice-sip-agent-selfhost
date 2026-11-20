@@ -122,3 +122,42 @@ test("fails closed on Vercel health when persistent storage is required but miss
   assert.equal(response.status, 503);
   assert.equal((await response.json()).multi_instance_safe, false);
 });
+
+
+test("Arabic dashboard is served and admin APIs require authentication", async t => {
+  const { url } = await start(t, { basePath: "/api" });
+  const page = await fetch(url + "/api/dashboard");
+  assert.equal(page.status, 200);
+  assert.match(page.headers.get("content-type"), /text\/html/);
+  assert.match(await page.text(), /مركز إدارة بوابات SIP/);
+  assert.equal((await fetch(url + "/api/admin/gateways")).status, 401);
+  assert.equal((await fetch(url + "/api/admin/audit?gateway_id=gw01", {
+    headers: { authorization: "Bearer admin-test-token" }
+  })).status, 200);
+});
+
+test("dashboard gateway API exposes allowlisted metadata only", async t => {
+  const { url } = await start(t, { basePath: "/api" });
+  const ws = new WebSocket(url.replace("http://", "ws://") + "/api/v1/agent", {
+    headers: { authorization: "Bearer device-test-token", "x-gateway-id": "gw01" }
+  });
+  await once(ws, "open");
+  t.after(() => { if (ws.readyState === WebSocket.OPEN) ws.close(); });
+  ws.send(JSON.stringify({ type: "heartbeat", metadata: {
+    manufacturer: "HONOR", model: "MTN-NX1", sip_ready: true, takeover: true,
+    sip_password: "must-never-leak", device_token: "must-never-leak"
+  }}));
+  await new Promise(resolve => setTimeout(resolve, 20));
+  const response = await fetch(url + "/api/admin/gateways", {
+    headers: { authorization: "Bearer admin-test-token" }
+  });
+  assert.equal(response.status, 200);
+  const body = await response.json();
+  assert.equal(body.gateways.length, 1);
+  assert.equal(body.gateways[0].gateway_id, "gw01");
+  assert.equal(body.gateways[0].metadata.manufacturer, "HONOR");
+  assert.equal(body.gateways[0].metadata.sip_ready, true);
+  assert.equal("sip_password" in body.gateways[0].metadata, false);
+  assert.equal("device_token" in body.gateways[0].metadata, false);
+  assert.equal("instance_id" in body.gateways[0], false);
+});
