@@ -166,6 +166,19 @@ test("dashboard gateway API exposes allowlisted metadata only", async t => {
 });
 
 
+test("call-control admin API is authenticated and validates requests", async t => {
+  const { url } = await start(t, { basePath: "/api" });
+  assert.equal((await fetch(url + "/api/admin/call-control?gateway_id=gw01")).status, 401);
+  const headers = { authorization: "Bearer admin-test-token", "content-type": "application/json" };
+  const invalid = await fetch(url + "/api/admin/call-control/request", {
+    method: "POST", headers, body: JSON.stringify({ gateway_id: "bad id", action: "DIAL", target: "123" })
+  });
+  assert.equal(invalid.status, 400);
+  const invalidApproval = await fetch(url + "/api/admin/call-control/execute", {
+    method: "POST", headers, body: JSON.stringify({ gateway_id: "gw01", approval_id: "" })
+  });
+  assert.equal(invalidApproval.status, 409);
+});
 class MemoryEnrollmentStore {
   constructor(){this.enrollments=new Map();this.gateways=new Map();this.audit=[];}
   async connect(){return this;}
