@@ -8,6 +8,7 @@ import io.github.sparkcyf.voicesipagent.gateway.BusyPolicy
 import io.github.sparkcyf.voicesipagent.gateway.FinalCallAction
 import io.github.sparkcyf.voicesipagent.privileged.AudioMethod
 import io.github.sparkcyf.voicesipagent.privileged.CallAccess
+import io.github.sparkcyf.voicesipagent.voice.CallerIdMode
 import java.security.KeyStore
 import javax.crypto.Cipher
 import javax.crypto.KeyGenerator
@@ -45,6 +46,7 @@ data class GatewaySettings(
     val inboundTarget: String = "",
     /** Comma-separated; empty = any number may be dialed out. */
     val allowedPrefixes: String = "",
+    val callerIdMode: CallerIdMode = CallerIdMode.NORMAL,
     val busyPolicy: BusyPolicy = BusyPolicy.REJECT,
     /** Caller-facing fallback extensions in order, e.g. "2,3". */
     val fallbackExtensionsCsv: String = "2",
@@ -123,6 +125,7 @@ class SettingsStore(context: Context) {
         registrarPassword = prefs.getString("registrar_password_sealed", null)?.let(::unseal).orEmpty(),
         inboundTarget = prefs.getString("inbound_target", "")!!,
         allowedPrefixes = prefs.getString("allowed_prefixes", "")!!,
+        callerIdMode = CallerIdMode.fromId(prefs.getString("caller_id_mode", CallerIdMode.NORMAL.id)),
         busyPolicy = runCatching { BusyPolicy.valueOf(prefs.getString("busy_policy", "REJECT")!!) }.getOrDefault(BusyPolicy.REJECT),
         fallbackExtensionsCsv = prefs.getString("fallback_extensions", "2")!!,
         maxCallAttempts = prefs.getInt("max_call_attempts", 3).takeIf { it in 1..4 } ?: 3,
@@ -166,6 +169,7 @@ class SettingsStore(context: Context) {
             .putString("registrar_password_sealed", seal(s.registrarPassword))
             .putString("inbound_target", s.inboundTarget.trim())
             .putString("allowed_prefixes", s.allowedPrefixes.trim())
+            .putString("caller_id_mode", s.callerIdMode.id)
             .putString("busy_policy", s.busyPolicy.name)
             .putString("fallback_extensions", s.fallbackExtensionsCsv.trim())
             .putInt("max_call_attempts", s.maxCallAttempts.coerceIn(1, 4))
