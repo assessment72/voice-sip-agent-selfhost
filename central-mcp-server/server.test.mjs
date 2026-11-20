@@ -8,7 +8,7 @@ async function start(t, options = {}) {
   const app = createCentralMcpServer({ adminToken: "admin-test-token", credentials: { gw01: "device-test-token", gw02: "device-test-token-2" }, ...options });
   await new Promise(resolve => app.httpServer.listen(0, "127.0.0.1", resolve));
   const port = app.httpServer.address().port;
-  t.after(() => new Promise(resolve => app.httpServer.close(resolve)));
+  t.after(() => new Promise(resolve => {\n    for (const entry of app.gateways.values()) entry.ws.terminate();\n    app.httpServer.closeAllConnections();\n    app.httpServer.close(resolve);\n  }));
   return { app, url: `http://127.0.0.1:${port}` };
 }
 async function mcp(url, method, params = {}, token = "admin-test-token") {
