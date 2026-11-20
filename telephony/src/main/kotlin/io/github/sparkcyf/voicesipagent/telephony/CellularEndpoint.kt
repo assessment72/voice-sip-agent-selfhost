@@ -150,7 +150,7 @@ class CellularEndpoint(
                 log("CALL_PHONE not granted")
                 leg.failPlacement(HangupCause.INTERNAL_ERROR)
             }
-            else -> main.post { place(leg, digits, callerIdMode()) }
+            else -> main.post { place(leg, digits, caller.callerIdMode ?: callerIdMode()) }
         }
         return leg
     }
