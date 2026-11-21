@@ -80,6 +80,12 @@ internal class SipCall(
     // ------------------------------------------------------------ outbound
 
     fun startOutbound(target: String, caller: Party) {
+        if (!config.hasCallCapacity(ua.activeCallCount)) {
+            log.info("outbound call refused: call capacity ${config.maxConcurrentCalls} reached")
+            end(HangupCause.BUSY)
+            finish()
+            return
+        }
         val acct = config.account
         val display = caller.displayName ?: caller.number ?: acct.displayName
         if (ua.isServerMode) {
