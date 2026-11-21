@@ -625,6 +625,12 @@ class GatewayRuntime private constructor(context: Context) {
             }
         } catch (e: Throwable) {
             AppLog.w("SIP start failed", e)
+            val failedTrunk = sipTrunk
+            val failedRegistrar = sip as? SipUserAgent
+            sipTrunk = null
+            sip = null
+            failedTrunk?.stop()
+            failedRegistrar?.stop()
             _health.update { it.copy(sip = EndpointStatus(false, "start failed: ${e.message}")) }
         }
     }
@@ -696,7 +702,7 @@ class GatewayRuntime private constructor(context: Context) {
                 // Calls arriving from the provider are delivered to the one registered softphone.
                 routeAtoB = { if (localRegistrar.hasRegisteredPeer) "phone" else null },
                 // Calls from the registered softphone carry the destination in the INVITE URI.
-                routeBtoA = { leg -> leg.target?.let(io.github.sparkcyf.voicesipagent.sip.SipDestination::normalize) },
+                routeBtoA = { leg -> leg.target?.let { io.github.sparkcyf.voicesipagent.sip.SipDestination.normalize(it) } },
                 config = GatewayConfig(
                     busyPolicy = s.busyPolicy,
                     allowedDialPrefixes = s.allowedPrefixes.split(',').map { it.trim() }.filter { it.isNotEmpty() },
