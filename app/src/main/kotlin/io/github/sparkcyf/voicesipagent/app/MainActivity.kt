@@ -276,6 +276,7 @@ private fun SettingsSection(rt: GatewayRuntime) {
     var server by remember(cur) { mutableStateOf(cur.server) }
     var port by remember(cur) { mutableStateOf(cur.port.toString()) }
     var user by remember(cur) { mutableStateOf(cur.username) }
+    var authUser by remember(cur) { mutableStateOf(cur.authUsername) }
     var password by remember(cur) { mutableStateOf(cur.password) }
     var target by remember(cur) { mutableStateOf(cur.inboundTarget) }
     var prefixes by remember(cur) { mutableStateOf(cur.allowedPrefixes) }
@@ -331,6 +332,7 @@ private fun SettingsSection(rt: GatewayRuntime) {
         Field(t("Порт АТС", "PBX port"), port, KeyboardType.Number) { port = it }
         Field(t("SIP-домен (пусто = адрес АТС)", "SIP domain (empty = PBX host)"), domain) { domain = it }
         Field(t("Логин / extension", "Extension / user"), user) { user = it }
+        Field(t("Логин авторизации SIP (пусто = логин)", "SIP auth ID (blank = extension)"), authUser, info = "sip_auth_id") { authUser = it }
         OutlinedTextField(
             value = password, onValueChange = { password = it }, label = { Text(t("Пароль", "Password")) },
             visualTransformation = PasswordVisualTransformation(), singleLine = true, modifier = Modifier.fillMaxWidth(),
@@ -348,7 +350,7 @@ private fun SettingsSection(rt: GatewayRuntime) {
                     localSipPort = localPort.toIntOrNull()?.takeIf { it in 1..65535 } ?: cur.localSipPort,
                     registrarLeaseSec = lease.toIntOrNull()?.takeIf { it in 30..86400 } ?: cur.registrarLeaseSec,
                     registrarPassword = regPassword,
-                    server = server, port = port.toIntOrNull() ?: transport.defaultPort, username = user, password = password,
+                    server = server, port = port.toIntOrNull() ?: transport.defaultPort, username = user, authUsername = authUser, password = password,
                     inboundTarget = target, allowedPrefixes = prefixes, domain = domain,
                     sipStack = stack, sipTransport = transport.id, srtp = srtp.id, busyPolicy = busy,
                 ),
