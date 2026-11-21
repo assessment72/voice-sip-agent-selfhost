@@ -31,8 +31,8 @@ data class SipConfig(
     /** Only accept SIP/RTP from the registrar's address (LAN deployment). */
     val acceptOnlyFromServer: Boolean = true,
     /**
-     * Device-in-itself mode: act as the SIP registrar. Instead of registering outward to a PBX,
-     * accept REGISTER from a single softphone and route cellular calls to its registered contact.
+     * Device-in-itself mode: act as the local SIP registrar. Instead of registering outward to a PBX,
+     * accept REGISTER from a single softphone and route calls to its registered contact.
      * When on, [acceptOnlyFromServer] is ignored (the peer address is learned from REGISTER).
      */
     val serverMode: Boolean = false,
@@ -45,7 +45,7 @@ data class SipConfig(
     /**
      * Server mode: password the softphone must present to REGISTER (SIP digest auth, RFC 3261).
      * Empty disables authentication — anyone who can reach the port may register and place calls
-     * through the SIM, so leave it empty only on a trusted LAN. When set, an unauthenticated
+     * through a configured call route, so leave it empty only on a trusted LAN. When set, an unauthenticated
      * REGISTER is answered with 401 and a challenge; the phone replies with its digest response.
      * The username is taken from the phone's own REGISTER (shared secret, single phone).
      */
