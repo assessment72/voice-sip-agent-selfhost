@@ -95,8 +95,8 @@ fun helpText(key: String, lang: UiLang): Pair<String, String>? {
         )
         "server_mode" -> p(
             "Режим «устройство в себе»", "Device-in-itself mode",
-            "Включён (рекомендуется): этот телефон сам работает SIP-сервером. Твой софтфон (например baresip) регистрируется прямо на него — внешний сервер/АТС не нужны.\n\nВыключен: шлюз сам подключается к внешней SIP-АТС — тогда заполни поля PBX host / user / password ниже.",
-            "On (recommended): this phone is its own SIP server. Your softphone (e.g. baresip) registers straight to it — no external server/PBX needed.\n\nOff: the gateway registers to an external SIP PBX — then fill in PBX host / user / password below.",
+            "Выключен (режим центрального сервера по умолчанию): шлюз сам регистрируется на внешней SIP-АТС — заполни адрес, пользователя и пароль ниже.\n\nВключён: этот телефон работает SIP-сервером, а софтфон регистрируется прямо на него.",
+            "Off (default central-server mode): the gateway registers to an external SIP PBX — enter the server address, username, and password below.\n\nOn: this phone acts as a local SIP server and the softphone registers directly to it.",
         )
         "local_port" -> p(
             "Порт регистратора", "Local SIP port",
