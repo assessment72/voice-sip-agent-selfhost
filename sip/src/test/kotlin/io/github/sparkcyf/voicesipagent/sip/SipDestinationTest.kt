@@ -17,6 +17,8 @@ class SipDestinationTest {
         assertNull(SipDestination.normalize("9677;transport=tcp"))
         assertNull(SipDestination.normalize("9677?x=y"))
         assertNull(SipDestination.normalize("+9677+123"))
+        assertNull(SipDestination.normalize("+"))
+        assertNull(SipDestination.normalize("+967ABC"))
     }
 
     @Test
