@@ -172,11 +172,14 @@ internal class SipCall(
         if ((r.code == 401 || r.code == 407) && authAttempts++ < 2 && state != LegState.ENDED) {
             val auth = ua.authorizationFor(r, "INVITE", req.uri)
             if (auth != null) {
+                log.info("call $id: received ${r.code} digest challenge; retrying INVITE with ${auth.first}")
                 cancelSent = false
                 sendInvite(auth, null)
                 return
             }
+            log.warn("call $id: ${r.code} challenge could not be answered; check SIP auth ID, password, and challenge algorithm")
         }
+        if (r.code == 407) log.warn("call $id: proxy authentication rejected after digest retry; verify the proxy auth ID/password and provider realm")
         log.info("call $id failed: ${r.code} ${r.reason}")
         end(SipCodes.toCause(r.code))
         finish()
