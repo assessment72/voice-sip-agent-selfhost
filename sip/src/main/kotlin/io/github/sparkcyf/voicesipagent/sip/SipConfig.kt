@@ -59,6 +59,7 @@ data class SipConfig(
 
     /** Capacity check used on the SIP scheduler thread before accepting or originating a call. */
     fun hasCallCapacity(activeCalls: Int): Boolean = activeCalls < maxConcurrentCalls
+}
 
 /** Minimal logging hook so the stack stays free of platform dependencies. */
 interface SipLog {
