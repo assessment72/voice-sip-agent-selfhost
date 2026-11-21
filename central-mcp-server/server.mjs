@@ -309,7 +309,7 @@ export function createCentralMcpServer(options = {}) {
         const safeRows = [...merged.values()].map(gateway => {
           const source = gateway.metadata && typeof gateway.metadata === "object" ? gateway.metadata : {};
           const metadata = {};
-          for (const key of ["manufacturer", "model", "android_release", "app_version", "takeover", "sip_ready", "sip_detail", "server_mode", "active_call", "battery_level", "network_type"]) {
+          for (const key of ["manufacturer", "model", "android_release", "app_version", "takeover", "sip_ready", "sip_detail", "server_mode", "active_call", "call_summary", "battery_level", "network_type"]) {
             if (source[key] !== undefined && ["string", "number", "boolean"].includes(typeof source[key])) metadata[key] = typeof source[key] === "string" ? source[key].slice(0, 120) : source[key];
           }
           const fresh = Boolean(gateway.last_seen && Date.now() - new Date(gateway.last_seen).getTime() <= 60_000);
