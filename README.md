@@ -16,10 +16,10 @@
 - **Provider trunk:** [single-account SIP trunk integration and test requirements](docs/provider-trunk-integration.md).
 - **For developers:** [building the APK](#building-the-apk).
 
-A fairly recent old Android phone with your SIM sits at home on a charger and Wi-Fi. The incoming
-**voice calls and SMS** that arrive on its number are relayed to your phone over the internet -
-wherever you are. **No PC, no Asterisk, no external server:** the SIP server is built into the app.
-**No root required.**
+A fairly recent Android phone sits at home on a charger and Wi-Fi. Its built-in SIP registrar keeps
+local account authentication and call control on the phone. An optional upstream SIP trunk can route
+calls through a provider. **No PC, no Asterisk, and no mandatory PBX hosting:** the local SIP server
+is built into the app. **No root required.**
 
 ```
 Caller ──GSM/VoLTE──► Gateway phone (SIM + app)
@@ -292,7 +292,7 @@ export JAVA_HOME="/c/Program Files/Eclipse Adoptium/jdk-17.0.20.101-hotspot"
 ## Honest status and risks
 
 - Incoming call (two-way audio), incoming SMS, built-in registrar - **confirmed** on the Nubia NX769J.
-- Outgoing calls/SMS from the far phone over the gateway's SIM - **not done**.
+- Outgoing calls/SMS from the far phone over the gateway's SIM - **not done**. The optional one-account SIP provider trunk bridge is now present on the development branch, but has not been built, tested or verified with the provider yet.
 - **The public-Internet path is not yet tested live.** Direct UDP access currently needs a reachable public IP and port forwarding; the planned WSS signalling relay and ICE/TURN media traversal are not implemented yet.
 - **Without root, Shizuku does not survive a reboot** - the main operational risk (above).
 - **Registrar authentication is implemented** (SIP digest password + brute-force ban); for the
