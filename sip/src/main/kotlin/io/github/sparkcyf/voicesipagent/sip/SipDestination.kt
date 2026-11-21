@@ -14,6 +14,7 @@ object SipDestination {
         val value = raw.trim()
         if (!allowed.matches(value)) return null
         if (value.count { it == '+' } > 1 || ('+' in value && !value.startsWith('+'))) return null
+        if (value.startsWith('+') && (value.length == 1 || !value.drop(1).all { it in '0'..'9' })) return null
         return value
     }
 }
