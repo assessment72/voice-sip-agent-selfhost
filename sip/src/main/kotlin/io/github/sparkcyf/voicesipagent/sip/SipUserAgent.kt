@@ -249,8 +249,18 @@ class SipUserAgent(
 
     internal fun authorizationFor(r: SipResponse, method: String, uri: String): Pair<String, String>? {
         val proxy = r.code == 407
-        val header = r.headers[if (proxy) "Proxy-Authenticate" else "WWW-Authenticate"] ?: return null
-        val challenge = DigestAuth.parseChallenge(header) ?: return null
+        val headerName = if (proxy) "Proxy-Authenticate" else "WWW-Authenticate"
+        val headers = r.headers.getAll(headerName)
+        if (headers.isEmpty()) {
+            log.warn("SIP ${r.code} response has no $headerName header")
+            return null
+        }
+        val challenge = headers.asSequence().mapNotNull(DigestAuth::parseChallenge).firstOrNull()
+        if (challenge == null) {
+            log.warn("SIP ${r.code} response has no supported Digest challenge")
+            return null
+        }
+        log.info("answering SIP ${r.code} Digest challenge (realm=${challenge.realm}, algorithm=${challenge.algorithm}, qop=${challenge.params["qop"] ?: "none"})")
         return try {
             (if (proxy) "Proxy-Authorization" else "Authorization") to
                 DigestAuth.authorize(challenge, method, uri, account.authUsername, account.password)
