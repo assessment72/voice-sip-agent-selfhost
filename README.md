@@ -12,6 +12,7 @@
   to set everything up from scratch (Russian).
 - **Reference:** [app settings](docs/settings-ru.md) · [baresip client](docs/client-baresip.md) ·
   [Shizuku after a reboot](docs/shizuku-reboot.md) · [internet and security](docs/internet-security.md).
+- **NAT traversal development:** [embedded SIP over WSS + ICE/TURN design](docs/nat-traversal-architecture.md).
 - **For developers:** [building the APK](#building-the-apk).
 
 A fairly recent old Android phone with your SIM sits at home on a charger and Wi-Fi. The incoming
