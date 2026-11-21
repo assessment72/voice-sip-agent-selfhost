@@ -125,8 +125,8 @@ fun helpText(key: String, lang: UiLang): Pair<String, String>? {
         )
         "pbx" -> p(
             "Внешняя АТС (PBX)", "External PBX",
-            "Нужны только если «Режим устройство в себе» выключен. PBX host — адрес сервера; user/password — логин на нём; SIP domain — домен, если отличается от адреса.",
-            "Only needed when Device-in-itself mode is off. PBX host — the server address; user/password — your login there; SIP domain — the domain if different from the address.",
+            "В режиме «устройство в себе» эти поля необязательны. Если заполнить адрес, порт, логин и пароль, телефон подключит один внешний SIP-транк: исходящие вызовы пойдут через провайдера, входящие будут направляться зарегистрированному софтфону. В обычном режиме эти поля задают внешнюю АТС.",
+            "In Device-in-itself mode these fields are optional. If host, port, username and password are filled in, the phone connects one upstream SIP trunk: outbound calls use the provider and inbound calls are routed to the registered softphone. In classic mode these fields configure the external PBX.",
         )
         "inbound_target" -> p(
             "Куда переводить входящие", "Inbound → SIP target",
