@@ -19,14 +19,14 @@ TURN (RFC 8656) allocates a relayed transport address for media. It does not mak
 
 1. **Gateway Android app**
    - Runs the existing embedded SIP registrar and remains authoritative for SIP accounts and Digest authentication.
-   - Opens an outbound, authenticated, persistent TLS WebSocket (wss) connection to a public rendezvous relay. Outbound connections work through ordinary NAT/CGNAT.
-   - Sends/receives SIP datagrams through this tunnel. The tunnel is a transport path, not a registrar.
+   - Opens an outbound, authenticated SIP-over-WebSocket Secure (WSS) connection using the SIP subprotocol defined by RFC 7118. The connection is kept alive and reused as an outbound flow through ordinary NAT/CGNAT.
+   - Receives inbound SIP requests over that established flow; the relay is an edge proxy, not the gateway registrar.
    - Runs an ICE agent for each media session and gathers host, server-reflexive, and relayed candidates.
 
 2. **Public signalling rendezvous relay**
    - Exposes a stable public TLS endpoint.
    - Associates one authenticated gateway tunnel with an opaque gateway/device route identifier.
-   - Forwards SIP messages between remote SIP clients and that live gateway tunnel. SIP Digest challenges and verification remain on the gateway.
+   - Acts as a SIP edge proxy: forwards remote SIP requests to the gateway's established WSS flow and returns responses over the correct flow. SIP Digest challenges and verification remain on the gateway. The design should use SIP Outbound (RFC 5626) and Path (RFC 3327) semantics where supported, rather than inventing a proprietary SIP-over-WebSocket framing.
    - Does not create accounts, store SIP passwords, decide call routing, originate calls, or own dialog state beyond the minimum transient routing needed to forward packets and return responses.
    - Enforces TLS, per-device credentials, rate limits, message-size limits, connection limits, and short-lived routing state. It must not log SIP bodies, phone numbers, Authorization headers, or SDP credentials.
 
@@ -46,7 +46,7 @@ TURN (RFC 8656) allocates a relayed transport address for media. It does not mak
 ### Signalling transport
 - Introduce a transport boundary under SipUserAgent so SIP message dispatch is independent of the current UDP socket.
 - Keep the current LAN UDP transport for local deployments.
-- Add a reconnecting WSS tunnel transport with heartbeat, bounded queues, backoff, TLS certificate validation, and clean shutdown.
+- Add RFC 7118 SIP/WSS transport support with heartbeat, bounded queues, reconnect/backoff, TLS certificate validation, and clean shutdown. Preserve SIP message boundaries and use the WSS Via transport semantics.
 - Preserve the actual remote logical peer and tunnel route for transaction responses, ACK/CANCEL, retransmissions, and in-dialog requests. Do not trust a user-supplied Contact or source address as an authenticated route.
 - Bind the gateway tunnel to a provisioned opaque device identity; do not use the SIP password as tunnel authentication.
 - Add replay protection / connection generation checks so messages from a superseded tunnel cannot mutate current registration state.
@@ -68,7 +68,7 @@ TURN (RFC 8656) allocates a relayed transport address for media. It does not mak
 ## Configuration and secrets
 
 The gateway configuration will eventually need:
-- signalling relay wss URL and opaque device identity;
+- signalling edge-proxy SIP/WSS URI and opaque device identity;
 - a per-device tunnel credential stored using Android Keystore-backed storage;
 - TURN URI list and a short-lived credential provider;
 - an explicit mode: LAN-only, public-relay, or automatic.
@@ -100,8 +100,10 @@ No relay password, TURN shared secret, or long-lived credential may be committed
 ## External dependencies / deployment blockers
 
 End-to-end implementation and Internet acceptance testing require:
-- a public signalling relay endpoint (or an agreed hosting target) with WSS ingress and the narrow forwarding contract above;
+- a public SIP edge-proxy endpoint (or an agreed hosting target) supporting SIP over WSS and outbound-flow routing;
 - a reachable TURN service and a secure way to issue short-lived credentials;
 - test accounts/devices on at least two independent networks, including one CGNAT/mobile-data path.
+
+Candidate ICE implementations require a compatibility spike before selection. PJSIP's Android SDK documents ICE, STUN, TURN, SIP Outbound, and Path support; ice4j is a Java ICE implementation but its Android compatibility and the integration with this RTP stack must be verified. Do not add either dependency blindly.
 
 A random public TURN server cannot be assumed to be reliable, secure, or available for production. Do not claim the system works from any location until the acceptance tests above pass.
