@@ -52,7 +52,13 @@ data class SipConfig(
     val registrarPassword: String = "",
     /** Server mode: realm advertised in the auth challenge. */
     val registrarRealm: String = "voice-sip-agent",
-)
+    /** Maximum simultaneous SIP dialogs handled by this user agent. */
+    val maxConcurrentCalls: Int = 1,
+) {
+    init { require(maxConcurrentCalls in 1..16) { "maxConcurrentCalls must be between 1 and 16" } }
+
+    /** Capacity check used on the SIP scheduler thread before accepting or originating a call. */
+    fun hasCallCapacity(activeCalls: Int): Boolean = activeCalls < maxConcurrentCalls
 
 /** Minimal logging hook so the stack stays free of platform dependencies. */
 interface SipLog {
