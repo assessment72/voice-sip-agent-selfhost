@@ -29,6 +29,8 @@ data class GatewaySettings(
     /** pjsip info-level logging (development); errors/warnings are always logged. */
     val sipDebugLog: Boolean = false,
     val username: String = "",
+    /** Digest auth identity for a SIP proxy; blank uses the SIP username. */
+    val authUsername: String = "",
     val password: String = "",
     val domain: String = "",
     val localSipPort: Int = 5062,
@@ -100,6 +102,7 @@ class SettingsStore(context: Context) {
         srtp = prefs.getString("srtp", "optional")!!,
         sipDebugLog = prefs.getBoolean("sip_debug_log", false),
         username = prefs.getString("username", "")!!,
+        authUsername = prefs.getString("auth_username", "")!!,
         password = prefs.getString("password_sealed", null)?.let(::unseal).orEmpty(),
         domain = prefs.getString("domain", "")!!,
         localSipPort = prefs.getInt("local_sip_port", 5062),
@@ -128,6 +131,7 @@ class SettingsStore(context: Context) {
             .putString("srtp", s.srtp.trim().lowercase())
             .putBoolean("sip_debug_log", s.sipDebugLog)
             .putString("username", s.username.trim())
+            .putString("auth_username", s.authUsername.trim())
             .putString("password_sealed", seal(s.password))
             .putString("domain", s.domain.trim())
             .putInt("local_sip_port", s.localSipPort)
