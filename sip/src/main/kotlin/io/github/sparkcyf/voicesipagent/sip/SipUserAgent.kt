@@ -47,6 +47,8 @@ class SipUserAgent(
     private val clientTxs = HashMap<String, ClientTransaction>()
     private val serverTxs = HashMap<String, ServerTransaction>()
     internal val calls = HashMap<String, SipCall>()
+    /** Read only on the SIP scheduler thread. */
+    internal val activeCallCount: Int get() = calls.size
 
     private val statusListeners = CopyOnWriteArrayList<EndpointStatusListener>()
     @Volatile private var incomingHandler: IncomingCallHandler? = null
@@ -330,6 +332,11 @@ class SipUserAgent(
         // must be authenticated with the same digest secret as REGISTER, or any host reaching this port
         // dials out for free (open toll-fraud relay).  Gate before any call state is created.
         if (!inviteAuthPassed(req, from, tx)) return
+        if (!config.hasCallCapacity(calls.size)) {
+            log.info("incoming INVITE refused: call capacity ${config.maxConcurrentCalls} reached")
+            tx.respond(buildResponse(req, 486, toTag = newTag()))
+            return
+        }
         val handler = incomingHandler
         // X-VSA-Dial: the number to dial when the PBX keeps the Request-URI user as our own AoR
         // (needed behind registrar-based proxies such as Flexisip).
