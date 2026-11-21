@@ -173,7 +173,7 @@ gives "CANDIDATE/NOPE", the working audio method, bootloader state, and the reco
    adb shell pm grant io.github.sparkcyf.voicesipagent android.permission.READ_PHONE_NUMBERS
    adb shell pm grant io.github.sparkcyf.voicesipagent android.permission.RECEIVE_SMS
    ```
-7. **Server mode is on by default.** Find the gateway's IP:
+7. **Central registrar mode is the default.** To use the phone as a standalone local registrar instead, turn Device-in-itself mode on. Find the gateway's IP:
    ```bash
    adb shell "ip -4 addr show wlan0 | grep -o 'inet [0-9.]*'"
    ```
@@ -198,7 +198,7 @@ Short version for "device-in-itself" mode:
 
 | Item | Value |
 |---|---|
-| Device-in-itself mode (built-in SIP server) | **on** (default) - PBX fields can stay empty |
+| Device-in-itself mode (built-in SIP server) | **off** (default central-registration mode); turn on only for a standalone local registrar |
 | Local SIP port | **5062** |
 | Registration lease | **600 s** (raise to 1200 if registration keeps expiring) |
 | Cellular audio | **Direct telephony** on the Nubia; otherwise try Call redirection (§4.4) |
