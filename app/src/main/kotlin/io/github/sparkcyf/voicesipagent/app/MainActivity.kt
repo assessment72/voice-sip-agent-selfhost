@@ -282,8 +282,8 @@ private fun SettingsSection(rt: GatewayRuntime) {
     Section(t("Настройки", "Settings")) {
         // Core mode: this phone is its own SIP server, or it registers to an external PBX.
         Toggle(t("Режим «устройство в себе» (встроенный SIP-сервер)", "Device-in-itself mode (built-in SIP server)"), serverMode, { serverMode = it }, info = "server_mode") {
-            if (serverMode) t("Этот телефон сам — SIP-сервер; софтфон (baresip) регистрируется прямо на него. Внешний сервер не нужен, поля PBX ниже необязательны.",
-                "This phone hosts the SIP registrar; your softphone (e.g. baresip) registers straight to it. No external PBX is needed, so the PBX fields below are optional.")
+            if (serverMode) t("Этот телефон сам — SIP-сервер. Поля внешней АТС ниже можно заполнить для подключения одного SIP-транка: исходящие вызовы пойдут через провайдера, входящие — на зарегистрированный софтфон.",
+                "This phone hosts the SIP registrar. Fill in the external PBX fields below to enable one SIP trunk: outbound calls go through the provider and inbound calls ring the registered softphone.")
             else t("Выкл: шлюз регистрируется на внешнюю SIP-АТС. Заполни PBX host, user и password ниже.",
                 "Off: this gateway registers to an external PBX / SIP server. Fill in PBX host, user and password below.")
         }
@@ -314,7 +314,7 @@ private fun SettingsSection(rt: GatewayRuntime) {
         Choice(t("SRTP (только TLS)", "SRTP (TLS only)"), SrtpPolicy.entries, srtp, { it.id }, enabled = { !builtin && transport == SipTransport.TLS }, info = "srtp") {
             srtp = it
         }
-        LabelWithInfo(if (serverMode) t("Внешняя АТС (необязательно в режиме «устройство в себе»)", "External PBX (optional in device-in-itself mode)") else t("Внешняя АТС", "External PBX"),
+        LabelWithInfo(if (serverMode) t("Внешний SIP-провайдер / транк (необязательно)", "External SIP provider / trunk (optional)") else t("Внешняя АТС", "External PBX"),
             "pbx", style = MaterialTheme.typography.bodySmall)
         Field(t("Адрес АТС (PBX host)", "PBX host"), server) { server = it }
         Field(t("Порт АТС", "PBX port"), port, KeyboardType.Number) { port = it }
