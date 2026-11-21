@@ -47,7 +47,7 @@ footer{margin-top:30px;color:var(--muted);font-size:12px}
 </div>
 <div class="section"><h2>سجل أوامر الإدارة</h2><select id="auditDevice" style="max-width:220px"><option value="">اختر بوابة</option></select></div>
 <div id="audit" class="table-wrap"><div class="empty">اختر بوابة لعرض السجل المتاح</div></div>
-</section><footer>تتيح اللوحة مراقبة البوابات وإدارة تسجيلها وتعطيلها وتدوير رموزها. لا تنفّذ مكالمات ولا تغيّر إعدادات SIP على الهاتف.</footer>
+</section><footer>تتيح اللوحة مراقبة البوابات وإدارة تسجيلها وتعطيلها وتدوير رموزها وطلب التحكم بالمكالمات. تتطلب أوامر المكالمات موافقة محلية على الهاتف؛ ولا تعرض اللوحة بيانات SIP السرية.</footer>
 </main>
 <script>
 const $=id=>document.getElementById(id);let token=sessionStorage.getItem("central_admin_token")||"";let gateways=[];
@@ -60,8 +60,8 @@ function showToken(data,title){$("tokenTitle").textContent=title;$("oneTimeToken
 function render(){const online=gateways.filter(g=>g.connected).length;$("total").textContent=gateways.length;$("online").textContent=online;$("offline").textContent=gateways.length-online;
 $("devices").innerHTML=gateways.length?gateways.map(g=>{const m=g.metadata||{};return \`<article class="device \${g.enabled===false?"disabled":""}"><div class="device-head"><h3>\${esc(g.gateway_id)}</h3><span class="pill \${g.enabled===false?"off":g.connected?"on":"off"}">\${g.enabled===false?"موقوف":g.connected?"متصل":"غير متصل"}</span></div><div class="meta">
 <div><small>آخر اتصال / نبضة</small><b>\${esc(date(g.last_seen))}</b></div><div><small>الشركة والطراز</small><b>\${esc([m.manufacturer,m.model].filter(Boolean).join(" ")||"غير معروف")}</b></div>
-<div><small>جاهزية SIP</small><b>\${m.sip_ready===true?"جاهز":m.sip_ready===false?"غير جاهز":"غير محدد"}</b></div><div><small>التحكم / الاستلام</small><b>\${m.takeover===true?"مفعّل":m.takeover===false?"متوقف":"غير محدد"}</b></div>
-<div><small>المكالمة الحالية</small><b>\${m.active_call===true?"يوجد اتصال":m.active_call===false?"لا يوجد":"غير محدد"}</b></div><div><small>إصدار التطبيق / أندرويد</small><b>\${esc([m.app_version,m.android_release].filter(Boolean).join(" / ")||"—")}</b></div>
+<div><small>جاهزية SIP</small><b>\${m.sip_ready===true?"جاهز":m.sip_ready===false?"غير جاهز":"غير محدد"}</b></div><div><small>نوع تشغيل SIP</small><b>${m.server_mode===true?"خادم SIP مدمج":m.server_mode===false?"عميل SIP / خادم خارجي":"غير محدد"}</b></div><div><small>التحكم / الاستلام</small><b>\${m.takeover===true?"مفعّل":m.takeover===false?"متوقف":"غير محدد"}</b></div>
+<div><small>المكالمة الحالية</small><b>\${m.active_call===true?"يوجد اتصال":m.active_call===false?"لا يوجد":"غير محدد"}</b></div><div><small>ملخص المكالمات</small><b>${esc(m.call_summary||"لا توجد تفاصيل مرسلة")}</b></div><div><small>إصدار التطبيق / أندرويد</small><b>\${esc([m.app_version,m.android_release].filter(Boolean).join(" / ")||"—")}</b></div>
 </div>\${m.sip_detail?'<p class="muted">'+esc(m.sip_detail)+'</p>':""}<div class="actions"><button type="button" class="secondary" data-toggle="\${esc(g.gateway_id)}" data-enabled="\${g.enabled!==false}">\${g.enabled===false?"إعادة التفعيل":"إيقاف البوابة"}</button><button type="button" class="secondary" data-rotate="\${esc(g.gateway_id)}">تدوير الرمز</button></div></article>\`;}).join(""):'<div class="empty">لا توجد بوابات مسجلة حتى الآن.</div>';
 const callSelected=$("callDevice").value; $("callDevice").innerHTML='<option value="">اختر البوابة</option>'+gateways.map(g=>'<option value="'+esc(g.gateway_id)+'">'+esc(g.gateway_id)+'</option>').join(""); if(callSelected&&gateways.some(g=>g.gateway_id===callSelected)) $("callDevice").value=callSelected;
 const selected=$("auditDevice").value;$("auditDevice").innerHTML='<option value="">اختر بوابة</option>'+gateways.map(g=>'<option value="'+esc(g.gateway_id)+'">'+esc(g.gateway_id)+'</option>').join("");if(selected&&gateways.some(g=>g.gateway_id===selected))$("auditDevice").value=selected;
