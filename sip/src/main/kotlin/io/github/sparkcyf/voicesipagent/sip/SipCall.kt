@@ -410,6 +410,7 @@ internal class SipCall(
         payloadType = sdp.payloadFor(codec),
         telephoneEventPt = sdp.telephoneEventPt,
         sendEnabled = !sdp.isOnHold && sdp.port != 0,
+        symmetricRtp = config.symmetricRtp,
     )
 
     private fun startMedia(p: RtpParams) {
