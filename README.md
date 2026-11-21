@@ -13,6 +13,7 @@
 - **Reference:** [app settings](docs/settings-ru.md) · [baresip client](docs/client-baresip.md) ·
   [Shizuku after a reboot](docs/shizuku-reboot.md) · [internet and security](docs/internet-security.md).
 - **NAT traversal development:** [embedded SIP over WSS + ICE/TURN design](docs/nat-traversal-architecture.md).
+- **Provider trunk:** [single-account SIP trunk integration and test requirements](docs/provider-trunk-integration.md).
 - **For developers:** [building the APK](#building-the-apk).
 
 A fairly recent old Android phone with your SIM sits at home on a charger and Wi-Fi. The incoming
@@ -53,8 +54,9 @@ and services - carrying it around is both inconvenient and risky. This gateway k
   **isn't in it** - it's at home. The thief gets no access to your number, can't intercept SMS
   codes, can't reset passwords by SMS, and can't reach SIM-bound accounts or your bank. The stolen
   phone holds only a local data eSIM or an "empty" second SIM with no important bindings.
-- **Privacy and control.** A "device-in-itself": the SIP server lives inside the gateway phone,
-  audio and messages go straight to your softphone - no clouds, no third-party servers.
+- **Privacy and control.** A "device-in-itself": the local SIP registrar and account authentication
+  live inside the gateway phone. If an upstream SIP trunk is configured, that provider necessarily
+  handles the external call leg; it does not become the local registrar or call-control authority.
 
 **For:** travelers and digital nomads, expats, rotational workers, students abroad; anyone who
 keeps an "anchor" number for banks and government services and doesn't want to carry it; and anyone
@@ -75,8 +77,9 @@ Verified on a **Nubia NX769J (Android 16)** paired with the baresip client:
 - ✅ Doze resilience: the service holds a wakelock while the gateway is on, so the phone doesn't drop
   the registration while asleep, even on aggressive OEM ROMs (0.2.0-selfhost4).
 
-Not done yet: outgoing calls/SMS from the far phone over the gateway's SIM; wideband audio
-(currently G.711). Working outside a single Wi-Fi needs a public IP (see below).
+Not yet verified end-to-end: provider trunk calling, remote access through NAT, and wideband audio
+(currently G.711). The trunk bridge and single-call policy are being implemented on the development
+branch; live provider credentials and NAT traversal tests are still required.
 
 > ⚠ **The capture method depends on the phone model.** On the Nubia it's "Direct telephony"; the
 > automatic mode chose wrong (no audio). Another phone may need "Call redirection". How to tell -
@@ -290,7 +293,7 @@ export JAVA_HOME="/c/Program Files/Eclipse Adoptium/jdk-17.0.20.101-hotspot"
 
 - Incoming call (two-way audio), incoming SMS, built-in registrar - **confirmed** on the Nubia NX769J.
 - Outgoing calls/SMS from the far phone over the gateway's SIM - **not done**.
-- **The internet path is not yet tested live** - a single Wi-Fi only.
+- **The public-Internet path is not yet tested live.** Direct UDP access currently needs a reachable public IP and port forwarding; the planned WSS signalling relay and ICE/TURN media traversal are not implemented yet.
 - **Without root, Shizuku does not survive a reboot** - the main operational risk (above).
 - **Registrar authentication is implemented** (SIP digest password + brute-force ban); for the
   internet, set a password - an empty password leaves `:5062` open.
