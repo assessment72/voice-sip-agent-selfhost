@@ -50,6 +50,7 @@ class GatewayService : Service() {
         super.onCreate()
         val runtime = GatewayRuntime.get(this)
         runtime.start()
+        CentralMcpAgent.start(this, runtime)
         runtime.onServiceCreated(runtimeToken)
         ContextCompat.registerReceiver(this, roleReceiver,
             IntentFilter(TelecomManager.ACTION_DEFAULT_DIALER_CHANGED), ContextCompat.RECEIVER_EXPORTED)
@@ -58,7 +59,7 @@ class GatewayService : Service() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         val runtime = GatewayRuntime.get(this)
-        if (!runtime.health.value.needsForegroundService) {
+        if (!runtime.health.value.needsForegroundService && !CentralMcpConfigStore(this).load().enabled) {
             stopGateway(startId)
             return START_NOT_STICKY
         }
@@ -76,7 +77,7 @@ class GatewayService : Service() {
         if (statusJob == null) {
             val nm = getSystemService(NotificationManager::class.java)
             statusJob = scope.launch {
-                runtime.health.map { it.needsForegroundService to summary(it) }.distinctUntilChanged().collect { (needed, text) ->
+                runtime.health.map { (it.needsForegroundService || CentralMcpConfigStore(this@GatewayService).load().enabled) to summary(it) }.distinctUntilChanged().collect { (needed, text) ->
                     if (needed) nm.notify(NOTIFICATION_ID, build(text)) else stopGateway()
                 }
             }
@@ -108,6 +109,7 @@ class GatewayService : Service() {
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onDestroy() {
+        CentralMcpAgent.stop()
         GatewayRuntime.get(this).onForegroundStopped(runtimeToken)
         unregisterReceiver(roleReceiver)
         scope.cancel()
@@ -167,7 +169,7 @@ class GatewayService : Service() {
 
         /** Used for both explicit launches and runtime switch/role changes. */
         internal fun sync(context: Context, health: HealthState): Boolean {
-            if (!health.needsForegroundService) {
+            if (!health.needsForegroundService && !CentralMcpConfigStore(context).load().enabled) {
                 context.stopService(Intent(context, GatewayService::class.java))
                 return true
             }

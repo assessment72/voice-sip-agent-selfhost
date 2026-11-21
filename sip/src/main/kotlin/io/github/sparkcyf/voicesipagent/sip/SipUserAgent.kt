@@ -117,12 +117,32 @@ class SipUserAgent(
             if (config.serverMode) done.countDown() else sendRegister(0, null) { done.countDown() }
         }
         done.await(timeoutMs, TimeUnit.MILLISECONDS)
-        post {
-            if (::transport.isInitialized) transport.close()
-            started = false
-            setStatus(false, "stopped")
+        val cleanupDone = CountDownLatch(1)
+        val cleanup = {
+            try {
+                if (::transport.isInitialized) transport.close()
+                started = false
+                setStatus(false, "stopped")
+            } finally {
+                executor.shutdown()
+                cleanupDone.countDown()
+            }
         }
-        executor.shutdown()
+        if (Thread.currentThread().name == "sip-ua") {
+            cleanup()
+        } else {
+            try {
+                executor.execute { cleanup() }
+                if (!cleanupDone.await(2, TimeUnit.SECONDS)) {
+                    // A stalled transaction callback must never keep the UDP listener bound.
+                    if (::transport.isInitialized) transport.close()
+                    executor.shutdownNow()
+                }
+            } catch (_: java.util.concurrent.RejectedExecutionException) {
+                if (::transport.isInitialized) transport.close()
+                executor.shutdownNow()
+            }
+        }
     }
 
     /** Call when the network changes: refreshes our address and re-registers. */

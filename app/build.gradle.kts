@@ -3,7 +3,7 @@ plugins {
     alias(libs.plugins.kotlin.compose)
 }
 
-val compileSdkApi = providers.gradleProperty("android.compileSdk").orNull?.toInt() ?: 37
+val compileSdkApi = providers.gradleProperty("android.compileSdk").orNull?.toInt() ?: 36
 
 android {
     namespace = "io.github.sparkcyf.voicesipagent.app"
@@ -73,6 +73,7 @@ dependencies {
     implementation(libs.androidx.compose.ui)
     implementation(libs.androidx.compose.material3)
     implementation(libs.kotlinx.coroutines.android)
+    implementation(libs.okhttp)
     testImplementation(libs.junit)
     testImplementation(libs.mockito.core)
 }

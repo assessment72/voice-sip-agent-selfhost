@@ -1,0 +1,38 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "rewrites": [
+    {
+      "source": "/mcp",
+      "destination": "/api/mcp"
+    },
+    {
+      "source": "/healthz",
+      "destination": "/api/healthz"
+    },
+    {
+      "source": "/v1/agent",
+      "destination": "/api/v1/agent"
+    },
+    {
+      "source": "/dashboard",
+      "destination": "/api/dashboard"
+    },
+    {
+      "source": "/admin/gateways",
+      "destination": "/api/admin/gateways"
+    },
+    {
+      "source": "/admin/audit",
+      "destination": "/api/admin/audit"
+    },
+    {
+      "source": "/admin/gateways/:path*",
+      "destination": "/api/admin/gateways/:path*"
+    }
+  ],
+  "functions": {
+    "api/[...path].mjs": {
+      "maxDuration": 300
+    }
+  }
+}

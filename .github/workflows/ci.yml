@@ -40,7 +40,14 @@ jobs:
           yes | "$SDKMANAGER" --licenses >/dev/null || true
           "$SDKMANAGER" "platforms;android-36"
       - uses: gradle/actions/setup-gradle@v4
-      - run: ./gradlew -Pandroid.compileSdk=36 :app:compileDebugKotlin
+      - run: ./gradlew :app:compileDebugKotlin :app:assembleDebug
+      - name: Upload debug APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: voice-sip-agent-debug-apk
+          path: app/build/outputs/apk/debug/*.apk
+          if-no-files-found: error
+          retention-days: 14
 
   voice-ai-relay:
     runs-on: ubuntu-latest
@@ -55,3 +62,24 @@ jobs:
       - run: npm install --ignore-scripts --no-audit --no-fund
       - run: npm run check
       - run: npm test
+
+  central-mcp:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: central-mcp-server
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm install --ignore-scripts --no-audit --no-fund
+      - run: npm run check
+      - run: npm test
+
+  central-mcp-container:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build central MCP container
+        run: docker build -t voice-sip-central-mcp:test central-mcp-server
