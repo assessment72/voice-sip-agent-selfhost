@@ -112,8 +112,10 @@ class GatewayRuntime private constructor(context: Context) {
         PrivilegedAudioOpener(shizuku, { settings.audioMethod }, { settings.muteEarpiece }, ::audioFormat),
         logger = { AppLog.i(it) },
     )
-    /** Built-in SIP user agent. */
+    /** Local registrar in device-in-itself mode, or the upstream PBX in client mode. */
     private var sip: CallEndpoint? = null
+    /** Optional upstream SIP trunk used together with the local registrar. */
+    private var sipTrunk: SipUserAgent? = null
     private var bridge: CallBridge? = null
     private var echo: EchoEndpoint? = null
     private var started = false
@@ -502,8 +504,18 @@ class GatewayRuntime private constructor(context: Context) {
     }
 
     private fun sipStatus(endpoint: CallEndpoint, status: EndpointStatus) = worker.execute {
-        if (sip !== endpoint) return@execute
-        _health.update { it.copy(sip = status) }
+        if (sip !== endpoint && sipTrunk !== endpoint) return@execute
+        val registrar = sip as? SipUserAgent
+        val upstream = sipTrunk
+        val combined = if (registrar != null && upstream != null) {
+            val phoneReady = registrar.hasRegisteredPeer
+            val providerReady = upstream.status.ready
+            EndpointStatus(
+                ready = phoneReady && providerReady,
+                detail = "local phone: ${if (phoneReady) "registered" else "waiting"}; provider: ${upstream.status.detail}",
+            )
+        } else status
+        _health.update { it.copy(sip = combined) }
         updateReadiness()
     }
 
@@ -534,29 +546,83 @@ class GatewayRuntime private constructor(context: Context) {
             return
         }
         try {
-            val ep: CallEndpoint = SipUserAgent(
-                SipConfig(
-                    account = SipAccount(
-                        server = s.server,
-                        port = s.port,
-                        username = s.username,
-                        password = s.password,
-                        domain = s.domain.ifBlank { s.server },
-                        displayName = "gateway",
+            if (s.serverMode) {
+                // Keep the registrar local and authoritative. The existing PBX fields become an
+                // optional upstream trunk; they are not used as the local registrar credentials.
+                val registrar = SipUserAgent(
+                    SipConfig(
+                        account = SipAccount(
+                            server = "127.0.0.1",
+                            username = "gateway",
+                            password = "",
+                            domain = "gateway.local",
+                            displayName = "gateway",
+                        ),
+                        localPort = s.localSipPort,
+                        serverMode = true,
+                        registrarLeaseSec = s.registrarLeaseSec,
+                        registrarPassword = s.registrarPassword,
+                        maxConcurrentCalls = 1,
                     ),
-                    localPort = s.localSipPort,
-                    serverMode = s.serverMode,
-                    registrarLeaseSec = s.registrarLeaseSec,
-                    registrarPassword = s.registrarPassword,
-                ),
-                sipLog,
-            ).also { ua ->
-                ua.addStatusListener { ep, st -> sipStatus(ep, st) }
-                ua.start()
+                    sipLog,
+                )
+                sip = registrar
+                registrar.addStatusListener { ep, st -> sipStatus(ep, st) }
+                registrar.start()
+
+                val trunkConfigured = s.server.isNotBlank() && s.username.isNotBlank() && s.password.isNotEmpty()
+                if (trunkConfigured) {
+                    val upstream = SipUserAgent(
+                        SipConfig(
+                            account = SipAccount(
+                                server = s.server,
+                                port = s.port,
+                                username = s.username,
+                                password = s.password,
+                                domain = s.domain.ifBlank { s.server },
+                                displayName = "gateway",
+                            ),
+                            localPort = 0,
+                            serverMode = false,
+                            maxConcurrentCalls = 1,
+                        ),
+                        sipLog,
+                    )
+                    sipTrunk = upstream
+                    upstream.addStatusListener { ep, st -> sipStatus(ep, st) }
+                    upstream.start()
+                    AppLog.i("SIP stack: local registrar + one-account upstream trunk")
+                } else {
+                    AppLog.i("SIP stack: local registrar only; upstream trunk credentials not configured")
+                }
+                val current = if (sipTrunk == null) registrar.status else EndpointStatus(
+                    ready = registrar.hasRegisteredPeer && sipTrunk?.status?.ready == true,
+                    detail = "local phone: ${if (registrar.hasRegisteredPeer) "registered" else "waiting"}; provider: ${sipTrunk?.status?.detail}",
+                )
+                _health.update { it.copy(sip = current) }
+            } else {
+                val upstream = SipUserAgent(
+                    SipConfig(
+                        account = SipAccount(
+                            server = s.server,
+                            port = s.port,
+                            username = s.username,
+                            password = s.password,
+                            domain = s.domain.ifBlank { s.server },
+                            displayName = "gateway",
+                        ),
+                        localPort = s.localSipPort,
+                        serverMode = false,
+                        maxConcurrentCalls = 1,
+                    ),
+                    sipLog,
+                )
+                sip = upstream
+                upstream.addStatusListener { ep, st -> sipStatus(ep, st) }
+                upstream.start()
+                _health.update { it.copy(sip = upstream.status) }
+                AppLog.i("SIP stack: built-in client mode")
             }
-            sip = ep
-            _health.update { it.copy(sip = ep.status) }
-            AppLog.i("SIP stack: built-in${if (s.serverMode) " (server mode)" else ""}")
         } catch (e: Throwable) {
             AppLog.w("SIP start failed", e)
             _health.update { it.copy(sip = EndpointStatus(false, "start failed: ${e.message}")) }
@@ -564,13 +630,17 @@ class GatewayRuntime private constructor(context: Context) {
     }
 
     private fun stopSip(releaseLibrary: Boolean = false) {
-        val previous = sip
+        val previous = sip as? SipUserAgent
+        val upstream = sipTrunk
         sip = null
-        (previous as? SipUserAgent)?.stop()
+        sipTrunk = null
+        upstream?.stop()
+        previous?.stop()
     }
 
     private fun refreshSipRegistration() {
         (sip as? SipUserAgent)?.refreshRegistration()
+        sipTrunk?.refreshRegistration()
     }
 
     private fun watchNetwork() {
@@ -617,6 +687,36 @@ class GatewayRuntime private constructor(context: Context) {
             return
         }
         val loopback = _health.value.loopbackTest
+        val localRegistrar = sip as? SipUserAgent
+        val upstreamTrunk = sipTrunk
+        if (!loopback && s.serverMode && localRegistrar != null && upstreamTrunk != null) {
+            val trunkBridge = CallBridge(
+                sideA = upstreamTrunk,
+                sideB = localRegistrar,
+                // Calls arriving from the provider are delivered to the one registered softphone.
+                routeAtoB = { if (localRegistrar.hasRegisteredPeer) "phone" else null },
+                // Calls from the registered softphone carry the destination in the INVITE URI.
+                routeBtoA = { leg -> leg.target?.let(io.github.sparkcyf.voicesipagent.sip.SipDestination::normalize) },
+                config = GatewayConfig(
+                    busyPolicy = s.busyPolicy,
+                    allowedDialPrefixes = s.allowedPrefixes.split(',').map { it.trim() }.filter { it.isNotEmpty() },
+                ),
+                log = { AppLog.i("bridge: $it") },
+            )
+            trunkBridge.addListener { session ->
+                val description = describe(session)
+                worker.execute {
+                    if (bridge !== trunkBridge) return@execute
+                    _health.update { it.copy(session = description) }
+                    syncForegroundService()
+                    if (session.endedAtMs != null && !cellular.hasCalls) applyDeferredChanges()
+                }
+            }
+            bridge = trunkBridge
+            trunkBridge.start()
+            AppLog.i("bridge ready: local SIP phone <-> upstream SIP trunk (one call)")
+            return
+        }
         val sideB: CallEndpoint? = if (loopback) EchoEndpoint(format = audioFormat()).also { echo = it } else sip
         if (sideB == null) {
             bridge = null
@@ -769,7 +869,8 @@ class GatewayRuntime private constructor(context: Context) {
             appendLine("shizuku=${h.shizuku} (${h.shizukuDetail})")
             appendLine("privileged=${h.privileged} ${h.privilegedDetail}")
             appendLine("sip=${h.sip.detail} ready=${h.sip.ready} stack=builtin " +
-                "transport=${settings.sipTransport} srtp=${settings.srtp} debugLog=${settings.sipDebugLog}")
+                "transport=${settings.sipTransport} maxCalls=1 trunk=${sipTrunk?.status?.detail ?: "disabled"} " +
+                "srtp=${settings.srtp} debugLog=${settings.sipDebugLog}")
             appendLine("cellular=${cellular.status.detail} inCallServiceBound=${CellularEndpoint.isInCallServiceBound} " +
                 "service=${CellularEndpoint.boundServiceDescription ?: "none"}")
             appendLine("sdk=${Build.VERSION.SDK_INT} callAccess=${settings.callAccess} effective=${h.effectiveCallAccess} " +
