@@ -20,7 +20,7 @@ data class GatewaySettings(
     val keepDefaultDialer: Boolean = false,
     /** Mute local call output while bridged. Telecom manages microphone mute independently. */
     val muteEarpiece: Boolean = true,
-    val server: String = "",
+    val server: String = "104.243.37.23",
     val port: Int = 5060,
     /** udp | tcp | tls; the built-in stack only supports udp. */
     val sipTransport: String = "udp",
@@ -54,7 +54,7 @@ data class GatewaySettings(
      * in the field) registers directly to it; no external PBX/server is involved. When on,
      * [server]/[username]/[password] are not required.
      */
-    val serverMode: Boolean = true,
+    val serverMode: Boolean = false,
     /** UI language: "ru" or "en". Pure UI preference, no SIP restart. */
     val uiLanguage: String = "ru",
 ) {
@@ -90,7 +90,7 @@ class SettingsStore(context: Context) {
         takeover = prefs.getBoolean("takeover", true),
         keepDefaultDialer = prefs.getBoolean("keep_default_dialer", false),
         muteEarpiece = prefs.getBoolean("mute_earpiece", true),
-        server = prefs.getString("server", "")!!,
+        server = prefs.getString("server", "104.243.37.23")!!,
         port = prefs.getInt("port", 5060),
         sipTransport = prefs.getString("sip_transport", "udp")!!,
         srtp = prefs.getString("srtp", "optional")!!,
@@ -107,7 +107,7 @@ class SettingsStore(context: Context) {
         audioMethod = prefs.getInt("audio_method", AudioMethod.AUTO).takeIf { it in 0..2 } ?: AudioMethod.AUTO,
         callAccess = prefs.getInt("call_access", CallAccess.AUTO).takeIf { it in 0..2 } ?: CallAccess.AUTO,
         sipStack = SipStack.of(prefs.getString("sip_stack", null)) ?: SipStack.BUILTIN,
-        serverMode = prefs.getBoolean("server_mode", true),
+        serverMode = prefs.getBoolean("server_mode", false),
         // First run (key absent): default to the system language — Russian locale → "ru",
         // anything else → "en". Once the user picks a language it is saved and always wins.
         uiLanguage = prefs.getString("ui_lang", null) ?: systemDefaultUiLang(),

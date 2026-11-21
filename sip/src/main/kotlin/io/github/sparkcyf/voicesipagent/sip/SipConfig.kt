@@ -21,6 +21,10 @@ data class SipConfig(
     /** Local SIP UDP port; 0 picks an ephemeral one. */
     val localPort: Int = 0,
     val registerExpiresSec: Int = 300,
+    /** Send SIP OPTIONS from the bound UDP socket to keep NAT mappings alive; 0 disables. */
+    val natKeepaliveIntervalSec: Int = 25,
+    /** Learn the peer RTP source port after validating its source IP against SDP. */
+    val symmetricRtp: Boolean = true,
     val userAgent: String = "voice-sip-agent/0.1",
     val codecs: List<AudioCodec> = listOf(AudioCodec.PCMU, AudioCodec.PCMA),
     val rtpPortRange: IntRange = 10000..20000,

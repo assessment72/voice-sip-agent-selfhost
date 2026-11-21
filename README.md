@@ -12,7 +12,7 @@
   to set everything up from scratch (Russian).
 - **Reference:** [app settings](docs/settings-ru.md) · [baresip client](docs/client-baresip.md) ·
   [Shizuku after a reboot](docs/shizuku-reboot.md) · [internet and security](docs/internet-security.md).
-- **For developers:** [building the APK](#building-the-apk).
+- **For developers:** [building the APK](#building-the-apk) · [SIP registration through NAT](docs/nat-registration.md).
 
 A fairly recent old Android phone with your SIM sits at home on a charger and Wi-Fi. The incoming
 **voice calls and SMS** that arrive on its number are relayed to your phone over the internet -
@@ -173,7 +173,7 @@ gives "CANDIDATE/NOPE", the working audio method, bootloader state, and the reco
    adb shell pm grant io.github.sparkcyf.voicesipagent android.permission.READ_PHONE_NUMBERS
    adb shell pm grant io.github.sparkcyf.voicesipagent android.permission.RECEIVE_SMS
    ```
-7. **Server mode is on by default.** Find the gateway's IP:
+7. **Central registrar mode is the default.** To use the phone as a standalone local registrar instead, turn Device-in-itself mode on. Find the gateway's IP:
    ```bash
    adb shell "ip -4 addr show wlan0 | grep -o 'inet [0-9.]*'"
    ```
@@ -198,12 +198,16 @@ Short version for "device-in-itself" mode:
 
 | Item | Value |
 |---|---|
-| Device-in-itself mode (built-in SIP server) | **on** (default) - PBX fields can stay empty |
+| Device-in-itself mode (built-in SIP server) | **off** (default central-registration mode); turn on only for a standalone local registrar |
 | Local SIP port | **5062** |
 | Registration lease | **600 s** (raise to 1200 if registration keeps expiring) |
 | Cellular audio | **Direct telephony** on the Nubia; otherwise try Call redirection (§4.4) |
 
 ---
+
+## Registering this gateway to a central SIP server
+
+To make this gateway phone register outward to a central PBX (including when it is behind 4G/5G NAT or CGNAT), turn **Device-in-itself mode off** in the app and enter the registrar host, UDP port, SIP username, password, and domain. The built-in client refreshes its 300-second registration and sends SIP OPTIONS NAT keepalives every 25 seconds. RTP uses symmetric source-port learning. The central registrar must rewrite the Contact to the observed source address/port, and the central media server must anchor RTP and advertise a reachable media address. See [the NAT setup guide](docs/nat-registration.md).
 
 ## Recommended client - baresip
 

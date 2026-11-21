@@ -17,6 +17,7 @@ data class RtpParams(
     val payloadType: Int,
     val telephoneEventPt: Int?,
     val sendEnabled: Boolean,
+    val symmetricRtp: Boolean = true,
 )
 
 /**
@@ -146,6 +147,11 @@ class RtpSession(
             val len = pkt.length
             if (len < 12 || (buf[0].toInt() and 0xc0) != 0x80) continue
             if (pkt.address != p.remote.address && !isSameHostFallback(pkt.address, p.remote.address)) continue
+            // NAT may rewrite the advertised RTP port. Once the source IP is validated,
+            // send media back to the actual source port (symmetric RTP / RFC 4961 behavior).
+            if (p.symmetricRtp && pkt.port > 0 && pkt.port != p.remote.port && pkt.address == p.remote.address) {
+                params = p.copy(remote = InetSocketAddress(pkt.address, pkt.port))
+            }
             val cc = buf[0].toInt() and 0x0f
             val hasExt = (buf[0].toInt() and 0x10) != 0
             val hasPad = (buf[0].toInt() and 0x20) != 0

@@ -58,6 +58,7 @@ class SipUserAgent(
     private val regTag = newTag()
     private var regCseq = 0L
     private var regRefresh: ScheduledFuture<*>? = null
+    private var natKeepaliveTask: ScheduledFuture<*>? = null
     private var regAuthAttempts = 0
     private var started = false
     private var stopping = false
@@ -101,6 +102,7 @@ class SipUserAgent(
             resolve()
             log.info("started on $localIp:$localPort -> ${account.server}:${account.port}")
             register()
+            startNatKeepalive()
         }
         executor.scheduleWithFixedDelay({ checkMedia() }, 5, 5, TimeUnit.SECONDS)
     }
@@ -113,6 +115,7 @@ class SipUserAgent(
             stopping = true
             calls.values.toList().forEach { it.hangup(HangupCause.NORMAL) }
             regRefresh?.cancel(false)
+            natKeepaliveTask?.cancel(false)
             peerExpiry?.cancel(false)
             if (config.serverMode) done.countDown() else sendRegister(0, null) { done.countDown() }
         }
@@ -171,6 +174,32 @@ class SipUserAgent(
     }
 
     // ---------------------------------------------------------------- registration
+
+    /** Keep the outbound UDP mapping alive while registered behind NAT/CGNAT. */
+    private fun startNatKeepalive() {
+        natKeepaliveTask?.cancel(false)
+        val interval = config.natKeepaliveIntervalSec
+        if (interval <= 0 || config.serverMode) return
+        natKeepaliveTask = executor.scheduleWithFixedDelay({
+            if (!started || stopping || config.serverMode) return@scheduleWithFixedDelay
+            runCatching {
+                val uri = "sip:${account.domain}"
+                val probe = newRequest(
+                    method = "OPTIONS",
+                    uri = uri,
+                    from = NameAddr(account.displayName, aor).withTag(regTag),
+                    to = NameAddr(account.displayName, aor),
+                    callId = newCallId(),
+                    cseq = 1,
+                )
+                // Uses the same bound UDP socket and Via;rport as REGISTER.
+                sendClient(probe) { response ->
+                    if (response == null) log.warn("NAT keepalive timed out")
+                }
+            }.onFailure { log.warn("NAT keepalive failed", it) }
+        }, interval.toLong(), interval.toLong(), TimeUnit.SECONDS)
+        log.info("NAT keepalive enabled every ${interval}s (SIP OPTIONS/UDP)")
+    }
 
     private fun register() {
         regRefresh?.cancel(false)
