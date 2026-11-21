@@ -258,6 +258,29 @@ class CellularOwnershipTest {
         }
     }
 
+    @Test fun missingSim2RefusesOutboundCallWithoutDefaultSimFallback() {
+        doReturn(null).\`when\`(subscriptions).getActiveSubscriptionInfoForSimSlotIndex(1)
+
+        val outgoing = endpoint.dial("5551234567", Party(null))
+        drainMain()
+
+        assertEquals(LegState.ENDED, outgoing.state)
+        assertEquals(HangupCause.UNAVAILABLE, outgoing.endCause)
+        verify(subscriptions).getActiveSubscriptionInfoForSimSlotIndex(1)
+        verify(telecom, never()).placeCall(any(Uri::class.java), any(Bundle::class.java))
+    }
+
+    @Test fun mismatchedSim2PhoneAccountRefusesOutboundCall() {
+        doReturn(3).\`when\`(telephony).getSubscriptionId(any(PhoneAccountHandle::class.java))
+
+        val outgoing = endpoint.dial("5551234567", Party(null))
+        drainMain()
+
+        assertEquals(LegState.ENDED, outgoing.state)
+        assertEquals(HangupCause.UNAVAILABLE, outgoing.endCause)
+        verify(telecom, never()).placeCall(any(Uri::class.java), any(Bundle::class.java))
+    }
+
     @Test fun permissionRevocationBeforeQueuedPlacementRefusesCall() {
         val outgoing = endpoint.dial("5551234567", Party(null))
         doReturn(android.content.pm.PackageManager.PERMISSION_DENIED).`when`(context)
