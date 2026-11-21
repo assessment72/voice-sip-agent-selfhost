@@ -133,6 +133,8 @@ test("Arabic dashboard is served and admin APIs require authentication", async t
   assert.match(html, /مركز إدارة بوابات SIP/);
   assert.match(html, /تسجيل بوابة/);
   assert.match(html, /تدوير الرمز/);
+  assert.match(html, /نوع تشغيل SIP/);
+  assert.match(html, /ملخص المكالمات/);
   assert.equal((await fetch(url + "/api/admin/gateways")).status, 401);
   assert.equal((await fetch(url + "/api/admin/audit?gateway_id=gw01", {
     headers: { authorization: "Bearer admin-test-token" }
@@ -147,7 +149,7 @@ test("dashboard gateway API exposes allowlisted metadata only", async t => {
   await once(ws, "open");
   t.after(() => { if (ws.readyState === WebSocket.OPEN) ws.close(); });
   ws.send(JSON.stringify({ type: "heartbeat", metadata: {
-    manufacturer: "HONOR", model: "MTN-NX1", sip_ready: true, takeover: true,
+    manufacturer: "HONOR", model: "MTN-NX1", sip_ready: true, server_mode: true, active_call: false, call_summary: "idle", takeover: true,
     sip_password: "must-never-leak", device_token: "must-never-leak"
   }}));
   await new Promise(resolve => setTimeout(resolve, 20));
@@ -160,6 +162,8 @@ test("dashboard gateway API exposes allowlisted metadata only", async t => {
   assert.ok(gateway);
   assert.equal(gateway.metadata.manufacturer, "HONOR");
   assert.equal(gateway.metadata.sip_ready, true);
+  assert.equal(gateway.metadata.server_mode, true);
+  assert.equal(gateway.metadata.call_summary, "idle");
   assert.equal("sip_password" in gateway.metadata, false);
   assert.equal("device_token" in gateway.metadata, false);
   assert.equal("instance_id" in gateway, false);
