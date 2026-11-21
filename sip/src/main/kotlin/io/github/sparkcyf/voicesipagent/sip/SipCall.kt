@@ -87,6 +87,13 @@ internal class SipCall(
             return
         }
         val acct = config.account
+        val safeTarget = if (ua.isServerMode) target else SipDestination.normalize(target)
+        if (safeTarget == null) {
+            log.warn("refusing invalid SIP destination")
+            end(HangupCause.FORBIDDEN)
+            finish()
+            return
+        }
         val display = caller.displayName ?: caller.number ?: acct.displayName
         if (ua.isServerMode) {
             // Device-in-itself: send straight to the registered phone; show the caller's number in From.
@@ -95,7 +102,7 @@ internal class SipCall(
             remoteUri = NameAddr(null, ua.serverPeerUri() ?: "sip:$target@${ua.selfDomain}")
         } else {
             localUri = NameAddr(display, ua.aor)
-            remoteUri = NameAddr(null, "sip:$target@${acct.domain}")
+            remoteUri = NameAddr(null, "sip:$safeTarget@${acct.domain}")
         }
         remoteTarget = remoteUri.uri
         ua.registerCall(this)
