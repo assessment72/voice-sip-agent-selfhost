@@ -81,6 +81,8 @@ class SipUserAgent(
     internal val isServerMode get() = config.serverMode
     private var peerAor: String? = null
     @Volatile private var peerContactUri: String? = null
+    /** True while the one configured local softphone has a live registrar contact. */
+    val hasRegisteredPeer: Boolean get() = peerContactUri != null
     private var peerExpiry: ScheduledFuture<*>? = null
     /** Full SIP URI (sip:user@ip:port) to reach the registered phone, or null if none. */
     internal fun serverPeerUri(): String? = peerContactUri
