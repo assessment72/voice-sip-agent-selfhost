@@ -23,9 +23,9 @@ is built into the app. **No root required.**
 
 ```
 Caller ──GSM/VoLTE──► Gateway phone (SIM + app)
-                         ├─ built-in SIP registrar :5062 ◄─REGISTER─ softphone (anywhere)
-                         ├─ answers the call itself, call audio ↔ SIP (RTP)
-                         └─ incoming SMS → SIP MESSAGE ──────────► softphone chat
+                         ├─ built-in SIP registrar :5062 ◄─REGISTER─ softphone (LAN / direct port-forward)
+                         ├─ optional SIP trunk client ───────────► upstream provider
+                         └─ incoming SMS → SIP MESSAGE ──────────► registered softphone
 ```
 
 This is **track A** of the larger "переадресация" project. Track B (a fork of
