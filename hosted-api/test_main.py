@@ -73,6 +73,33 @@ def test_allowlist_must_be_configured(tmp_path, monkeypatch):
                            headers=headers("test-caller-token", **{"Idempotency-Key": str(uuid.uuid4())}))
     assert response.status_code == 503
 
+def test_idempotent_replay_does_not_consume_rate_limit(tmp_path, monkeypatch):
+    client = setup_client(tmp_path, monkeypatch)
+    monkeypatch.setattr(main, "RATE_LIMIT", 1)
+    key = str(uuid.uuid4())
+    h = headers("test-caller-token", **{"Idempotency-Key": key})
+    payload = {"phoneNumber": "777405578"}
+    first = client.post("/v1/calls", json=payload, headers=h)
+    replay = client.post("/v1/calls", json=payload, headers=h)
+    assert first.status_code == 202
+    assert replay.status_code == 202
+    assert replay.json()["id"] == first.json()["id"]
+
+
+def test_unfinished_queued_job_claim_expires_and_can_be_retried(tmp_path, monkeypatch):
+    client = setup_client(tmp_path, monkeypatch)
+    key = str(uuid.uuid4())
+    created = client.post("/v1/calls", json={"phoneNumber": "777405578"},
+                          headers=headers("test-caller-token", **{"Idempotency-Key": key})).json()
+    device_headers = headers("test-device-token")
+    first = client.get("/v1/device/jobs/next", headers=device_headers).json()["job"]
+    assert first["id"] == created["id"]
+    import time
+    start = time.time()
+    monkeypatch.setattr(main.time, "time", lambda: start + 31)
+    retried = client.get("/v1/device/jobs/next", headers=device_headers).json()["job"]
+    assert retried["id"] == created["id"]
+
 def test_device_cannot_update_unclaimed_call(tmp_path, monkeypatch):
     client = setup_client(tmp_path, monkeypatch)
     key = str(uuid.uuid4())
