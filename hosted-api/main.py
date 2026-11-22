@@ -192,11 +192,10 @@ def next_job(device_id=Depends(device)):
     now = int(time.time())
     with db() as c:
         c.execute("BEGIN IMMEDIATE")
-        c.execute("UPDATE calls SET state='failed',reason_code='queue_expired',updated_at=? WHERE state='queued' AND expires_at<?",
+        c.execute("UPDATE calls SET state='failed',reason_code='queue_expired',updated_at=? WHERE state='queued' AND expires_at<?", (now, now))
         c.execute("UPDATE calls SET state='failed',reason_code='cellular_answer_timeout',updated_at=? WHERE state='ringing_cellular' AND updated_at<?", (now, now - CELL_RING_TIMEOUT))
         c.execute("UPDATE calls SET state='failed',reason_code='sip_answer_timeout',updated_at=? WHERE state='calling_sip' AND updated_at<?", (now, now - SIP_RING_TIMEOUT))
         c.execute("UPDATE calls SET state='ended',reason_code='max_call_duration',updated_at=? WHERE state='bridged' AND updated_at<?", (now, now - MAX_CALL))
-                  (now, now))
         row = c.execute("SELECT * FROM calls WHERE state='queued' AND claimed_by IS NULL AND expires_at>=? ORDER BY created_at LIMIT 1",
                         (now,)).fetchone()
         if not row:
