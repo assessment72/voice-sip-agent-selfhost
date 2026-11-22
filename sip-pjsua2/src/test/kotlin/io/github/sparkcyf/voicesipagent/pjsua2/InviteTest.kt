@@ -11,8 +11,30 @@ class InviteTest {
 
     @Test
     fun targetPrefersDialHeader() {
-        val msg = invite("android-gw", "From: <sip:302@pbx>;tag=1", "X-VSA-Dial: 5551234567")
-        assertEquals("5551234567", Invite.target(msg))
+        val msg = invite("android-gw", "To: <sip:737445440@sip.linphone.org>", "From: <sip:302@pbx>;tag=1", "X-VSA-Dial: sip737445440")
+        assertEquals("sip737445440", Invite.target(msg))
+    }
+
+    @Test
+    fun targetReadsDynamicToWhenRegistrarRewritesRequestUri() {
+        val msg = invite("ofkkr8214t", "To: \"Mobile\" <sip:sip737445440@sip.linphone.org>;tag=1")
+        assertEquals("sip737445440", Invite.target(msg, "ofkkr8214t"))
+    }
+
+    @Test
+    fun targetReadsPCalledPartyIdWhenToIsFixedGatewayAor() {
+        val msg = invite(
+            "ofkkr8214t",
+            "To: <sip:ofkkr8214t@sip.linphone.org>",
+            "P-Called-Party-ID: <sip:737445440@sip.linphone.org>",
+        )
+        assertEquals("737445440", Invite.target(msg, "ofkkr8214t"))
+    }
+
+    @Test
+    fun targetSkipsFixedGatewayToAndRequestUri() {
+        val msg = invite("ofkkr8214t", "To: <sip:ofkkr8214t@sip.linphone.org>")
+        assertNull(Invite.target(msg, "ofkkr8214t"))
     }
 
     @Test
