@@ -46,6 +46,10 @@ data class GatewaySettings(
     val inboundTarget: String = "",
     /** Comma-separated; empty = any number may be dialed out. */
     val allowedPrefixes: String = "",
+    /** HTTPS control-plane URL for hosted outbound calls; blank disables polling. */
+    val hostedApiUrl: String = "",
+    /** Per-device bearer credential, sealed with Android Keystore. */
+    val hostedDeviceToken: String = "",
     val busyPolicy: BusyPolicy = BusyPolicy.REJECT,
     val audioMethod: Int = AudioMethod.AUTO,
     val callAccess: Int = CallAccess.AUTO,
@@ -110,6 +114,8 @@ class SettingsStore(context: Context) {
         registrarPassword = prefs.getString("registrar_password_sealed", null)?.let(::unseal).orEmpty(),
         inboundTarget = prefs.getString("inbound_target", "")!!,
         allowedPrefixes = prefs.getString("allowed_prefixes", "")!!,
+        hostedApiUrl = prefs.getString("hosted_api_url", "")!!,
+        hostedDeviceToken = prefs.getString("hosted_device_token_sealed", null)?.let { unsealWithAlias(it, HOSTED_KEY_ALIAS) }.orEmpty(),
         busyPolicy = runCatching { BusyPolicy.valueOf(prefs.getString("busy_policy", "REJECT")!!) }.getOrDefault(BusyPolicy.REJECT),
         audioMethod = prefs.getInt("audio_method", AudioMethod.AUTO).takeIf { it in 0..2 } ?: AudioMethod.AUTO,
         callAccess = prefs.getInt("call_access", CallAccess.AUTO).takeIf { it in 0..2 } ?: CallAccess.AUTO,
@@ -139,6 +145,8 @@ class SettingsStore(context: Context) {
             .putString("registrar_password_sealed", seal(s.registrarPassword))
             .putString("inbound_target", s.inboundTarget.trim())
             .putString("allowed_prefixes", s.allowedPrefixes.trim())
+            .putString("hosted_api_url", s.hostedApiUrl.trim())
+            .putString("hosted_device_token_sealed", sealWithAlias(s.hostedDeviceToken, HOSTED_KEY_ALIAS))
             .putString("busy_policy", s.busyPolicy.name)
             .putInt("audio_method", s.audioMethod)
             .putInt("call_access", s.callAccess)
@@ -148,12 +156,12 @@ class SettingsStore(context: Context) {
             .apply()
     }
 
-    private fun key(): SecretKey {
+    private fun key(alias: String = KEY_ALIAS): SecretKey {
         val ks = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
-        (ks.getKey(KEY_ALIAS, null) as? SecretKey)?.let { return it }
+        (ks.getKey(alias, null) as? SecretKey)?.let { return it }
         val gen = KeyGenerator.getInstance(KeyProperties.KEY_ALGORITHM_AES, "AndroidKeyStore")
         gen.init(
-            KeyGenParameterSpec.Builder(KEY_ALIAS, KeyProperties.PURPOSE_ENCRYPT or KeyProperties.PURPOSE_DECRYPT)
+            KeyGenParameterSpec.Builder(alias, KeyProperties.PURPOSE_ENCRYPT or KeyProperties.PURPOSE_DECRYPT)
                 .setBlockModes(KeyProperties.BLOCK_MODE_GCM)
                 .setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_NONE)
                 .build(),
@@ -161,24 +169,29 @@ class SettingsStore(context: Context) {
         return gen.generateKey()
     }
 
-    private fun seal(plain: String): String {
+    private fun seal(plain: String): String = sealWithAlias(plain, KEY_ALIAS)
+
+    private fun unseal(sealed: String): String? = unsealWithAlias(sealed, KEY_ALIAS)
+
+    private fun sealWithAlias(plain: String, alias: String): String {
         val c = Cipher.getInstance("AES/GCM/NoPadding")
-        c.init(Cipher.ENCRYPT_MODE, key())
+        c.init(Cipher.ENCRYPT_MODE, key(alias))
         val out = c.iv + c.doFinal(plain.toByteArray())
         return Base64.encodeToString(out, Base64.NO_WRAP)
     }
 
-    private fun unseal(sealed: String): String? = try {
+    private fun unsealWithAlias(sealed: String, alias: String): String? = try {
         val raw = Base64.decode(sealed, Base64.NO_WRAP)
         val c = Cipher.getInstance("AES/GCM/NoPadding")
-        c.init(Cipher.DECRYPT_MODE, key(), GCMParameterSpec(128, raw, 0, 12))
+        c.init(Cipher.DECRYPT_MODE, key(alias), GCMParameterSpec(128, raw, 0, 12))
         String(c.doFinal(raw, 12, raw.size - 12))
     } catch (e: Exception) {
-        AppLog.w("stored SIP password unreadable; re-enter it", e)
+        AppLog.w("stored encrypted setting unreadable; re-enter it", e)
         null
     }
 
     companion object {
         private const val KEY_ALIAS = "sip-password"
+        private const val HOSTED_KEY_ALIAS = "hosted-api-device-token"
     }
 }
