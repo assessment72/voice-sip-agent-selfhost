@@ -122,7 +122,7 @@ class SipInboundDynamicTargetTest {
                     ua,
                     "sip:777405578@sip.linphone.org",
                     withSdp = true,
-                    extraHeaders = "X-VSA-Dial: sip737445440\\r\\n",
+                    extraHeaders = "X-VSA-Dial: sip737445440\r\n",
                 )
                 assertTrue("X-VSA-Dial INVITE did not reach the bridge handler", received.await(3, TimeUnit.SECONDS))
                 assertEquals("+967737445440", target.get())
@@ -140,7 +140,7 @@ class SipInboundDynamicTargetTest {
                     peer,
                     ua,
                     "sip:777405578@sip.linphone.org",
-                    extraHeaders = "X-VSA-Dial: 12345\\r\\n",
+                    extraHeaders = "X-VSA-Dial: 12345\r\n",
                 )
                 val packet = DatagramPacket(ByteArray(65535), 65535)
                 peer.receive(packet)
