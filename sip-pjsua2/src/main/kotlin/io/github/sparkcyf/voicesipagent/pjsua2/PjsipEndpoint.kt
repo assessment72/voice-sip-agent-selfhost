@@ -201,7 +201,10 @@ class PjsipEndpoint(
         val rdata = prm.rdata
         val src = rdata.srcAddress
         val msg = rdata.wholeMsg
-        val target = Invite.target(msg)
+        // A registrar commonly rewrites Request-URI to the registered Contact while retaining
+        // the originally called user in To. Prefer explicit dial metadata, then To/PAI target,
+        // and only then Request-URI. Ignore our own fixed AoR in To/Request-URI.
+        val target = Invite.target(msg, config.username)
         val caller = Invite.caller(msg)
         val leg = PjsipCall(this, LegDirection.INBOUND, caller, target, "p${ids.getAndIncrement()}")
         val call = leg.GwCall(acc, prm.callId)
@@ -251,16 +254,25 @@ class PjsipEndpoint(
 /** Minimal parsing of a received INVITE for the trunk semantics pjsua does not expose directly. */
 internal object Invite {
     private val USER = Regex("^[^ ]+ (?:sips?|tel):([^@;> ]+)")
+    private val URI_USER = Regex("(?:sips?|tel):([^@;> ]+)")
 
-    /** Header carrying the number to dial when the Request-URI user must stay the gateway's own AoR. */
+    /** Header carrying the number to dial when a proxy rewrites Request-URI to the gateway AoR. */
     const val DIAL_HEADER = "X-VSA-Dial"
 
     /**
-     * The number the PBX wants us to dial: [DIAL_HEADER] if present (needed behind registrar-based
-     * proxies such as Flexisip, which route on the Request-URI user), else the Request-URI user.
+     * Resolves the cellular destination in this order:
+     * X-VSA-Dial, dynamic To user, P-Called-Party-ID, then Request-URI.
+     * The fixed gateway AoR is skipped in To/Request-URI so it is never mistaken for a phone number.
      */
-    fun target(msg: String): String? =
-        header(msg, DIAL_HEADER, null)?.takeIf { it.isNotBlank() } ?: requestUser(msg)
+    fun target(msg: String, fixedGatewayUser: String? = null): String? {
+        header(msg, DIAL_HEADER, null)?.takeIf { it.isNotBlank() }?.let { return it }
+        val fixed = setOfNotNull("gateway", fixedGatewayUser?.lowercase())
+        val toUser = header(msg, "To", "t")?.let(::uriUser)
+        if (!toUser.isNullOrBlank() && toUser.lowercase() !in fixed) return toUser
+        val calledParty = header(msg, "P-Called-Party-ID", null)?.let(::uriUser)
+        if (!calledParty.isNullOrBlank() && calledParty.lowercase() !in fixed) return calledParty
+        return requestUser(msg)?.takeUnless { it.lowercase() in fixed }
+    }
 
     fun requestUser(msg: String): String? = USER.find(msg.lineSequence().firstOrNull().orEmpty())?.groupValues?.get(1)
 
@@ -282,7 +294,7 @@ internal object Invite {
         return null
     }
 
-    private fun uriUser(v: String): String? = Regex("(?:sips?|tel):([^@;> ]+)").find(v)?.groupValues?.get(1)
+    private fun uriUser(v: String): String? = URI_USER.find(v)?.groupValues?.get(1)
 
     private fun display(v: String): String? {
         val lt = v.indexOf('<')
