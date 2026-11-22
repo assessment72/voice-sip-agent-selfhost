@@ -24,16 +24,26 @@ internal object YemeniSipDialTarget {
         data class Rejected(val error: Invalid) : Result
     }
 
-    private data class Candidate(val source: String, val raw: String?)
+    private data class Candidate(
+        val source: String,
+        val raw: String?,
+        /** Bare nine-digit national numbers are valid only when carried as a SIP URI user. */
+        val allowBareNational: Boolean = false,
+    )
 
     private val supportedMobilePrefixes = setOf("70", "71", "73", "77", "78")
 
     fun resolve(request: SipRequest, fixedGatewayUser: String? = "gateway"): Result {
+        val xVsa = request.headers["X-VSA-Dial"]
         val candidates = listOf(
-            Candidate("X-VSA-Dial", request.headers["X-VSA-Dial"]?.let(::xVsaUser)),
-            Candidate("To", request.headers["To"]?.let(::nameAddrUser)),
-            Candidate("P-Called-Party-ID", request.headers["P-Called-Party-ID"]?.let(::nameAddrUser)),
-            Candidate("Request-URI", SipUri.parse(request.uri)?.user),
+            Candidate(
+                "X-VSA-Dial",
+                xVsa?.let(::xVsaUser),
+                allowBareNational = xVsa?.let { it.contains("@") && NameAddr.parse(it) != null } == true,
+            ),
+            Candidate("To", request.headers["To"]?.let(::nameAddrUser), allowBareNational = true),
+            Candidate("P-Called-Party-ID", request.headers["P-Called-Party-ID"]?.let(::nameAddrUser), allowBareNational = true),
+            Candidate("Request-URI", SipUri.parse(request.uri)?.user, allowBareNational = true),
         )
         // Proxies commonly keep the gateway AoR in To or Request-URI. Treat that fixed account
         // identity as routing metadata, not as a destination; continue to the next source.
@@ -43,13 +53,15 @@ internal object YemeniSipDialTarget {
         } ?: return Result.Rejected(Invalid("none", "no dynamic target was supplied"))
 
         val encoded = selected.raw!!.trim()
-        if (!encoded.startsWith("sip", ignoreCase = true)) {
-            return Result.Rejected(Invalid(selected.source, "target must start with the literal sip prefix"))
+        val national = when {
+            encoded.startsWith("sip", ignoreCase = true) -> encoded.substring(3)
+            selected.allowBareNational && encoded.length == 9 && encoded.all { it in '0'..'9' } -> encoded
+            else -> return Result.Rejected(
+                Invalid(selected.source, "expected a SIP URI user with 9 digits or sip followed by 9 digits"),
+            )
         }
-
-        val national = encoded.substring(3)
         if (national.length != 9 || national.any { it !in '0'..'9' }) {
-            return Result.Rejected(Invalid(selected.source, "expected sip followed by exactly 9 digits"))
+            return Result.Rejected(Invalid(selected.source, "expected exactly 9 ASCII digits"))
         }
         if (national.first() != '7' || national.substring(0, 2) !in supportedMobilePrefixes) {
             return Result.Rejected(Invalid(selected.source, "number is not a supported Yemeni mobile prefix"))
@@ -58,7 +70,7 @@ internal object YemeniSipDialTarget {
         return Result.Accepted(
             Valid(
                 source = selected.source,
-                encodedUser = encoded,
+                encodedUser = "sip$national",
                 e164 = "+967$national",
             ),
         )
