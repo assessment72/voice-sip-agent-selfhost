@@ -26,7 +26,7 @@ MEM_KB="$(awk '/MemTotal:/ {print $2}' /proc/meminfo 2>/dev/null || echo 0)"
 MEM_GB="$(awk -v k="$MEM_KB" 'BEGIN {printf "%.2f", k/1048576}')"
 awk -v k="$MEM_KB" 'BEGIN {exit !(k >= 3670016)}' && ok "$MEM_GB GiB RAM" || bad "Need about 4 GiB RAM; found $MEM_GB GiB"
 
-ROOT_GB="$(df -BG --output= size / 2>/dev/null | tail -n 1 | tr -dc '0-9')"
+ROOT_GB="$(df -BG --output=size / 2>/dev/null | tail -n 1 | tr -dc '0-9')"
 ROOT_GB="${ROOT_GB:-0}"
 (( ROOT_GB >= 30 )) && ok "$ROOT_GB GiB root filesystem" || bad "Need at least 30 GiB root filesystem; found $ROOT_GB GiB"
 
