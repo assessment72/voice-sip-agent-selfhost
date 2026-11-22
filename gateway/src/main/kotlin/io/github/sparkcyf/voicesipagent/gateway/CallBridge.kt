@@ -196,7 +196,7 @@ class CallBridge(
         if (session !== s) return
         val a = s.inbound
         if (a.state == LegState.ENDED) {
-            endSession(s, if (s.connectedAtMs == null) (a.endCause ?: HangupCause.CANCELLED) else HangupCause.NORMAL)
+            endSession(s, if (s.connectedAtMs == null) HangupCause.CANCELLED else HangupCause.NORMAL)
             return
         }
         if (s.outbound == null && s.deferredOutboundTarget != null) {
