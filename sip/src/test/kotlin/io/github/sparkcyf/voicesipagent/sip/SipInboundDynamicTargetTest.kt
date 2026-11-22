@@ -75,7 +75,7 @@ class SipInboundDynamicTargetTest {
         DatagramSocket(0).use { peer ->
             val ua = start(peer)
             try {
-                sendInvite(peer, ua, "sip:777405578@sip2sip.info")
+                sendInvite(peer, ua, "sip:77740557@sip2sip.info")
                 val packet = DatagramPacket(ByteArray(65535), 65535)
                 peer.receive(packet)
                 val response = SipParser.parse(packet.data, packet.length) as SipResponse
