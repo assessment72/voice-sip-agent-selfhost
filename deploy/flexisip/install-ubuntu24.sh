@@ -33,7 +33,22 @@ apt-get install -y --no-install-recommends ca-certificates curl gnupg
 
 install -d -m 0755 /usr/share/keyrings
 TMP_KEY="$(mktemp)"
-trap 'rm -f "$TMP_KEY"' EXIT
+POLICY_RC_D="/usr/sbin/policy-rc.d"
+POLICY_BACKUP=""
+if [[ -e "$POLICY_RC_D" ]]; then
+  POLICY_BACKUP="$(mktemp)"
+  cp -a "$POLICY_RC_D" "$POLICY_BACKUP"
+fi
+restore_policy() {
+  if [[ -n "$POLICY_BACKUP" ]]; then
+    cp -a "$POLICY_BACKUP" "$POLICY_RC_D"
+    rm -f "$POLICY_BACKUP"
+  else
+    rm -f "$POLICY_RC_D"
+  fi
+}
+trap 'rm -f "$TMP_KEY"; restore_policy' EXIT
+
 curl --fail --show-error --silent --location \
   https://download.linphone.org/snapshots/ubuntu/pubkey.gpg \
   --output "$TMP_KEY"
@@ -45,7 +60,17 @@ deb [arch=amd64 signed-by=/usr/share/keyrings/belledonne-archive-keyring.gpg] ht
 EOF
 
 apt-get update
+
+# Prevent package maintainer scripts from starting daemons before we configure
+# SIP authentication, TLS and the media-relay range.
+cat > "$POLICY_RC_D" <<'EOF'
+#!/bin/sh
+exit 101
+EOF
+chmod 0755 "$POLICY_RC_D"
 apt-get install -y bc-flexisip ufw certbot
+restore_policy
+trap 'rm -f "$TMP_KEY"' EXIT
 
 FLEXISIP_BIN="/opt/belledonne-communications/bin/flexisip"
 if [[ ! -x "$FLEXISIP_BIN" ]]; then
