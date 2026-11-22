@@ -259,7 +259,7 @@ class CellularOwnershipTest {
     }
 
     @Test fun missingSim2RefusesOutboundCallWithoutDefaultSimFallback() {
-        doReturn(null).\`when\`(subscriptions).getActiveSubscriptionInfoForSimSlotIndex(1)
+        doReturn(null).`when`(subscriptions).getActiveSubscriptionInfoForSimSlotIndex(1)
 
         val outgoing = endpoint.dial("5551234567", Party(null))
         drainMain()
@@ -271,7 +271,7 @@ class CellularOwnershipTest {
     }
 
     @Test fun mismatchedSim2PhoneAccountRefusesOutboundCall() {
-        doReturn(3).\`when\`(telephony).getSubscriptionId(any(PhoneAccountHandle::class.java))
+        doReturn(3).`when`(telephony).getSubscriptionId(any(PhoneAccountHandle::class.java))
 
         val outgoing = endpoint.dial("5551234567", Party(null))
         drainMain()
