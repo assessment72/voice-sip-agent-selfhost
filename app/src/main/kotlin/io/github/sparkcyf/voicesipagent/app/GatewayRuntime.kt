@@ -311,10 +311,9 @@ class GatewayRuntime private constructor(context: Context) {
                 hostedCallId = null
                 return
             }
-            lateinit var listener: BridgeListener
-            listener = BridgeListener { session ->
+            val listener = BridgeListener { session ->
                 if (session.origin == "hosted-outbound") {
-                    worker.execute { onHostedSessionChanged(client, job.id, activeBridge, listener, session) }
+                    worker.execute { onHostedSessionChanged(client, job.id, activeBridge, hostedListener, session) }
                 }
             }
             hostedListener = listener
