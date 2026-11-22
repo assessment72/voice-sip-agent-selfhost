@@ -30,6 +30,8 @@ class BridgeSession internal constructor(
         internal set
     internal var answerTimer: ScheduledFuture<*>? = null
     internal var inboundAnswerRequested = false
+    internal var deferredOutboundTarget: String? = null
+    internal var outboundStarted = false
     internal var mediaTimer: ScheduledFuture<*>? = null
 
     override fun toString() =
@@ -81,6 +83,37 @@ class CallBridge(
         sideB.setIncomingCallHandler(null)
         post { session?.let { endSession(it, HangupCause.NORMAL) } }
         executor.shutdown()
+    }
+
+    /**
+     * Originate the cellular leg first, then place the SIP leg only after Telecom reports ACTIVE.
+     * This is the hosted-call path; it deliberately does not use the ordinary inbound auto-dial
+     * sequence, which would create the SIP leg while the cellular phone is still ringing.
+     */
+    fun originateCellularThenSip(cellularNumber: String, sipTarget: String): Boolean {
+        if (cellularNumber.isBlank() || sipTarget.isBlank() || executor.isShutdown) return false
+        post {
+            if (session != null) {
+                log("hosted originate refused: bridge busy")
+                return@post
+            }
+            val cellularLeg = sideA.dial(cellularNumber, io.github.sparkcyf.voicesipagent.voice.Party(null))
+            val s = BridgeSession(nextId++, "hosted-outbound", cellularLeg).apply {
+                deferredOutboundTarget = sipTarget
+            }
+            session = s
+            cellularLeg.addListener(LegWatcher(s, inbound = true))
+            s.answerTimer = executor.schedule({
+                if (session === s && s.connectedAtMs == null) {
+                    log("$s: cellular answer timeout")
+                    endSession(s, HangupCause.NO_ANSWER)
+                }
+            }, config.answerTimeoutMs, TimeUnit.MILLISECONDS)
+            log("$s: dialing cellular leg first")
+            reevaluate(s)
+            notifyChanged(s)
+        }
+        return true
     }
 
     fun addListener(l: BridgeListener) = listeners.addIfAbsent(l)
@@ -155,9 +188,31 @@ class CallBridge(
     private fun reevaluate(s: BridgeSession) {
         if (session !== s) return
         val a = s.inbound
+        if (a.state == LegState.ENDED) {
+            endSession(s, if (s.connectedAtMs == null) (a.endCause ?: HangupCause.CANCELLED) else HangupCause.NORMAL)
+            return
+        }
+        if (s.outbound == null && s.deferredOutboundTarget != null) {
+            if (a.state != LegState.CONNECTED || s.outboundStarted) return
+            s.outboundStarted = true
+            val target = s.deferredOutboundTarget!!
+            s.deferredOutboundTarget = null
+            log("$s: cellular answered; starting SIP leg")
+            val sipLeg = sideB.dial(target, a.remote)
+            s.outbound = sipLeg
+            sipLeg.addListener(LegWatcher(s, inbound = false))
+            s.answerTimer?.cancel(false)
+            s.answerTimer = executor.schedule({
+                if (session === s && s.connectedAtMs == null) {
+                    log("$s: SIP answer timeout")
+                    endSession(s, HangupCause.NO_ANSWER)
+                }
+            }, config.answerTimeoutMs, TimeUnit.MILLISECONDS)
+            notifyChanged(s)
+        }
         val b = s.outbound ?: return
 
-        if (a.state == LegState.ENDED || b.state == LegState.ENDED) {
+        if (b.state == LegState.ENDED) {
             val cause = if (a.state == LegState.ENDED) {
                 if (s.connectedAtMs == null) HangupCause.CANCELLED else HangupCause.NORMAL
             } else {
