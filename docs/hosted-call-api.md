@@ -1,33 +1,74 @@
-# Hosted Call API — implementation plan
+# Hosted Call API and cellular-first SIP bridge
 
-This feature is developed only on `feature/hosted-call-api`, based on `feat/sip-to-cellular-outbound`. Do not merge or deploy it without explicit approval.
+This work is isolated to `feature/hosted-call-api`, based on `feat/sip-to-cellular-outbound`. It must not be merged or deployed without explicit approval.
 
-## Security and call flow
+## What is integrated from CallGate
 
-1. The Android agent establishes an outbound HTTPS long-poll/WebSocket connection to the hosted control plane. The handset exposes no listener or public port.
-2. The hosted API authenticates callers with a dedicated, revocable API token. SIP credentials and any legacy CallGate credentials are never accepted as API credentials.
-3. The API validates the destination, applies E.164 normalization, emergency-number rejection, per-token rate limits, allow-list checks, request expiry, and idempotency.
-4. The handset accepts one leased job at a time, initiates the cellular call, and waits for Telecom `STATE_ACTIVE`.
-5. Only after the cellular leg is active does the agent place the SIP leg to the existing saved Linphone destination. The existing SIP account and sealed credentials remain unchanged.
-6. Once both legs are connected and both audio ports are available, the existing media bridge cross-connects audio in both directions. Either leg ending tears down the other.
-7. State transitions are persisted by the API: `queued`, `ringing_cellular`, `cellular_answered`, `calling_sip`, `bridged`, `failed`, `ended`.
+The call-control workflow is integrated into Voice SIP Agent. A separate CallGate installation and its local HTTP listener are not required. The legacy CallGate Basic Auth/local-server model is intentionally replaced by a hosted HTTPS API with separate caller and handset credentials.
 
-## HTTP contract
+The CallGate call-start operation maps to `POST /v1/calls`. Call progress is represented by persisted call states. The existing cellular endpoint, SIP user agent, and bidirectional media bridge in Voice SIP Agent perform the actual call and audio work.
 
-- `POST /v1/calls` — Bearer API token + mandatory `Idempotency-Key`; JSON `{"phoneNumber":"7XXXXXXXX"}`; returns `202` and a call ID.
-- `GET /v1/calls/{id}` — returns current state and safe timestamps/reason codes.
-- `POST /v1/devices/{deviceId}/heartbeat` — authenticated handset heartbeat and capability state.
-- Device job delivery is over an outbound authenticated TLS connection; never expose an Android-local HTTP endpoint.
+CallGate's USSD and generic webhook-management features are not part of this cellular-to-Linphone call flow.
 
-## Operational requirements
+## Call flow
 
-- HTTPS only; secrets are stored in a server-side secret manager and Android Keystore-backed encrypted preferences.
-- Never log bearer tokens, SIP passwords, full destination numbers, or request bodies.
-- Idempotency keys are scoped to the API principal and retained beyond the maximum request lifetime.
-- Enforce queue TTL, cellular answer timeout, SIP answer timeout, maximum call duration, per-token rate limit, and one active call per handset.
-- Fail closed when the emergency-number classifier or allow-list cannot be evaluated.
-- API tokens are separate from SIP registration credentials. The app's existing SIP account configuration is not rewritten by this feature.
+1. The handset polls the hosted service every three seconds over an outbound HTTPS request. The handset opens no listener, and no local API port is exposed.
+2. A caller authenticates with a dedicated `CALL_API_TOKEN`. The phone authenticates with a different `DEVICE_API_TOKEN`. Neither credential is a SIP or legacy CallGate password.
+3. The server validates the phone number, requires an explicit allow-list, rejects malformed/emergency short codes, applies rate limits and idempotency, and queues one job.
+4. The handset validates the number again with Android's emergency-number API, then places the cellular leg through the app's configured cellular endpoint.
+5. The SIP leg is deliberately not created until Telecom reports the cellular leg as connected/active.
+6. The SIP leg targets the currently registered Linphone peer when using the built-in registrar, or the existing saved SIP target setting in external-PBX mode.
+7. Once both legs are connected and both media ports are ready, the existing Voice SIP Agent media bridge cross-connects audio in both directions. Either leg ending tears down the other.
+8. The app reports each state to the hosted API. A 30-minute local call-duration guard is also applied.
 
-## Current implementation status
+## HTTP API
 
-This document defines the target contract. A working release requires the hosted service, Android job client, runtime call orchestration, automated tests, and physical-device validation. Do not claim the feature is release-ready until the HONOR Android 16 test matrix and signed APK are complete.
+### Caller endpoints
+
+- `POST /v1/calls` — requires `Authorization: Bearer <CALL_API_TOKEN>`, `Idempotency-Key`, and JSON `{"phoneNumber":"7XXXXXXXX"}` or an E.164 number such as `+9677XXXXXXXX`. Returns HTTP 202 with a call ID.
+- `GET /v1/calls/{call_id}` — returns state, timestamps, expiry, and a safe reason code. It does not return the destination number.
+
+### Handset endpoints
+
+- `GET /v1/device/jobs/next` — requires `Authorization: Bearer <DEVICE_API_TOKEN>`; returns one queued job under a short claim lease.
+- `POST /v1/device/calls/{call_id}/state` — reports the next permitted state and an optional non-sensitive reason code.
+
+### State sequence
+
+`queued → ringing_cellular → cellular_answered → calling_sip → bridged → ended`
+
+Any failure before a successful bridge ends in `failed`. The server also expires queued work, cellular/SIP answer waits, and calls exceeding the configured maximum duration.
+
+## Android configuration
+
+1. Install the Voice SIP Agent build and complete its existing call-access / Shizuku / audio setup.
+2. Keep the existing SIP account and credentials unchanged.
+3. In Settings, enter the hosted API base URL beginning with `https://`.
+4. Enter the handset's `DEVICE_API_TOKEN`. It is encrypted using an Android Keystore key; it is not written to logs.
+5. Keep the existing Linphone peer registration active. In built-in registrar mode the app uses the registered peer URI; in external-PBX mode it uses the existing saved outbound SIP target/extension.
+6. Leave the hosted API URL blank to disable hosted job polling.
+
+The cellular endpoint currently uses the SIM 2 phone account, matching the existing outbound cellular implementation in this branch. Confirm that the intended SIM is active in slot 2 before live testing.
+
+## Test server setup
+
+See [hosted-api/README.md](../hosted-api/README.md) for the Docker Compose + Caddy HTTPS template, environment variables, token generation, and API examples. The template is not deployed by this change. Do not commit `.env`, database files, or TLS private keys.
+
+## Security boundaries
+
+- No Android-local HTTP server is exposed.
+- HTTPS is mandatory in the handset client; redirects are disabled to prevent bearer-token forwarding.
+- Caller and device bearer tokens are independent and separate from SIP credentials.
+- The device token is sealed in Android Keystore-backed encrypted preferences.
+- Destination allow-list must be explicitly configured; an empty allow-list fails closed.
+- Idempotency keys are scoped to the caller principal; reusing a key with a different destination returns conflict.
+- Request bodies, bearer tokens, SIP passwords, and full destination numbers are not logged or returned by the status endpoint.
+- The handset rejects emergency numbers again immediately before dialing.
+
+## Validation status
+
+Automated hosted API tests cover authentication, number validation/normalization, allow-list enforcement, idempotency, rate limiting, job claim recovery, state transitions, and ownership checks.
+
+Gateway unit tests cover cellular-first ordering, no SIP leg when the cellular call is unanswered, two-way media bridging, and teardown. Android CI runs JVM/Android unit tests and creates a debug APK artifact.
+
+A release is **not ready** until the current Android workflow succeeds, a signed APK is produced, and the complete live-device test matrix passes on the target HONOR Android 16 handset: cellular answer/no-answer, loss of network, SIP failure, call termination from either side, audio in both directions, and duration timeout. CI cannot substitute for those physical-device checks.
