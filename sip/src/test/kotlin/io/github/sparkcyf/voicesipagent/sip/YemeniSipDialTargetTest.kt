@@ -50,6 +50,30 @@ class YemeniSipDialTargetTest {
         )
     }
 
+    @Test fun toAcceptsAPlainNineDigitYemeniNumberAsTheSipUriUser() {
+        accepted(
+            request(headers = SipHeaders().add("To", "<sip:737445440@sip.linphone.org>")),
+            "+967737445440",
+            "To",
+        )
+    }
+
+    @Test fun requestUriAcceptsAPlainNineDigitYemeniNumber() {
+        accepted(
+            request(uri = "sip:737445440@sip.linphone.org"),
+            "+967737445440",
+            "Request-URI",
+        )
+    }
+
+    @Test fun fullSipUriInXVsaDialCanCarryAPlainNationalUser() {
+        accepted(
+            request(headers = SipHeaders().add("X-VSA-Dial", "sip:737445440@sip.linphone.org")),
+            "+967737445440",
+            "X-VSA-Dial",
+        )
+    }
+
     @Test fun xVsaDialAcceptsAFullSipUriAsItsValue() {
         accepted(
             request(headers = SipHeaders().add("X-VSA-Dial", "sip:sip777405578@sip2sip.info")),
