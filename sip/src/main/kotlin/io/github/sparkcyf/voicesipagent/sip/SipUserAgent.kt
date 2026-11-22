@@ -40,6 +40,8 @@ class SipUserAgent(
     private val random = SecureRandom()
     internal lateinit var transport: SipTransport
     private lateinit var serverAddr: InetSocketAddress
+    /** All current DNS answers: SIP providers may run multiple proxy nodes behind one hostname. */
+    private var serverAddrs: Set<InetAddress> = emptySet()
     internal var localIp: String = "0.0.0.0"
         private set
     internal val localPort: Int get() = transport.localPort
@@ -249,8 +251,18 @@ class SipUserAgent(
 
     internal fun authorizationFor(r: SipResponse, method: String, uri: String): Pair<String, String>? {
         val proxy = r.code == 407
-        val header = r.headers[if (proxy) "Proxy-Authenticate" else "WWW-Authenticate"] ?: return null
-        val challenge = DigestAuth.parseChallenge(header) ?: return null
+        val headerName = if (proxy) "Proxy-Authenticate" else "WWW-Authenticate"
+        val headers = r.headers.getAll(headerName)
+        if (headers.isEmpty()) {
+            log.warn("SIP ${r.code} response has no $headerName header")
+            return null
+        }
+        val challenge = headers.asSequence().mapNotNull(DigestAuth::parseChallenge).firstOrNull()
+        if (challenge == null) {
+            log.warn("SIP ${r.code} response has no supported Digest challenge")
+            return null
+        }
+        log.info("answering SIP ${r.code} Digest challenge (realm=${challenge.realm}, algorithm=${challenge.algorithm}, qop=${challenge.params["qop"] ?: "none"})")
         return try {
             (if (proxy) "Proxy-Authorization" else "Authorization") to
                 DigestAuth.authorize(challenge, method, uri, account.authUsername, account.password)
@@ -263,7 +275,7 @@ class SipUserAgent(
     // ---------------------------------------------------------------- message dispatch
 
     private fun onMessage(msg: SipMessage, from: InetSocketAddress) {
-        if (!config.serverMode && config.acceptOnlyFromServer && from.address != serverAddr.address) {
+        if (!config.serverMode && config.acceptOnlyFromServer && !isTrustedUpstream(from.address, serverAddrs)) {
             log.warn("dropping SIP from untrusted ${from.address.hostAddress}")
             return
         }
@@ -331,10 +343,25 @@ class SipUserAgent(
         // dials out for free (open toll-fraud relay).  Gate before any call state is created.
         if (!inviteAuthPassed(req, from, tx)) return
         val handler = incomingHandler
-        // X-VSA-Dial: the number to dial when the PBX keeps the Request-URI user as our own AoR
-        // (needed behind registrar-based proxies such as Flexisip).
-        val target = req.headers["X-VSA-Dial"]?.trim()?.takeIf { it.isNotEmpty() }
-            ?: SipUri.parse(req.uri)?.user ?: req.to?.sipUri?.user
+        val target = when (val resolved = YemeniSipDialTarget.resolve(req, localUser)) {
+            is YemeniSipDialTarget.Result.Accepted -> {
+                val value = resolved.target
+                log.info(
+                    "incoming INVITE received; target source=${value.source}; " +
+                        "encoded SIP target=${redactNumber(value.encodedUser)}; " +
+                        "normalized cellular target=${redactNumber(value.e164)}",
+                )
+                value.e164
+            }
+            is YemeniSipDialTarget.Result.Rejected -> {
+                log.warn(
+                    "INVITE rejected with 484: invalid Yemeni dial target " +
+                        "(source=${resolved.error.source}, reason=${resolved.error.reason})",
+                )
+                tx.respond(buildResponse(req, 484, toTag = newTag()))
+                return
+            }
+        }
         val pai = req.headers["P-Asserted-Identity"]?.let(NameAddr::parse)
         val fromAddr = req.from!!
         val caller = Party(
@@ -342,7 +369,6 @@ class SipUserAgent(
             displayName = pai?.displayName ?: fromAddr.displayName,
         )
         val call = SipCall(this, LegDirection.INBOUND, caller, target, req.callId!!, newTag())
-        log.info("incoming INVITE to ${redactNumber(target)} from ${redactNumber(caller.number)}")
         if (handler == null || stopping) {
             tx.respond(buildResponse(req, 480, toTag = call.localTag))
             return
@@ -630,9 +656,15 @@ class SipUserAgent(
     private fun hex(bytes: Int) = ByteArray(bytes).also(random::nextBytes).joinToString("") { "%02x".format(it) }
 
     private fun resolve() {
-        val server = InetAddress.getByName(account.server)
+        val addresses = InetAddress.getAllByName(account.server).toSet()
+        require(addresses.isNotEmpty()) { "SIP server ${account.server} resolved to no addresses" }
+        serverAddrs = addresses
+        // Use one answer for outbound transactions, but trust all current proxy nodes for inbound
+        // requests. Hosted SIP services (including HA proxy deployments) may deliver from any node.
+        val server = addresses.first()
         serverAddr = InetSocketAddress(server, account.port)
         localIp = (localAddressProvider?.invoke(server) ?: routeTo(server))?.hostAddress ?: "0.0.0.0"
+        log.info("SIP upstream resolved to ${addresses.size} address(es)")
     }
 
     /** Server mode has no upstream server; just learn our own LAN address. */
@@ -660,3 +692,8 @@ class SipUserAgent(
         const val ALLOW = "INVITE, ACK, CANCEL, BYE, OPTIONS, INFO, NOTIFY, UPDATE"
     }
 }
+
+
+/** True only for an address returned by the configured SIP upstream's current DNS lookup. */
+internal fun isTrustedUpstream(source: InetAddress, allowed: Set<InetAddress>): Boolean =
+    source in allowed

@@ -540,6 +540,7 @@ class GatewayRuntime private constructor(context: Context) {
                         server = s.server,
                         port = s.port,
                         username = s.username,
+                        authUsername = s.authUsername.ifBlank { s.username },
                         password = s.password,
                         domain = s.domain.ifBlank { s.server },
                         displayName = "gateway",

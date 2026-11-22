@@ -11,6 +11,7 @@
 - **For users:** [`docs/КАК-НАСТРОИТЬ.md`](docs/КАК-НАСТРОИТЬ.md) - the single page that's enough
   to set everything up from scratch (Russian).
 - **Reference:** [app settings](docs/settings-ru.md) · [baresip client](docs/client-baresip.md) ·
+  [dynamic SIP target → Yemeni SIM](docs/dynamic-sip-target.md) ·
   [Shizuku after a reboot](docs/shizuku-reboot.md) · [internet and security](docs/internet-security.md).
 - **For developers:** [building the APK](#building-the-apk).
 
@@ -74,8 +75,7 @@ Verified on a **Nubia NX769J (Android 16)** paired with the baresip client:
 - ✅ Doze resilience: the service holds a wakelock while the gateway is on, so the phone doesn't drop
   the registration while asleep, even on aggressive OEM ROMs (0.2.0-selfhost4).
 
-Not done yet: outgoing calls/SMS from the far phone over the gateway's SIM; wideband audio
-(currently G.711). Working outside a single Wi-Fi needs a public IP (see below).
+Outgoing SIP-to-cellular call routing is implemented in the bridge and covered by a gateway unit test, but **a live outgoing call has not yet been verified on a physical gateway phone**. Outgoing SMS is not implemented. Wideband audio is also not implemented (currently G.711). Working outside a single Wi-Fi needs a public IP or a private VPN (see below).
 
 > ⚠ **The capture method depends on the phone model.** On the Nubia it's "Direct telephony"; the
 > automatic mode chose wrong (no audio). Another phone may need "Call redirection". How to tell -
@@ -288,7 +288,8 @@ export JAVA_HOME="/c/Program Files/Eclipse Adoptium/jdk-17.0.20.101-hotspot"
 ## Honest status and risks
 
 - Incoming call (two-way audio), incoming SMS, built-in registrar - **confirmed** on the Nubia NX769J.
-- Outgoing calls/SMS from the far phone over the gateway's SIM - **not done**.
+- SIP INVITE → cellular SIM dialing is implemented and covered by `sipInboundDialsCellularAndRingsBack`, but **not yet verified in a live device-to-device call**. The SIP registrar password must be set (server mode rejects unauthenticated INVITEs with 403), and the same password must be configured in baresip.
+- Outgoing SMS from the far phone over the gateway's SIM - **not implemented**.
 - **The internet path is not yet tested live** - a single Wi-Fi only.
 - **Without root, Shizuku does not survive a reboot** - the main operational risk (above).
 - **Registrar authentication is implemented** (SIP digest password + brute-force ban); for the

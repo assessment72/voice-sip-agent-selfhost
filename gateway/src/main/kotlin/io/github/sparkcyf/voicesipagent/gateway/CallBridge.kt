@@ -117,7 +117,7 @@ class CallBridge(
         }
         if (to === sideA) {
             val veto = dialPolicyForA.check(target)
-                ?: if (config.allowedDialPrefixes.isNotEmpty() && config.allowedDialPrefixes.none(target::startsWith)) HangupCause.FORBIDDEN else null
+                ?: if (config.allowedDialPrefixes.isNotEmpty() && !matchesAllowedPrefix(target, config.allowedDialPrefixes)) HangupCause.FORBIDDEN else null
             if (veto != null) {
                 log("refusing to dial ${redactNumber(target)} on ${to.name}: $veto")
                 leg.hangup(veto)
@@ -214,6 +214,18 @@ class CallBridge(
         s.outbound?.let { if (it.state != LegState.ENDED) it.hangup(if (cause == HangupCause.CANCELLED) HangupCause.CANCELLED else cause) }
         log("$s ended: $cause")
         notifyChanged(s)
+    }
+
+    private fun matchesAllowedPrefix(target: String, prefixes: List<String>): Boolean {
+        // Yemen dynamic targets are normalized to E.164 (+967XXXXXXXXX). Accept existing
+        // allow-list entries written either as international prefixes (+96777) or national
+        // mobile prefixes (77), without weakening the allow-list itself.
+        val variants = listOf(
+            target,
+            target.removePrefix("+"),
+            target.removePrefix("+967"),
+        )
+        return prefixes.any { prefix -> variants.any { it.startsWith(prefix) } }
     }
 
     private fun notifyChanged(s: BridgeSession) = listeners.forEach { it.onSessionChanged(s) }

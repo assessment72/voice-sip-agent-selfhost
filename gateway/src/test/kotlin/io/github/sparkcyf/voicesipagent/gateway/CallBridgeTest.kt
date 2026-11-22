@@ -112,6 +112,17 @@ class CallBridgeTest {
     }
 
     @Test
+    fun normalizedYemeniE164TargetIsPassedToCellularEndpoint() {
+        val inbound = sip.incoming("302", target = "+967777405578")
+        settle()
+        assertEquals("+967777405578", cell.dialed.single().target)
+        val outbound = cell.dialed.single()
+        outbound.remoteAnswered()
+        settle()
+        assertEquals(LegState.CONNECTED, inbound.state)
+    }
+
+    @Test
     fun cellularBusyMapsToSip() {
         cell.onDial = { it.remoteEnded(HangupCause.BUSY) }
         val a = sip.incoming("302", target = "13800005678")
@@ -135,6 +146,25 @@ class CallBridgeTest {
         settle()
         assertTrue(cell.dialed.isEmpty())
         assertEquals(HangupCause.FORBIDDEN, a.endCause)
+    }
+
+    @Test
+    fun yemeniNationalPrefixAllowListMatchesNormalizedInternationalTarget() {
+        bridge.stop()
+        build(GatewayConfig(allowedDialPrefixes = listOf("77")))
+        sip.incoming("caller", target = "+967777405578")
+        settle()
+        assertEquals("+967777405578", cell.dialed.single().target)
+        assertTrue("SIP inbound leg remains owned by the bridge", bridge.session != null)
+    }
+
+    @Test
+    fun yemeniInternationalPrefixAllowListMatchesNormalizedTarget() {
+        bridge.stop()
+        build(GatewayConfig(allowedDialPrefixes = listOf("+96777")))
+        sip.incoming("caller", target = "+967777405579")
+        settle()
+        assertEquals("+967777405579", cell.dialed.single().target)
     }
 
     @Test
