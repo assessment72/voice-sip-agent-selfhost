@@ -133,6 +133,7 @@ class GatewayRuntime private constructor(context: Context) {
     private var hostedCallId: String? = null
     private var hostedLastState: String? = null
     private var hostedListener: BridgeListener? = null
+    private var hostedCallTimer: ScheduledFuture<*>? = null
     @Volatile private var networkCallback: ConnectivityManager.NetworkCallback? = null
     private val dialerHandoffStore = DialerHandoffStore(app)
     private val dialerHandoff = DialerHandoff(app.packageName, dialerHandoffStore, object : DialerHandoff.Backend {
@@ -310,9 +311,10 @@ class GatewayRuntime private constructor(context: Context) {
                 hostedCallId = null
                 return
             }
-            val listener = BridgeListener { session ->
+            lateinit var listener: BridgeListener
+            listener = BridgeListener { session ->
                 if (session.origin == "hosted-outbound") {
-                    worker.execute { onHostedSessionChanged(client, job.id, activeBridge, listenerRef = hostedListener, session) }
+                    worker.execute { onHostedSessionChanged(client, job.id, activeBridge, listener, session) }
                 }
             }
             hostedListener = listener
@@ -325,6 +327,8 @@ class GatewayRuntime private constructor(context: Context) {
                 return
             }
             reportHostedState(client, job.id, "ringing_cellular")
+            hostedCallTimer?.cancel(false)
+            hostedCallTimer = worker.schedule({ activeBridge.endActiveSession(HangupCause.NORMAL) }, 30, TimeUnit.MINUTES)
         } catch (e: Exception) {
             AppLog.w("hosted API poll failed: ${e.javaClass.simpleName}")
         }
@@ -346,6 +350,8 @@ class GatewayRuntime private constructor(context: Context) {
             reportHostedState(client, callId, if (success) "ended" else "failed",
                 if (success) null else "call_leg_or_media_failed")
             listenerRef?.let(activeBridge::removeListener)
+            hostedCallTimer?.cancel(false)
+            hostedCallTimer = null
             hostedListener = null
             hostedCallId = null
             hostedLastState = null
@@ -374,6 +380,8 @@ class GatewayRuntime private constructor(context: Context) {
                 .updateState(callId, "failed", reason)
         }
         hostedListener?.let { listener -> bridge?.removeListener(listener) }
+        hostedCallTimer?.cancel(false)
+        hostedCallTimer = null
         hostedListener = null
         hostedCallId = null
         hostedLastState = null
