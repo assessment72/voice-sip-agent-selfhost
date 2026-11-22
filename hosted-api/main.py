@@ -44,11 +44,12 @@ def init_db():
     with db() as c:
         c.executescript("""
         CREATE TABLE IF NOT EXISTS calls (
-          id TEXT PRIMARY KEY, idempotency_key TEXT NOT NULL UNIQUE,
+          id TEXT PRIMARY KEY, idempotency_key TEXT NOT NULL, principal TEXT NOT NULL,
           phone_number TEXT NOT NULL, state TEXT NOT NULL,
           created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
           expires_at INTEGER NOT NULL, claimed_by TEXT,
-          reason_code TEXT, events TEXT NOT NULL DEFAULT '[]'
+          reason_code TEXT, events TEXT NOT NULL DEFAULT '[]',
+          UNIQUE(principal, idempotency_key)
         );
         CREATE TABLE IF NOT EXISTS requests (
           id INTEGER PRIMARY KEY AUTOINCREMENT, principal TEXT NOT NULL,
@@ -151,7 +152,7 @@ def create_call(body: CreateCall, principal=Depends(caller),
             c.rollback()
             raise HTTPException(status_code=429, detail="rate_limit_exceeded")
         c.execute("INSERT INTO requests(principal,created_at) VALUES(?,?)", (principal, now))
-        old = c.execute("SELECT * FROM calls WHERE idempotency_key=?", (idempotency_key,)).fetchone()
+        old = c.execute("SELECT * FROM calls WHERE principal=? AND idempotency_key=?", (principal, idempotency_key)).fetchone()
         if old:
             c.commit()
             return safe_call(old)
@@ -161,9 +162,9 @@ def create_call(body: CreateCall, principal=Depends(caller),
             raise HTTPException(status_code=409, detail="device_busy")
         call_id = str(uuid.uuid4())
         events = json.dumps([{"state": "queued", "at": now}])
-        c.execute("""INSERT INTO calls(id,idempotency_key,phone_number,state,created_at,updated_at,expires_at,events)
-                     VALUES(?,?,?,?,?,?,?,?)""",
-                  (call_id, idempotency_key, number, "queued", now, now, now + QUEUE_TTL, events))
+        c.execute("""INSERT INTO calls(id,idempotency_key,principal,phone_number,state,created_at,updated_at,expires_at,events)
+                     VALUES(?,?,?,?,?,?,?,?,?)""",
+                  (call_id, idempotency_key, principal, number, "queued", now, now, now + QUEUE_TTL, events))
         c.commit()
         return {"id": call_id, "state": "queued", "createdAt": now, "updatedAt": now, "expiresAt": now + QUEUE_TTL}
 
@@ -184,7 +185,7 @@ def next_job(device_id=Depends(device)):
         c.execute("BEGIN IMMEDIATE")
         c.execute("UPDATE calls SET state='failed',reason_code='queue_expired',updated_at=? WHERE state='queued' AND expires_at<?",
                   (now, now))
-        row = c.execute("SELECT * FROM calls WHERE state='queued' AND expires_at>=? ORDER BY created_at LIMIT 1",
+        row = c.execute("SELECT * FROM calls WHERE state='queued' AND claimed_by IS NULL AND expires_at>=? ORDER BY created_at LIMIT 1",
                         (now,)).fetchone()
         if not row:
             c.commit()
