@@ -49,7 +49,7 @@ def init_db():
           id TEXT PRIMARY KEY, idempotency_key TEXT NOT NULL, principal TEXT NOT NULL,
           phone_number TEXT NOT NULL, state TEXT NOT NULL,
           created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
-          expires_at INTEGER NOT NULL, claimed_by TEXT,
+          expires_at INTEGER NOT NULL, claimed_by TEXT, claimed_at INTEGER,
           reason_code TEXT, events TEXT NOT NULL DEFAULT '[]',
           UNIQUE(principal, idempotency_key)
         );
@@ -196,12 +196,13 @@ def next_job(device_id=Depends(device)):
         c.execute("UPDATE calls SET state='failed',reason_code='cellular_answer_timeout',updated_at=? WHERE state='ringing_cellular' AND updated_at<?", (now, now - CELL_RING_TIMEOUT))
         c.execute("UPDATE calls SET state='failed',reason_code='sip_answer_timeout',updated_at=? WHERE state='calling_sip' AND updated_at<?", (now, now - SIP_RING_TIMEOUT))
         c.execute("UPDATE calls SET state='ended',reason_code='max_call_duration',updated_at=? WHERE state='bridged' AND updated_at<?", (now, now - MAX_CALL))
+        c.execute("UPDATE calls SET claimed_by=NULL,claimed_at=NULL WHERE state='queued' AND claimed_at<?", (now - 30,))
         row = c.execute("SELECT * FROM calls WHERE state='queued' AND claimed_by IS NULL AND expires_at>=? ORDER BY created_at LIMIT 1",
                         (now,)).fetchone()
         if not row:
             c.commit()
             return {"job": None}
-        c.execute("UPDATE calls SET claimed_by=? WHERE id=? AND state='queued'", (device_id, row["id"]))
+        c.execute("UPDATE calls SET claimed_by=?,claimed_at=? WHERE id=? AND state='queued' AND claimed_by IS NULL", (device_id, now, row["id"]))
         c.commit()
         return {"job": {"id": row["id"], "phoneNumber": row["phone_number"], "expiresAt": row["expires_at"]}}
 
