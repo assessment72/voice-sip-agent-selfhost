@@ -93,7 +93,7 @@ class CallBridge(
      * sequence, which would create the SIP leg while the cellular phone is still ringing.
      */
     fun originateCellularThenSip(cellularNumber: String, sipTarget: String): Boolean {
-        if (cellularNumber.isBlank() || sipTarget.isBlank() || executor.isShutdown) return false
+        if (cellularNumber.isBlank() || sipTarget.isBlank() || executor.isShutdown || session != null) return false
         post {
             if (session != null) {
                 log("hosted originate refused: bridge busy")
