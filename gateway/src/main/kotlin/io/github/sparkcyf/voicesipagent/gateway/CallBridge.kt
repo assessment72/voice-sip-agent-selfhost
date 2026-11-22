@@ -26,6 +26,8 @@ class BridgeSession internal constructor(
         internal set
     var media: MediaBridge? = null
         internal set
+    var mediaWasBridged: Boolean = false
+        internal set
     var endedAtMs: Long? = null
         internal set
     internal var answerTimer: ScheduledFuture<*>? = null
@@ -253,6 +255,7 @@ class CallBridge(
                     return
                 }
                 s.media = MediaBridge(ma, mb).also { it.start() }
+                s.mediaWasBridged = true
                 s.mediaTimer?.cancel(false)
                 log("$s: media bridged")
             } else if (s.media != null && (ma == null || mb == null)) {
