@@ -52,6 +52,27 @@ def test_idempotency_and_single_device_job(tmp_path, monkeypatch):
     assert client.get(f"/v1/calls/{job['id']}", headers=headers("test-caller-token")).json()["state"] == "ended"
 
 
+def test_yemeni_national_mobile_is_normalized_and_idempotency_key_cannot_change_payload(tmp_path, monkeypatch):
+    client = setup_client(tmp_path, monkeypatch)
+    key = str(uuid.uuid4())
+    h = headers("test-caller-token", **{"Idempotency-Key": key})
+    first = client.post("/v1/calls", json={"phoneNumber": "777405578"}, headers=h)
+    assert first.status_code == 202
+    same = client.post("/v1/calls", json={"phoneNumber": "+967777405578"}, headers=h)
+    assert same.status_code == 202
+    assert same.json()["id"] == first.json()["id"]
+    changed = client.post("/v1/calls", json={"phoneNumber": "+967777405579"}, headers=h)
+    assert changed.status_code == 409
+    assert changed.json()["detail"] == "idempotency_key_reused"
+
+
+def test_allowlist_must_be_configured(tmp_path, monkeypatch):
+    client = setup_client(tmp_path, monkeypatch)
+    monkeypatch.setattr(main, "PREFIXES", ())
+    response = client.post("/v1/calls", json={"phoneNumber": "777405578"},
+                           headers=headers("test-caller-token", **{"Idempotency-Key": str(uuid.uuid4())}))
+    assert response.status_code == 503
+
 def test_device_cannot_update_unclaimed_call(tmp_path, monkeypatch):
     client = setup_client(tmp_path, monkeypatch)
     key = str(uuid.uuid4())
