@@ -58,6 +58,9 @@ def init_db():
           created_at INTEGER NOT NULL
         );
         """)
+        columns = {row["name"] for row in c.execute("PRAGMA table_info(calls)")}
+        if "claimed_at" not in columns:
+            c.execute("ALTER TABLE calls ADD COLUMN claimed_at INTEGER")
 
 
 @app.on_event("startup")
