@@ -30,9 +30,25 @@ curl --fail-with-body https://YOUR_TEST_HOST/v1/calls \
 
 The API returns HTTP 202 and a call ID. Poll `GET /v1/calls/{id}` with the same API token.
 
+## Containerized test deployment (not deployed by this change)
+
+1. Copy `.env.example` to `.env` on the server. Generate two independent random tokens (one caller token and one handset token), then replace both placeholders. Set `ALLOWED_PREFIXES` to only the numbers permitted for this test.
+2. Copy `Caddyfile.example` to `Caddyfile` and replace `calls.example.com` with a DNS name whose A/AAAA records point to the server.
+3. Run `docker compose up -d --build` from `hosted-api/`. Caddy terminates HTTPS; the API container is reachable only on the private Compose network. Port 8080 is not published.
+4. Check `https://YOUR_DOMAIN/health`. Configure the Android app with that HTTPS base URL and the device token only. Use the separate caller token for clients that submit `POST /v1/calls`.
+5. Back up the `hosted-call-data` volume and rotate tokens through the host's secret-management process.
+
+Generate independent tokens, for example:
+```sh
+openssl rand -hex 32
+openssl rand -hex 32
+```
+
+Do not commit `.env`, TLS private keys, or database files. The Compose template is deployment documentation only; no VPS, DNS, billing account, or public service was created by this work.
+
 ## Device protocol
 
-The Android agent authenticates separately with `DEVICE_API_TOKEN` and polls `GET /v1/device/jobs/next` over HTTPS. It reports only the documented state transitions through `POST /v1/device/calls/{id}/state`. Device token and caller token must never be the same.
+The Android agent authenticates separately with `DEVICE_API_TOKEN` and polls `GET /v1/device/jobs/next` over HTTPS. Jobs are claimed with a short lease so an offline handset does not permanently strand a queued job. It reports only the documented state transitions through `POST /v1/device/calls/{id}/state`. Device token and caller token must never be the same.
 
 ## Safety notes
 
