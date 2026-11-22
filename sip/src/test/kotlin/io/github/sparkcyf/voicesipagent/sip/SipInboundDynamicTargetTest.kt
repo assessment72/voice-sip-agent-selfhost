@@ -45,7 +45,7 @@ class SipInboundDynamicTargetTest {
         return ua
     }
 
-    private fun sendInvite(peer: DatagramSocket, ua: SipUserAgent, to: String, requestUri: String = "sip:gateway@sip2sip.info", withSdp: Boolean = false) {
+    private fun sendInvite(peer: DatagramSocket, ua: SipUserAgent, to: String, requestUri: String = "sip:gateway@sip2sip.info", withSdp: Boolean = false, extraHeaders: String = "") {
         val sdp = if (withSdp) {
             "v=0\r\n" +
                 "o=- 1 1 IN IP4 127.0.0.1\r\n" +
@@ -64,6 +64,7 @@ class SipInboundDynamicTargetTest {
             "Contact: <sip:caller@127.0.0.1:${peer.localPort}>\r\n" +
             "Call-ID: dynamic-invite-${System.nanoTime()}\r\n" +
             "CSeq: 1 INVITE\r\n" +
+            extraHeaders +
             (if (withSdp) "Content-Type: application/sdp\r\n" else "") +
             "Content-Length: ${sdp.toByteArray(StandardCharsets.UTF_8).size}\r\n\r\n" +
             sdp
@@ -100,6 +101,52 @@ class SipInboundDynamicTargetTest {
                 sendInvite(peer, ua, "sip:737445440@sip.linphone.org", withSdp = true)
                 assertTrue("valid Yemeni SIP URI user did not reach the bridge handler", received.await(3, TimeUnit.SECONDS))
                 assertEquals("+967737445440", target.get())
+            } finally {
+                ua.stop(timeoutMs = 50)
+            }
+        }
+    }
+
+    @Test fun xVsaDialHeaderTakesPriorityOverTheToHeader() {
+        DatagramSocket(0).use { peer ->
+            val received = CountDownLatch(1)
+            val target = AtomicReference<String?>()
+            val ua = start(peer, IncomingCallHandler { leg ->
+                target.set(leg.target)
+                received.countDown()
+                leg.hangup(HangupCause.NORMAL)
+            })
+            try {
+                sendInvite(
+                    peer,
+                    ua,
+                    "sip:777405578@sip.linphone.org",
+                    withSdp = true,
+                    extraHeaders = "X-VSA-Dial: sip737445440\\r\\n",
+                )
+                assertTrue("X-VSA-Dial INVITE did not reach the bridge handler", received.await(3, TimeUnit.SECONDS))
+                assertEquals("+967737445440", target.get())
+            } finally {
+                ua.stop(timeoutMs = 50)
+            }
+        }
+    }
+
+    @Test fun malformedXVsaDialIsRejectedInsteadOfFallingBackToTo() {
+        DatagramSocket(0).use { peer ->
+            val ua = start(peer)
+            try {
+                sendInvite(
+                    peer,
+                    ua,
+                    "sip:777405578@sip.linphone.org",
+                    extraHeaders = "X-VSA-Dial: 12345\\r\\n",
+                )
+                val packet = DatagramPacket(ByteArray(65535), 65535)
+                peer.receive(packet)
+                val response = SipParser.parse(packet.data, packet.length) as SipResponse
+                assertEquals(484, response.code)
+                assertTrue(ua.calls.isEmpty())
             } finally {
                 ua.stop(timeoutMs = 50)
             }
