@@ -84,6 +84,8 @@ class SipUserAgent(
     private var peerExpiry: ScheduledFuture<*>? = null
     /** Full SIP URI (sip:user@ip:port) to reach the registered phone, or null if none. */
     internal fun serverPeerUri(): String? = peerContactUri
+    /** Current Linphone registration target for hosted cellular-to-SIP calls, if registered. */
+    fun hostedCallDestination(fallback: String?): String? = peerContactUri ?: fallback?.takeIf { it.isNotBlank() }
     /** Domain to use in locally generated URIs (our LAN IP when no account domain is set). */
     internal val selfDomain: String get() = localDomain
 
