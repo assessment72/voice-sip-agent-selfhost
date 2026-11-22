@@ -35,10 +35,19 @@ is 192 MB / 3 GB / shared IPv4, while a separate Linux VPS page advertises a 2 v
 that exact KVM plan is actually free, has a dedicated public IPv4, and exposes arbitrary
 UDP/TCP ports before we rely on it. Do not assume the headline example is the free tier.
 
-AWS's new Free Plan may allow most new users to sign up without a payment method, but
-it is a time-limited credit plan (up to six months), not permanent free hosting; AWS
-may request additional verification. It is a possible route only if the signup flow
-accepts the account without a card and EC2 is available under the selected plan.
+**Best no-card attempt for the requested size: AWS Free account plan.** AWS says a
+payment method is not required for most new customers, although it may request one in
+some cases. New accounts can receive up to USD 200 in credits for up to six months; this
+is temporary test hosting, not permanent free service. AWS lists `c7i-flex.large` among
+the EC2 types eligible for the new Free Tier offer, and that type is exactly 2 vCPU /
+4 GiB RAM. Create a 30 GiB gp3 disk and enable a public IPv4, then verify the console
+shows the selected instance as Free Tier eligible and the expected credit coverage
+before launch. Public IPv4 and storage usage must be checked against the credits.
+
+Official references:
+- https://aws.amazon.com/free/free-tier-faqs/
+- https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/ec2-free-tier-usage.html
+- https://aws.amazon.com/ec2/instance-types/c7i/
 
 ## What is implemented in the Android gateway today
 
