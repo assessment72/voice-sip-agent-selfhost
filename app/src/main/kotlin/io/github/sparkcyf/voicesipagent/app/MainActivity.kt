@@ -280,6 +280,8 @@ private fun SettingsSection(rt: GatewayRuntime) {
     var password by remember(cur) { mutableStateOf(cur.password) }
     var target by remember(cur) { mutableStateOf(cur.inboundTarget) }
     var prefixes by remember(cur) { mutableStateOf(cur.allowedPrefixes) }
+    var hostedApiUrl by remember(cur) { mutableStateOf(cur.hostedApiUrl) }
+    var hostedDeviceToken by remember(cur) { mutableStateOf(cur.hostedDeviceToken) }
     var domain by remember(cur) { mutableStateOf(cur.domain) }
     var stack by remember(cur) { mutableStateOf(cur.sipStack) }
     var transport by remember(cur) { mutableStateOf(SipTransport.of(cur.sipTransport) ?: SipTransport.UDP) }
@@ -339,6 +341,16 @@ private fun SettingsSection(rt: GatewayRuntime) {
         )
         Field(t("Куда переводить входящие (пусто = логин)", "Cellular inbound -> SIP target (blank = username)"), target, info = "inbound_target") { target = it }
         Field(t("Префиксы для исходящих (через запятую, пусто = любой)", "Allowed dial-out prefixes (comma separated, empty = any)"), prefixes, info = "prefixes") { prefixes = it }
+        LabelWithInfo(t("Hosted Call API", "Hosted Call API"), "hosted_api")
+        Field(t("عنوان API المستضاف (HTTPS)", "Hosted API base URL (HTTPS)"), hostedApiUrl) { hostedApiUrl = it }
+        OutlinedTextField(
+            value = hostedDeviceToken, onValueChange = { hostedDeviceToken = it },
+            label = { Text(t("رمز الجهاز API", "Device API token")) },
+            visualTransformation = PasswordVisualTransformation(), singleLine = true, modifier = Modifier.fillMaxWidth(),
+        )
+        Text(t("اترك العنوان فارغاً لتعطيل استقبال طلبات الاتصال. استخدم HTTPS ورمز جهاز مستقل عن بيانات SIP. يتم حفظ الرمز مشفراً في Android Keystore.",
+            "Leave the URL blank to disable hosted jobs. Use HTTPS and a device token separate from SIP credentials. The token is encrypted with Android Keystore."),
+            style = MaterialTheme.typography.bodySmall)
         Choice(t("Второй звонок при занятости", "Second call while busy"), BusyPolicy.entries, busy,
             { when (it) { BusyPolicy.REJECT -> t("Отклонять", "Reject"); BusyPolicy.IGNORE -> t("Отдать звонилке", "Leave to phone") } }, info = "busy") {
             busy = it
@@ -352,6 +364,7 @@ private fun SettingsSection(rt: GatewayRuntime) {
                     registrarPassword = regPassword,
                     server = server, port = port.toIntOrNull() ?: transport.defaultPort, username = user, authUsername = authUser, password = password,
                     inboundTarget = target, allowedPrefixes = prefixes, domain = domain,
+                    hostedApiUrl = hostedApiUrl, hostedDeviceToken = hostedDeviceToken,
                     sipStack = stack, sipTransport = transport.id, srtp = srtp.id, busyPolicy = busy,
                 ),
             )
