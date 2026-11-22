@@ -87,6 +87,25 @@ class SipInboundDynamicTargetTest {
         }
     }
 
+    @Test fun plainNineDigitToUserFromLinphoneStyleUriReachesCellularHandlerAsE164() {
+        DatagramSocket(0).use { peer ->
+            val received = CountDownLatch(1)
+            val target = AtomicReference<String?>()
+            val ua = start(peer, IncomingCallHandler { leg ->
+                target.set(leg.target)
+                received.countDown()
+                leg.hangup(HangupCause.NORMAL)
+            })
+            try {
+                sendInvite(peer, ua, "sip:737445440@sip.linphone.org", withSdp = true)
+                assertTrue("valid Yemeni SIP URI user did not reach the bridge handler", received.await(3, TimeUnit.SECONDS))
+                assertEquals("+967737445440", target.get())
+            } finally {
+                ua.stop(timeoutMs = 50)
+            }
+        }
+    }
+
     @Test fun fixedRequestUriAndDynamicToReachTheIncomingHandlerAsE164() {
         DatagramSocket(0).use { peer ->
             val received = CountDownLatch(1)
