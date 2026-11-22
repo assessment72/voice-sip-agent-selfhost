@@ -119,6 +119,11 @@ class CallBridge(
     fun addListener(l: BridgeListener) = listeners.addIfAbsent(l)
     fun removeListener(l: BridgeListener) = listeners.remove(l)
 
+    /** End the currently active bridge session (used by the hosted-call duration guard). */
+    fun endActiveSession(cause: HangupCause = HangupCause.NORMAL) = post {
+        session?.let { endSession(it, cause) }
+    }
+
     /** Blocks until every task posted so far has run (tests). */
     internal fun drain() {
         if (!executor.isShutdown) executor.submit {}.get()
