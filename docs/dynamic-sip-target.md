@@ -26,17 +26,22 @@ Accepted user value:
 sip777405578
 ```
 
-The value must contain the literal `sip` prefix followed by exactly nine ASCII digits, and the
-national number must be a supported Yemeni mobile prefix (70, 71, 73, 77, or 78). It becomes:
+For `X-VSA-Dial`, use the literal `sip` prefix followed by exactly nine ASCII digits. For SIP URI
+fields (`To`, `P-Called-Party-ID`, or Request-URI), the nine-digit user is also accepted directly,
+because the URI scheme already identifies it as a SIP destination. The national number must use a
+supported Yemeni mobile prefix (70, 71, 73, 77, or 78). Both forms normalize to E.164:
 
 ```text
-sip777405578
-    → 777405578
+X-VSA-Dial: sip777405578
     → +967777405578
+
+To: <sip:737445440@sip.linphone.org>
+    → +967737445440
 ```
 
-Bare national numbers, short codes, emergency numbers, non-numeric values, and other country
-formats are rejected with `484 Address Incomplete`. The device's Android emergency-number check,
+Short codes, emergency numbers, non-numeric values, malformed SIP URIs, and unsupported country
+prefixes are rejected with `484 Address Incomplete`. A bare nine-digit value in `X-VSA-Dial` is
+still rejected; use the explicit `sip` prefix there. The device's Android emergency-number check,
 the gateway `allowedPrefixes` policy, SIP digest authentication, and SIM 2 selection remain
 additional safeguards. Prefix allow-list entries may be written as a national prefix (for example
 `77`) or an international prefix (for example `+96777`).
