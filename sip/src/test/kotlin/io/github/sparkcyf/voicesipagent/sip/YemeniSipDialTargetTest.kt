@@ -105,6 +105,21 @@ class YemeniSipDialTargetTest {
         )
     }
 
+
+    @Test fun fixedLinphoneAorIsSkippedBeforeReadingCalledPartyId() {
+        val req = request(
+            uri = "sip:ofkkr8214t@sip.linphone.org",
+            headers = SipHeaders()
+                .add("To", "<sip:ofkkr8214t@sip.linphone.org>")
+                .add("P-Called-Party-ID", "<sip:737445440@sip.linphone.org>"),
+        )
+        val result = YemeniSipDialTarget.resolve(req, "ofkkr8214t")
+        assertTrue("expected accepted target, got $result", result is YemeniSipDialTarget.Result.Accepted)
+        val target = (result as YemeniSipDialTarget.Result.Accepted).target
+        assertEquals("+967737445440", target.e164)
+        assertEquals("P-Called-Party-ID", target.source)
+    }
+
     @Test fun acceptsEachSupportedYemeniMobilePrefix() {
         listOf("70", "71", "73", "77", "78").forEach { prefix ->
             accepted(
