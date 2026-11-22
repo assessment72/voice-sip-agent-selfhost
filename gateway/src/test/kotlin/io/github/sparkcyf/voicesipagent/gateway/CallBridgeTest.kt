@@ -34,6 +34,49 @@ class CallBridgeTest {
     /** Waits for the bridge thread to drain, including tasks posted by the tasks it ran. */
     private fun settle() = repeat(3) { bridge.drain() }
 
+
+    @Test
+    fun hostedCallWaitsForCellularAnswerBeforeCreatingSipLegAndBridgesBothWays() {
+        assertTrue(bridge.originateCellularThenSip("+967777405578", "sip:linphone@example.test"))
+        settle()
+        val cellularLeg = cell.dialed.single()
+        assertEquals("+967777405578", cellularLeg.target)
+        assertTrue("SIP leg must not start while cellular is ringing", sip.dialed.isEmpty())
+
+        cellularLeg.remoteAnswered()
+        settle()
+        val sipLeg = sip.dialed.single()
+        assertEquals("sip:linphone@example.test", sipLeg.target)
+
+        sipLeg.remoteAnswered()
+        settle()
+        val cellPort = FakePort(isClockSource = true, fill = 11)
+        val sipPort = FakePort(isClockSource = false, fill = 22)
+        cellularLeg.mediaUp(cellPort)
+        sipLeg.mediaUp(sipPort)
+        settle()
+        assertNotNull(bridge.session?.media)
+        cellPort.clock!!.onFrame()
+        assertEquals(11.toShort(), sipPort.written.single()[0])
+        assertEquals(22.toShort(), cellPort.written.single()[0])
+
+        cellularLeg.remoteEnded(HangupCause.NORMAL)
+        settle()
+        assertEquals(LegState.ENDED, sipLeg.state)
+        assertNull(bridge.session)
+    }
+
+    @Test
+    fun hostedCallCellularNoAnswerNeverCreatesSipLeg() {
+        assertTrue(bridge.originateCellularThenSip("+967777405578", "sip:linphone@example.test"))
+        settle()
+        val cellularLeg = cell.dialed.single()
+        cellularLeg.remoteEnded(HangupCause.NO_ANSWER)
+        settle()
+        assertTrue(sip.dialed.isEmpty())
+        assertNull(bridge.session)
+    }
+
     @Test
     fun cellularInboundToSipFullCall() {
         val a = cell.incoming("13800001234")
