@@ -152,12 +152,6 @@ def create_call(body: CreateCall, principal=Depends(caller),
     now = int(time.time())
     with db() as c:
         c.execute("BEGIN IMMEDIATE")
-        c.execute("DELETE FROM requests WHERE created_at < ?", (now - 60,))
-        count = c.execute("SELECT COUNT(*) FROM requests WHERE principal=?", (principal,)).fetchone()[0]
-        if count >= RATE_LIMIT:
-            c.rollback()
-            raise HTTPException(status_code=429, detail="rate_limit_exceeded")
-        c.execute("INSERT INTO requests(principal,created_at) VALUES(?,?)", (principal, now))
         old = c.execute("SELECT * FROM calls WHERE principal=? AND idempotency_key=?", (principal, idempotency_key)).fetchone()
         if old:
             if old["phone_number"] != number:
@@ -165,6 +159,12 @@ def create_call(body: CreateCall, principal=Depends(caller),
                 raise HTTPException(status_code=409, detail="idempotency_key_reused")
             c.commit()
             return safe_call(old)
+        c.execute("DELETE FROM requests WHERE created_at < ?", (now - 60,))
+        count = c.execute("SELECT COUNT(*) FROM requests WHERE principal=?", (principal,)).fetchone()[0]
+        if count >= RATE_LIMIT:
+            c.rollback()
+            raise HTTPException(status_code=429, detail="rate_limit_exceeded")
+        c.execute("INSERT INTO requests(principal,created_at) VALUES(?,?)", (principal, now))
         active = c.execute("SELECT id FROM calls WHERE state NOT IN ('failed','ended') LIMIT 1").fetchone()
         if active:
             c.rollback()
