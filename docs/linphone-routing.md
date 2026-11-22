@@ -28,7 +28,7 @@ A separate programmable SIP proxy/PBX must then originate an INVITE to the fixed
 2. `To: <sip:sip737445440@...>`
 3. `P-Called-Party-ID: <sip:737445440@...>`
 
-The Android PJSUA2 endpoint now reads these fields in that order, skips the fixed gateway AoR in To/Request-URI, and uses the dynamic value as the cellular target. The upstream proxy must preserve the selected destination field while routing the INVITE to the registered Android Contact. The proxy must also authenticate the originating caller and restrict who can reach the gateway.
+The active Android runtime uses the built-in Kotlin SIP user agent (UDP transport) and its Yemeni target resolver reads these fields in that order, skips the fixed gateway AoR in To/Request-URI, validates the Yemeni mobile prefix, and normalizes the value to E.164 before creating the cellular leg. The optional PJSUA2 module is not currently wired into the app runtime/build, so selecting it is not a supported way to enable this route. The upstream proxy must preserve the selected destination field while routing the INVITE to the registered Android Contact. The proxy must also authenticate the originating caller and restrict who can reach the gateway.
 
 Conceptual SIP exchange at the Android gateway:
 
@@ -42,7 +42,7 @@ If the proxy routes to the registered Contact and preserves `X-VSA-Dial`, Androi
 
 ## What is and is not complete
 
-- Implemented in this branch: PJSUA2 target extraction from X-VSA-Dial, To, P-Called-Party-ID, and Request-URI; fixed AoR skipping; JVM tests for those parsing cases.
+- Implemented in the active app stack: target extraction from X-VSA-Dial, To, P-Called-Party-ID, and Request-URI; fixed AoR skipping; Yemeni number validation and E.164 normalization; JVM tests including the fixed Linphone AoR `ofkkr8214t`.
 - Not provided by the public free Linphone account: a configurable wildcard route from arbitrary `sip<mobile-number>` users to `ofkkr8214t`, or a user-managed dialplan that inserts `X-VSA-Dial`.
 - Still required: a programmable SIP proxy/PBX or a provider that explicitly supports dynamic destination routing and custom SIP headers. This can be hosted separately; it does not require a public IP on the Android phone if Android maintains an outbound registration.
 - Still unverified: successful delivery through a real Linphone account, cellular call placement, and two-way call audio on the HONOR handset.
