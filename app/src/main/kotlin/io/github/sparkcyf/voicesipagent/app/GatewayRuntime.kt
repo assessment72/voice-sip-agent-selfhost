@@ -306,7 +306,7 @@ class GatewayRuntime private constructor(context: Context) {
             val fallback = settings.inboundTarget.ifBlank { settings.username }
             val sipTarget = sipAgent?.hostedCallDestination(fallback)
             val activeBridge = bridge
-            if (sipTarget.isNullOrBlank() || activeBridge == null || !cellular.status.ready || sip?.status?.ready != true) {
+            if (sipTarget.isNullOrBlank() || activeBridge == null || activeBridge.session != null || !cellular.status.ready || sip?.status?.ready != true) {
                 reportHostedState(client, job.id, "failed", "gateway_not_ready")
                 hostedCallId = null
                 return
