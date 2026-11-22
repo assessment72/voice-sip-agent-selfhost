@@ -40,6 +40,8 @@ class SipUserAgent(
     private val random = SecureRandom()
     internal lateinit var transport: SipTransport
     private lateinit var serverAddr: InetSocketAddress
+    /** All current DNS answers: SIP providers may run multiple proxy nodes behind one hostname. */
+    private var serverAddrs: Set<InetAddress> = emptySet()
     internal var localIp: String = "0.0.0.0"
         private set
     internal val localPort: Int get() = transport.localPort
@@ -273,7 +275,7 @@ class SipUserAgent(
     // ---------------------------------------------------------------- message dispatch
 
     private fun onMessage(msg: SipMessage, from: InetSocketAddress) {
-        if (!config.serverMode && config.acceptOnlyFromServer && from.address != serverAddr.address) {
+        if (!config.serverMode && config.acceptOnlyFromServer && !isTrustedUpstream(from.address, serverAddrs)) {
             log.warn("dropping SIP from untrusted ${from.address.hostAddress}")
             return
         }
@@ -654,9 +656,15 @@ class SipUserAgent(
     private fun hex(bytes: Int) = ByteArray(bytes).also(random::nextBytes).joinToString("") { "%02x".format(it) }
 
     private fun resolve() {
-        val server = InetAddress.getByName(account.server)
+        val addresses = InetAddress.getAllByName(account.server).toSet()
+        require(addresses.isNotEmpty()) { "SIP server ${account.server} resolved to no addresses" }
+        serverAddrs = addresses
+        // Use one answer for outbound transactions, but trust all current proxy nodes for inbound
+        // requests. Hosted SIP services (including HA proxy deployments) may deliver from any node.
+        val server = addresses.first()
         serverAddr = InetSocketAddress(server, account.port)
         localIp = (localAddressProvider?.invoke(server) ?: routeTo(server))?.hostAddress ?: "0.0.0.0"
+        log.info("SIP upstream resolved to ${addresses.size} address(es)")
     }
 
     /** Server mode has no upstream server; just learn our own LAN address. */
@@ -684,3 +692,8 @@ class SipUserAgent(
         const val ALLOW = "INVITE, ACK, CANCEL, BYE, OPTIONS, INFO, NOTIFY, UPDATE"
     }
 }
+
+
+/** True only for an address returned by the configured SIP upstream's current DNS lookup. */
+internal fun isTrustedUpstream(source: InetAddress, allowed: Set<InetAddress>): Boolean =
+    source in allowed
