@@ -345,7 +345,7 @@ class GatewayRuntime private constructor(context: Context) {
         if (session.outbound != null) reportHostedState(client, callId, "calling_sip")
         if (session.media != null) reportHostedState(client, callId, "bridged")
         if (session.endedAtMs != null) {
-            val success = session.connectedAtMs != null && session.media != null
+            val success = session.connectedAtMs != null && session.mediaWasBridged
             reportHostedState(client, callId, if (success) "ended" else "failed",
                 if (success) null else "call_leg_or_media_failed")
             listenerRef?.let(activeBridge::removeListener)
