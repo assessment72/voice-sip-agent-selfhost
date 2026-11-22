@@ -20,6 +20,8 @@ CALL_TOKEN = os.getenv("CALL_API_TOKEN", "")
 DEVICE_TOKEN = os.getenv("DEVICE_API_TOKEN", "")
 MAX_CALL = int(os.getenv("MAX_CALL_SECONDS", "1800"))
 QUEUE_TTL = int(os.getenv("QUEUE_TTL_SECONDS", "120"))
+CELL_RING_TIMEOUT = int(os.getenv("CELLULAR_RING_TIMEOUT_SECONDS", "45"))
+SIP_RING_TIMEOUT = int(os.getenv("SIP_RING_TIMEOUT_SECONDS", "45"))
 RATE_LIMIT = int(os.getenv("RATE_LIMIT_PER_MINUTE", "5"))
 PREFIXES = tuple(p.strip() for p in os.getenv("ALLOWED_PREFIXES", "").split(",") if p.strip())
 STATES = {"queued", "ringing_cellular", "cellular_answered", "calling_sip", "bridged", "failed", "ended"}
@@ -87,6 +89,8 @@ def normalize_number(raw: str) -> str:
     value = re.sub(r"[\s().-]", "", raw)
     if value.startswith("00"):
         value = "+" + value[2:]
+    elif re.fullmatch(r"7[0-9]{8}", value):
+        value = "+967" + value
     if not re.fullmatch(r"\+[1-9][0-9]{7,14}", value):
         raise HTTPException(status_code=422, detail="invalid_phone_number")
     # Fail closed on common international emergency short codes and Yemen emergency
@@ -94,7 +98,9 @@ def normalize_number(raw: str) -> str:
     digits = value[1:]
     if digits in {"112", "911", "999", "998", "997", "191", "194"}:
         raise HTTPException(status_code=422, detail="emergency_number")
-    if PREFIXES and not any(value.startswith(p) for p in PREFIXES):
+    if not PREFIXES:
+        raise HTTPException(status_code=503, detail="allowlist_not_configured")
+    if not any(value.startswith(p) for p in PREFIXES):
         raise HTTPException(status_code=403, detail="number_not_allowed")
     return value
 
@@ -154,6 +160,9 @@ def create_call(body: CreateCall, principal=Depends(caller),
         c.execute("INSERT INTO requests(principal,created_at) VALUES(?,?)", (principal, now))
         old = c.execute("SELECT * FROM calls WHERE principal=? AND idempotency_key=?", (principal, idempotency_key)).fetchone()
         if old:
+            if old["phone_number"] != number:
+                c.rollback()
+                raise HTTPException(status_code=409, detail="idempotency_key_reused")
             c.commit()
             return safe_call(old)
         active = c.execute("SELECT id FROM calls WHERE state NOT IN ('failed','ended') LIMIT 1").fetchone()
@@ -184,6 +193,9 @@ def next_job(device_id=Depends(device)):
     with db() as c:
         c.execute("BEGIN IMMEDIATE")
         c.execute("UPDATE calls SET state='failed',reason_code='queue_expired',updated_at=? WHERE state='queued' AND expires_at<?",
+        c.execute("UPDATE calls SET state='failed',reason_code='cellular_answer_timeout',updated_at=? WHERE state='ringing_cellular' AND updated_at<?", (now, now - CELL_RING_TIMEOUT))
+        c.execute("UPDATE calls SET state='failed',reason_code='sip_answer_timeout',updated_at=? WHERE state='calling_sip' AND updated_at<?", (now, now - SIP_RING_TIMEOUT))
+        c.execute("UPDATE calls SET state='ended',reason_code='max_call_duration',updated_at=? WHERE state='bridged' AND updated_at<?", (now, now - MAX_CALL))
                   (now, now))
         row = c.execute("SELECT * FROM calls WHERE state='queued' AND claimed_by IS NULL AND expires_at>=? ORDER BY created_at LIMIT 1",
                         (now,)).fetchone()
