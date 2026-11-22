@@ -1,0 +1,11 @@
+# Replace calls.example.com with a domain you control.
+# Caddy obtains and renews the TLS certificate automatically.
+calls.example.com {
+    encode zstd gzip
+    reverse_proxy hosted-api:8080
+    header {
+        Strict-Transport-Security "max-age=31536000; includeSubDomains"
+        X-Content-Type-Options "nosniff"
+        Referrer-Policy "no-referrer"
+    }
+}
