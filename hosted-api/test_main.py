@@ -24,7 +24,7 @@ def test_authentication_and_validation(tmp_path, monkeypatch):
                        headers={"Idempotency-Key": str(uuid.uuid4())}).status_code == 401
     response = client.post("/v1/calls", json={"phoneNumber": "+967112"},
                            headers=headers("test-caller-token", **{"Idempotency-Key": str(uuid.uuid4())}))
-    assert response.status_code == 403  # not in the configured allow-list
+    assert response.status_code == 422  # malformed E.164 number rejected
 
 
 def test_idempotency_and_single_device_job(tmp_path, monkeypatch):
