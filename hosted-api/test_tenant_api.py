@@ -289,3 +289,38 @@ def test_admin_dashboard_is_served_without_exposing_credentials(tmp_path, monkey
     assert response.status_code == 200
     assert "إدارة الأجهزة والمكالمات" in response.text
     assert "localStorage" not in response.text
+
+
+def test_branch_is_owned_by_organization_and_device_can_be_assigned(tmp_path, monkeypatch):
+    client = setup_client(tmp_path, monkeypatch)
+    alpha = create_org(client, "Alpha", "alpha", "owner-a")
+    beta = create_org(client, "Beta", "beta", "owner-b")
+    alpha_headers = auth(alpha["apiToken"], alpha["organizationId"])
+    branch = client.post(
+        f"/v1/organizations/{alpha['organizationId']}/branches",
+        json={"name": "Main Branch", "code": "MAIN"},
+        headers=alpha_headers,
+    )
+    assert branch.status_code == 201
+    assert client.get(
+        "/v1/admin/branches",
+        headers=auth(beta["apiToken"], beta["organizationId"]),
+    ).json()["count"] == 0
+    enrollment = client.post(
+        f"/v1/organizations/{alpha['organizationId']}/enrollment-tokens",
+        json={"label": "main branch phone"},
+        headers=alpha_headers,
+    ).json()
+    device = client.post(
+        "/v1/device/enroll",
+        json={
+            "enrollmentToken": enrollment["enrollmentToken"],
+            "externalDeviceId": "branch-phone",
+            "displayName": "Main phone",
+            "branchId": branch.json()["branchId"],
+        },
+    )
+    assert device.status_code == 201, device.text
+    listed = client.get("/v1/admin/devices", headers=alpha_headers).json()["devices"]
+    assert listed[0]["branch_name"] == "Main Branch"
+    assert listed[0]["branch_id"] == branch.json()["branchId"]
