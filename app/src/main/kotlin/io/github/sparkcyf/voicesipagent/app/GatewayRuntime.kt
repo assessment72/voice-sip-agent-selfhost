@@ -340,11 +340,11 @@ class GatewayRuntime private constructor(context: Context) {
             )
             settingsStore.save(updated)
             _settings.value = updated
-            _hostedDeviceMessage.value = "تم تسجيل الجهاز بنجاح · \${registration.deviceId}"
+            _hostedDeviceMessage.value = "تم تسجيل الجهاز بنجاح · ${registration.deviceId}"
             AppLog.i("hosted device enrolled")
         } catch (e: Exception) {
-            _hostedDeviceMessage.value = "تعذر تسجيل الجهاز: \${e.javaClass.simpleName}"
-            AppLog.w("hosted device enrollment failed: \${e.javaClass.simpleName}")
+            _hostedDeviceMessage.value = "تعذر تسجيل الجهاز: ${e.javaClass.simpleName}"
+            AppLog.w("hosted device enrollment failed: ${e.javaClass.simpleName}")
         }
     }
 
@@ -383,7 +383,7 @@ class GatewayRuntime private constructor(context: Context) {
                 activeCall = hostedCallId != null,
             )
         } catch (e: Exception) {
-            AppLog.w("hosted heartbeat failed: \${e.javaClass.simpleName}")
+            AppLog.w("hosted heartbeat failed: ${e.javaClass.simpleName}")
         }
     }
 
