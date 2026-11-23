@@ -14,7 +14,7 @@ from contextlib import contextmanager
 from typing import Literal
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, status
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import BaseModel, Field
 
 DB = os.getenv("DATABASE_PATH", "./calls.sqlite3")
@@ -30,6 +30,11 @@ QUEUE_TTL = int(os.getenv("QUEUE_TTL_SECONDS", "120"))
 CELL_RING_TIMEOUT = int(os.getenv("CELLULAR_RING_TIMEOUT_SECONDS", "45"))
 SIP_RING_TIMEOUT = int(os.getenv("SIP_RING_TIMEOUT_SECONDS", "45"))
 RATE_LIMIT = int(os.getenv("RATE_LIMIT_PER_MINUTE", "5"))
+IP_RATE_LIMIT_PER_MINUTE = int(os.getenv("IP_RATE_LIMIT_PER_MINUTE", "120"))
+GENERAL_RATE_LIMIT_PER_MINUTE = int(os.getenv("GENERAL_RATE_LIMIT_PER_MINUTE", "60"))
+REQUIRE_DISTRIBUTED_RATE_LIMIT = os.getenv(
+    "REQUIRE_DISTRIBUTED_RATE_LIMIT", "false"
+).lower() in {"1", "true", "yes"}
 PREFIXES = tuple(p.strip() for p in os.getenv("ALLOWED_PREFIXES", "").split(",") if p.strip())
 STATES = {"queued", "ringing_cellular", "cellular_answered", "calling_sip", "bridged", "failed", "ended"}
 TERMINAL = {"failed", "ended"}
@@ -64,6 +69,10 @@ def init_db():
           id INTEGER PRIMARY KEY AUTOINCREMENT, principal TEXT NOT NULL,
           created_at INTEGER NOT NULL
         );
+        CREATE TABLE IF NOT EXISTS request_limits (
+          key_hash TEXT NOT NULL, window_start INTEGER NOT NULL,
+          count INTEGER NOT NULL, PRIMARY KEY(key_hash, window_start)
+        );
         """)
         columns = {row["name"] for row in c.execute("PRAGMA table_info(calls)")}
         if "claimed_at" not in columns:
@@ -82,6 +91,78 @@ def init_db():
 @app.on_event("startup")
 def startup():
     init_db()
+
+
+def _consume_local_rate_limit(key_hash: str, window_start: int, limit: int) -> tuple[bool, int]:
+    with db() as c:
+        c.execute("BEGIN IMMEDIATE")
+        c.execute(
+            """INSERT INTO request_limits(key_hash,window_start,count) VALUES(?,?,1)
+               ON CONFLICT(key_hash,window_start) DO UPDATE SET count=count+1""",
+            (key_hash, window_start),
+        )
+        count = c.execute(
+            "SELECT count FROM request_limits WHERE key_hash=? AND window_start=?",
+            (key_hash, window_start),
+        ).fetchone()["count"]
+        c.execute("DELETE FROM request_limits WHERE window_start<?", (window_start - 120,))
+        c.commit()
+    return count <= limit, count
+
+
+def _rate_limit_check(key_hash: str, window_start: int, limit: int) -> tuple[bool, int]:
+    if os.getenv("MONGODB_URI", "").strip():
+        from mongodb_store import consume_rate_limit
+        return consume_rate_limit(
+            key_hash=key_hash, window_start=window_start, limit=limit,
+            expires_at=window_start + 180,
+        )
+    if REQUIRE_DISTRIBUTED_RATE_LIMIT:
+        raise RuntimeError("distributed_rate_limiter_unavailable")
+    return _consume_local_rate_limit(key_hash, window_start, limit)
+
+
+@app.middleware("http")
+async def api_rate_limit(request: Request, call_next):
+    if not request.url.path.startswith("/v1/"):
+        return await call_next(request)
+    now = int(time.time())
+    window_start = now - (now % 60)
+    path = request.url.path
+    method = request.method.upper()
+    is_call_create = method == "POST" and path.endswith("/calls")
+    is_enrollment = method == "POST" and path in {
+        "/v1/organizations/bootstrap", "/v1/device/enroll"
+    }
+    is_heartbeat = path in {"/v1/device/heartbeat", "/v1/device/events"}
+    token = request.headers.get("authorization", "")
+    token_value = token[7:] if token.startswith("Bearer ") else ""
+    client_ip = request.client.host if request.client else "unknown"
+    checks = [
+        (_hash_secret("ip:" + client_ip), IP_RATE_LIMIT_PER_MINUTE),
+    ]
+    if token_value:
+        checks.append((_hash_secret("credential:" + token_value), 5 if is_call_create or is_enrollment else GENERAL_RATE_LIMIT_PER_MINUTE))
+    if is_call_create or is_enrollment:
+        checks.append((_hash_secret("sensitive:" + client_ip + ":" + path), 5))
+    elif is_heartbeat:
+        checks.append((_hash_secret("device-event:" + (token_value or client_ip)), 120))
+    else:
+        checks.append((_hash_secret("route:" + (token_value or client_ip) + ":" + path), GENERAL_RATE_LIMIT_PER_MINUTE))
+    try:
+        for key_hash, limit in checks:
+            allowed, _ = _rate_limit_check(key_hash, window_start, limit)
+            if not allowed:
+                return JSONResponse(
+                    status_code=429,
+                    content={"detail": "rate_limit_exceeded"},
+                    headers={"Retry-After": str(60 - (now % 60))},
+                )
+    except Exception:
+        # Do not silently downgrade to a per-instance limiter when Atlas is configured
+        # or distributed limiting is required: fail closed for API traffic.
+        return JSONResponse(status_code=503, content={"detail": "rate_limiter_unavailable"})
+    return await call_next(request)
 
 
 def token_ok(provided: str | None, expected: str) -> bool:
