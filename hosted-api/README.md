@@ -68,6 +68,10 @@ The Android agent authenticates separately with `DEVICE_API_TOKEN` and polls `GE
 - The shared-token compatibility routes (`/v1/calls`, `/v1/device/jobs/next`, and `/v1/device/calls/*`) are disabled by default. Keep `ENABLE_LEGACY_CALL_API=false` and `ENABLE_LEGACY_DEVICE_API=false`; only enable them temporarily in an isolated migration environment.
 - Bootstrap organizations only with a separate high-entropy `ORG_BOOTSTRAP_TOKEN`. Store returned organization/device tokens in a secret manager or Android Keystore; they are shown once.
 - `GET /health/database` checks the active SQLite database. `GET /health/mongodb` checks optional Atlas connectivity only; it does not mean API calls are stored in MongoDB.
+- API rate limits use atomic MongoDB fixed-window counters when `MONGODB_URI` is configured (IP + credential + sensitive-route dimensions). Set `REQUIRE_DISTRIBUTED_RATE_LIMIT=true` for multi-instance deployments; requests fail closed with 503 if the shared limiter is unavailable. Without Atlas, local development uses a SQLite fallback that is not distributed.
+- Vercel startup is deliberately blocked while call/device repositories still use SQLite. Do not set `ALLOW_UNSAFE_SQLITE_ON_VERCEL=true` to bypass this protection. MongoDB currently backs shared rate-limit counters only; **it is not yet the call, organization, device, or command datastore**.
+- The Vercel storage guard is intentional: serverless local SQLite is ephemeral and cannot provide durable shared call state. Complete the MongoDB route-repository migration and its integration tests before enabling a Vercel deployment.
+- Administrative member and device changes are recorded in `admin_audit_events` and can be read by organization owners/admins at `GET /v1/admin/audit`. The audit feed never includes raw API tokens.
 - Android must independently reject emergency numbers using `TelephonyManager.isEmergencyNumber` before dialing.
 - Keep queue/call timeouts bounded; add a reverse-proxy request-size limit and IP allow-list where practical.
 - Rotate both API tokens independently. Do not put secrets in Git, APK resources, query strings, or logs.
