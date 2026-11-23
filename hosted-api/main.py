@@ -500,6 +500,12 @@ def organization_principal(authorization: str | None = Header(default=None),
     token = authorization[7:] if authorization and authorization.startswith("Bearer ") else None
     if not token:
         raise HTTPException(status_code=401, detail="unauthorized")
+    if os.getenv("MONGODB_URI", "").strip():
+        from mongodb_control import authenticate_organization
+        row = authenticate_organization(_hash_secret(token), x_organization_id)
+        if not row:
+            raise HTTPException(status_code=403, detail="organization_access_denied")
+        return row
     with db() as c:
         row = c.execute(
             """SELECT m.organization_id,m.user_id,m.role
@@ -526,6 +532,12 @@ def authenticated_device(authorization: str | None = Header(default=None)):
     token = authorization[7:] if authorization and authorization.startswith("Bearer ") else None
     if not token:
         raise HTTPException(status_code=401, detail="unauthorized")
+    if os.getenv("MONGODB_URI", "").strip():
+        from mongodb_control import authenticate_device
+        row = authenticate_device(_hash_secret(token))
+        if not row:
+            raise HTTPException(status_code=401, detail="device_unauthorized")
+        return row
     with db() as c:
         row = c.execute(
             """SELECT d.id,d.organization_id,d.status
@@ -551,6 +563,15 @@ def bootstrap_organization(body: OrganizationBootstrap,
     org_id = str(uuid.uuid4())
     raw_token = secrets.token_urlsafe(40)
     credential_id = str(uuid.uuid4())
+    if os.getenv("MONGODB_URI", "").strip():
+        from mongodb_control import ControlConflict, bootstrap_organization as mongo_bootstrap
+        try:
+            mongo_bootstrap(slug=body.slug, name=body.name, owner_user_id=body.ownerUserId,
+                            token_hash=_hash_secret(raw_token), token_prefix=raw_token[:8])
+        except ControlConflict:
+            raise HTTPException(status_code=409, detail="organization_slug_unavailable")
+        return {"organizationId": org_id, "slug": body.slug, "apiToken": raw_token,
+                "tokenWarning": "Shown once. Store securely; only its hash is retained."}
     with db() as c:
         try:
             c.execute("BEGIN IMMEDIATE")
@@ -586,6 +607,16 @@ def create_enrollment_token(organization_id: str, body: EnrollmentTokenRequest,
     now = int(time.time())
     raw_token = secrets.token_urlsafe(40)
     token_id = str(uuid.uuid4())
+    if os.getenv("MONGODB_URI", "").strip():
+        from mongodb_control import create_enrollment_token as mongo_create_enrollment
+        token_id = mongo_create_enrollment(
+            organization_id=organization_id, token_hash=_hash_secret(raw_token), label=body.label,
+            expires_at=now + body.expiresInSeconds, max_uses=body.maxUses,
+            created_by=principal["user_id"],
+        )
+        return {"tokenId": token_id, "enrollmentToken": raw_token,
+                "expiresAt": now + body.expiresInSeconds, "maxUses": body.maxUses,
+                "tokenWarning": "Shown once. Share only with intended devices."}
     with db() as c:
         c.execute(
             """INSERT INTO device_enrollment_tokens
@@ -605,6 +636,25 @@ def enroll_device(body: DeviceEnrollment):
     raw_device_token = secrets.token_urlsafe(48)
     device_id = str(uuid.uuid4())
     credential_id = str(uuid.uuid4())
+    if os.getenv("MONGODB_URI", "").strip():
+        from mongodb_control import ControlConflict, ControlNotFound, enroll_device as mongo_enroll
+        try:
+            enrolled_id, organization_id = mongo_enroll(
+                enrollment_token_hash=_hash_secret(body.enrollmentToken),
+                external_device_id=body.externalDeviceId, display_name=body.displayName,
+                branch_id=body.branchId, branch_name=body.branchName,
+                app_id=body.appId, app_version=body.appVersion, android_version=body.androidVersion,
+                manufacturer=body.manufacturer, model=body.model,
+                device_token_hash=_hash_secret(raw_device_token), device_token_prefix=raw_device_token[:8],
+            )
+        except ControlNotFound as exc:
+            detail = str(exc)
+            raise HTTPException(status_code=404 if detail == "branch_not_found" else 401, detail=detail)
+        except ControlConflict as exc:
+            raise HTTPException(status_code=409, detail=str(exc))
+        return {"deviceId": enrolled_id, "organizationId": organization_id,
+                "deviceToken": raw_device_token,
+                "tokenWarning": "Shown once. Store in Android Keystore-backed storage."}
     with db() as c:
         c.execute("BEGIN IMMEDIATE")
         enrollment = c.execute(
@@ -657,6 +707,15 @@ def enroll_device(body: DeviceEnrollment):
 def device_heartbeat(body: DeviceHeartbeat, device_ctx=Depends(authenticated_device)):
     now = int(time.time())
     device_id = device_ctx["device_id"]
+    if os.getenv("MONGODB_URI", "").strip():
+        from mongodb_control import ControlNotFound, heartbeat as mongo_heartbeat
+        try:
+            server_time = mongo_heartbeat(device_id=device_id,
+                                          organization_id=device_ctx["organization_id"],
+                                          payload=body.model_dump(by_alias=True))
+        except ControlNotFound:
+            raise HTTPException(status_code=404, detail="device_not_found")
+        return {"accepted": True, "serverTime": server_time, "presence": "online"}
     with db() as c:
         c.execute("BEGIN IMMEDIATE")
         c.execute(
@@ -682,6 +741,21 @@ def device_heartbeat(body: DeviceHeartbeat, device_ctx=Depends(authenticated_dev
 @app.get("/v1/admin/devices")
 def list_organization_devices(principal=Depends(organization_principal)):
     now = int(time.time())
+    if os.getenv("MONGODB_URI", "").strip():
+        from mongodb_control import list_devices as mongo_list_devices
+        rows = mongo_list_devices(principal["organization_id"])
+        result = []
+        for row in rows:
+            item = dict(row)
+            item["id"] = item.pop("_id")
+            last_seen = item.get("last_seen_at")
+            age = now - last_seen if last_seen is not None else None
+            item["presence"] = ("offline" if item["status"] != "active" or age is None
+                                or age > PRESENCE_UNSTABLE_SECONDS else
+                                "unstable" if age > PRESENCE_ONLINE_SECONDS else "online")
+            item["lastSeenAgeSeconds"] = age
+            result.append(item)
+        return {"devices": result, "count": len(result)}
     with db() as c:
         rows = c.execute(
             """SELECT id,external_device_id,display_name,branch_name,branch_id,status,last_seen_at,
@@ -710,6 +784,14 @@ def list_organization_devices(principal=Depends(organization_principal)):
 @app.get("/v1/admin/devices/{device_id}/activity")
 def device_activity(device_id: str, limit: int = Query(default=50, ge=1, le=200),
                     principal=Depends(organization_principal)):
+    if os.getenv("MONGODB_URI", "").strip():
+        from mongodb_control import ControlNotFound, list_device_events
+        try:
+            rows = list_device_events(organization_id=principal["organization_id"],
+                                      device_id=device_id, limit=limit)
+        except ControlNotFound:
+            raise HTTPException(status_code=404, detail="device_not_found")
+        return {"events": rows}
     with db() as c:
         device_row = c.execute(
             "SELECT id FROM devices WHERE id=? AND organization_id=?",
@@ -741,6 +823,13 @@ def report_device_event(body: dict, device_ctx=Depends(authenticated_device)):
     if severity not in {"debug", "info", "warning", "error", "critical"}:
         raise HTTPException(status_code=422, detail="invalid_event_severity")
     now = int(time.time())
+    if os.getenv("MONGODB_URI", "").strip():
+        from mongodb_control import append_device_event
+        append_device_event(organization_id=device_ctx["organization_id"],
+                            device_id=device_ctx["device_id"], event_type=event_type,
+                            severity=severity, event_code=event_code,
+                            occurred_at=int(body.get("occurredAt", now)))
+        return {"accepted": True}
     with db() as c:
         c.execute(
             """INSERT INTO device_events
@@ -1221,6 +1310,14 @@ def create_organization_branch(organization_id: str, body: CreateBranch,
         raise HTTPException(status_code=404, detail="organization_not_found")
     now = int(time.time())
     branch_id = str(uuid.uuid4())
+    if os.getenv("MONGODB_URI", "").strip():
+        from mongodb_control import create_branch as mongo_create_branch
+        try:
+            branch_id = mongo_create_branch(organization_id=organization_id,
+                                            name=body.name, code=body.code)
+        except DuplicateKeyError:
+            raise HTTPException(status_code=409, detail="branch_code_already_exists")
+        return {"branchId": branch_id, "name": body.name, "code": body.code, "status": "active"}
     try:
         with db() as c:
             c.execute(
@@ -1235,6 +1332,11 @@ def create_organization_branch(organization_id: str, body: CreateBranch,
 
 @app.get("/v1/admin/branches")
 def list_organization_branches(principal=Depends(organization_principal)):
+    if os.getenv("MONGODB_URI", "").strip():
+        from mongodb_control import list_branches as mongo_list_branches
+        rows = mongo_list_branches(principal["organization_id"])
+        branches = [{**row, "id": row.pop("_id")} for row in rows]
+        return {"branches": branches, "count": len(branches)}
     with db() as c:
         rows = c.execute(
             """SELECT id,name,code,status,created_at
@@ -1285,6 +1387,11 @@ def organization_latency_metrics(principal=Depends(organization_principal)):
 @app.get("/v1/admin/audit")
 def organization_audit_log(limit: int = Query(default=50, ge=1, le=200),
                             principal=Depends(require_org_admin)):
+    if os.getenv("MONGODB_URI", "").strip():
+        from mongodb_control import list_audit
+        rows = list_audit(principal["organization_id"], limit)
+        events = [{**row, "id": row.pop("_id")} for row in rows]
+        return {"events": events, "count": len(events)}
     with db() as c:
         rows = c.execute(
             """SELECT id,actor_user_id,action,target_type,target_id,metadata_json,created_at
@@ -1304,6 +1411,10 @@ def organization_audit_log(limit: int = Query(default=50, ge=1, le=200),
 @app.get("/v1/admin/activity")
 def organization_activity(limit: int = Query(default=50, ge=1, le=200),
                           principal=Depends(organization_principal)):
+    if os.getenv("MONGODB_URI", "").strip():
+        from mongodb_control import list_activity
+        rows = list_activity(principal["organization_id"], limit)
+        return {"events": rows, "count": len(rows)}
     with db() as c:
         rows = c.execute(
             """SELECT e.event_type,e.severity,e.event_code,e.occurred_at,e.received_at,
