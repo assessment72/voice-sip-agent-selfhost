@@ -1,11 +1,6 @@
 name: Hosted Call API tests
 
 on:
-  push:
-    branches: [feature/hosted-call-api]
-    paths:
-      - "hosted-api/**"
-      - ".github/workflows/hosted-api-ci.yml"
   pull_request:
     paths:
       - "hosted-api/**"
