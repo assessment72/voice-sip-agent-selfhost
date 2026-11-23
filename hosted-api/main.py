@@ -20,6 +20,8 @@ from pydantic import BaseModel, Field
 DB = os.getenv("DATABASE_PATH", "./calls.sqlite3")
 CALL_TOKEN = os.getenv("CALL_API_TOKEN", "")
 DEVICE_TOKEN = os.getenv("DEVICE_API_TOKEN", "")
+LEGACY_CALL_API_ENABLED = os.getenv("ENABLE_LEGACY_CALL_API", "false").lower() in {"1", "true", "yes"}
+LEGACY_DEVICE_API_ENABLED = os.getenv("ENABLE_LEGACY_DEVICE_API", "false").lower() in {"1", "true", "yes"}
 BOOTSTRAP_TOKEN = os.getenv("ORG_BOOTSTRAP_TOKEN", "")
 PRESENCE_ONLINE_SECONDS = int(os.getenv("PRESENCE_ONLINE_SECONDS", "60"))
 PRESENCE_UNSTABLE_SECONDS = int(os.getenv("PRESENCE_UNSTABLE_SECONDS", "120"))
@@ -89,6 +91,8 @@ def token_ok(provided: str | None, expected: str) -> bool:
 
 
 def caller(authorization: str | None = Header(default=None)):
+    if not LEGACY_CALL_API_ENABLED:
+        raise HTTPException(status_code=404, detail="legacy_call_api_disabled")
     token = authorization[7:] if authorization and authorization.startswith("Bearer ") else None
     if not token_ok(token, CALL_TOKEN):
         raise HTTPException(status_code=401, detail="unauthorized")
@@ -96,6 +100,8 @@ def caller(authorization: str | None = Header(default=None)):
 
 
 def device(authorization: str | None = Header(default=None)):
+    if not LEGACY_DEVICE_API_ENABLED:
+        raise HTTPException(status_code=404, detail="legacy_device_api_disabled")
     token = authorization[7:] if authorization and authorization.startswith("Bearer ") else None
     if not token_ok(token, DEVICE_TOKEN):
         raise HTTPException(status_code=401, detail="unauthorized")
