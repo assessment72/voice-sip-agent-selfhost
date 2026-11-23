@@ -146,7 +146,8 @@ def test_live_atlas_control_plane_transactions_and_device_lifecycle(atlas_contro
         assert mongodb_control.authenticate_organization(owner_credential["token_hash"], org_id)["role"] == "owner"
 
         branch_id = mongodb_control.create_branch(
-            organization_id=org_id, name="CI branch", code=f"B-{uuid.uuid4().hex[:10]}"
+            organization_id=org_id, name="CI branch", code=f"B-{uuid.uuid4().hex[:10]}",
+            actor_user_id=owner_id
         )
         enrollment_hash = f"enroll-{uuid.uuid4().hex}"
         mongodb_control.create_enrollment_token(
