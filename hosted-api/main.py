@@ -10,7 +10,7 @@ import sqlite3
 import time
 import uuid
 from pathlib import Path
-from contextlib import contextmanager
+from contextlib import asynccontextmanager, contextmanager
 from typing import Literal
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, status
@@ -40,7 +40,6 @@ PREFIXES = tuple(p.strip() for p in os.getenv("ALLOWED_PREFIXES", "").split(",")
 STATES = {"queued", "ringing_cellular", "cellular_answered", "calling_sip", "bridged", "failed", "ended"}
 TERMINAL = {"failed", "ended"}
 
-app = FastAPI(title="Hosted Call API", version="1.0.0")
 
 
 @contextmanager
@@ -97,7 +96,6 @@ def init_db():
             c.execute("ALTER TABLE devices ADD COLUMN branch_id TEXT REFERENCES branches(id) ON DELETE SET NULL")
 
 
-@app.on_event("startup")
 def startup():
     # Vercel's writable filesystem is ephemeral and per-instance. Do not start
     # a customer-facing API on SQLite until all route repositories are migrated.
@@ -110,6 +108,15 @@ def startup():
         # Establish the shared rate-limit unique index before accepting API traffic.
         from mongodb_store import ensure_indexes
         ensure_indexes()
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    startup()
+    yield
+
+
+app = FastAPI(title="Hosted Call API", version="1.0.0", lifespan=lifespan)
 
 
 def _consume_local_rate_limit(key_hash: str, window_start: int, limit: int) -> tuple[bool, int]:
