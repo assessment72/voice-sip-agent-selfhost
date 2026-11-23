@@ -26,7 +26,7 @@ CallGate's USSD and generic webhook-management features are not part of this cel
 ### Caller endpoints
 
 - `POST /v1/calls` — requires `Authorization: Bearer <CALL_API_TOKEN>`, `Idempotency-Key`, and JSON `{"phoneNumber":"7XXXXXXXX"}` or an E.164 number such as `+9677XXXXXXXX`. Returns HTTP 202 with a call ID.
-- `GET /v1/calls/{call_id}` — returns state, timestamps, expiry, and a safe reason code. It does not return the destination number.
+- `GET /v1/calls/{call_id}` — returns state, timestamps, expiry, and a safe reason code. It does not return the destination number.\n- `GET /v1/metrics/latency` — caller-authenticated aggregate average and p95 latency for queue-to-cellular-ringing, queue-to-bridged, and cellular-answer-to-SIP-call intervals. It returns counts and durations only, without call IDs or phone numbers.
 
 ### Handset endpoints
 
@@ -79,6 +79,6 @@ A release is **not ready** until the current Android workflow succeeds, a signed
 - Long polling is performed on a dedicated Android network executor; call control, Telecom callbacks, SIP events, and gateway configuration remain on the gateway executor. An atomic handoff guard prevents the poller from claiming another job while a claimed job is being dispatched or handled.
 - State writes are queued on a separate single-thread network executor so they cannot sit behind the outstanding long poll. Their order is preserved, with bounded retry delays of 0.5, 1, 2, 4, and 8 seconds after transient failures (six attempts total). This queue is in-memory only; pending updates can be lost if Android kills the process.
 - HTTP requests retain bounded connect/read timeouts. The long-poll read timeout is 28 seconds for a maximum 25-second server wait.
-- The server stores per-call state-event timestamps against the opaque call ID. These raw timestamps are available for later latency analysis, but aggregate average/p95 metrics are not yet calculated or exposed. Destination numbers are not returned by status queries and credentials are never logged.
+- The server stores millisecond-resolution state-event timestamps against the opaque call ID and exposes caller-authenticated aggregate average/p95 latency summaries. The metrics response contains no call IDs or destination numbers.
 - FCM is intentionally not required in this stage. It may be added later as a best-effort wake hint; HTTPS long polling remains the authoritative job delivery path.
 - The backend long-poll endpoint currently checks the queue at 250 ms intervals while waiting. The handset itself does not issue repeated short polling requests.
