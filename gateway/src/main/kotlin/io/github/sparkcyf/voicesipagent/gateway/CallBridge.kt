@@ -281,7 +281,14 @@ class CallBridge(
                     endSession(s, HangupCause.INTERNAL_ERROR)
                     return
                 }
-                s.media = MediaBridge(ma, mb).also { it.start() }
+                s.media = MediaBridge(
+                    ma,
+                    mb,
+                    aToBGain = config.cellularToSipGain,
+                    bToAGain = config.sipToCellularGain,
+                    muteAToB = config.muteCellularToSip,
+                    muteBToA = config.muteSipToCellular,
+                ).also { it.start() }
                 s.mediaWasBridged = true
                 s.mediaTimer?.cancel(false)
                 log("$s: media bridged")

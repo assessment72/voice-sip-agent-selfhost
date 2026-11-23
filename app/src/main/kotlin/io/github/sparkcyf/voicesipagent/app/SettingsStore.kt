@@ -20,6 +20,12 @@ data class GatewaySettings(
     val keepDefaultDialer: Boolean = false,
     /** Mute local call output while bridged. Telecom manages microphone mute independently. */
     val muteEarpiece: Boolean = true,
+    /** Mixer gain for cellular audio sent to SIP, in percent. */
+    val cellularToSipGain: Int = 100,
+    /** Mixer gain for SIP audio sent to cellular, in percent. */
+    val sipToCellularGain: Int = 100,
+    val muteCellularToSip: Boolean = false,
+    val muteSipToCellular: Boolean = false,
     val server: String = "",
     val port: Int = 5060,
     /** udp | tcp | tls; the built-in stack only supports udp. */
@@ -104,6 +110,10 @@ class SettingsStore(context: Context) {
         takeover = prefs.getBoolean("takeover", true),
         keepDefaultDialer = prefs.getBoolean("keep_default_dialer", false),
         muteEarpiece = prefs.getBoolean("mute_earpiece", true),
+        cellularToSipGain = prefs.getInt("cellular_to_sip_gain", 100).coerceIn(0, 200),
+        sipToCellularGain = prefs.getInt("sip_to_cellular_gain", 100).coerceIn(0, 200),
+        muteCellularToSip = prefs.getBoolean("mute_cellular_to_sip", false),
+        muteSipToCellular = prefs.getBoolean("mute_sip_to_cellular", false),
         server = prefs.getString("server", "")!!,
         port = prefs.getInt("port", 5060),
         sipTransport = prefs.getString("sip_transport", "udp")!!,
@@ -137,6 +147,10 @@ class SettingsStore(context: Context) {
             .putBoolean("takeover", s.takeover)
             .putBoolean("keep_default_dialer", s.keepDefaultDialer)
             .putBoolean("mute_earpiece", s.muteEarpiece)
+            .putInt("cellular_to_sip_gain", s.cellularToSipGain.coerceIn(0, 200))
+            .putInt("sip_to_cellular_gain", s.sipToCellularGain.coerceIn(0, 200))
+            .putBoolean("mute_cellular_to_sip", s.muteCellularToSip)
+            .putBoolean("mute_sip_to_cellular", s.muteSipToCellular)
             .putString("server", s.server.trim())
             .putInt("port", s.port)
             .putString("sip_transport", s.sipTransport.trim().lowercase())

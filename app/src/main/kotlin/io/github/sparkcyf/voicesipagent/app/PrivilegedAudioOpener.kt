@@ -13,6 +13,7 @@ class PrivilegedAudioOpener(
     private val method: () -> Int,
     private val muteEarpiece: () -> Boolean,
     private val format: () -> PcmFormat,
+    private val onAudioDirection: (framesIn: Long, framesOut: Long, method: String) -> Unit = { _, _, _ -> },
     private val createPort: (ParcelFileDescriptor, PcmFormat, (String) -> Unit) -> PcmSocketPort = ::PcmSocketPort,
 ) : CallAudioOpener {
     private val lock = Any()
@@ -49,7 +50,9 @@ class PrivilegedAudioOpener(
                 try { port.close() } finally {
                     if (ticket == generation) runCatching { svc.closeCallAudio() }
                 }
-                AppLog.i("call audio tap closed: in=${port.framesIn} out=${port.framesOut} ${runCatching { svc.audioStats() }.getOrDefault("")}")
+                val stats = runCatching { svc.audioStats() }.getOrDefault("")
+                onAudioDirection(port.framesIn, port.framesOut, stats)
+                AppLog.i("call audio tap closed: in=${port.framesIn} out=${port.framesOut} $stats")
             }
         }
     }

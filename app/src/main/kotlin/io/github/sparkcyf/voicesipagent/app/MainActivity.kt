@@ -31,6 +31,7 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Slider
 import androidx.compose.material3.SegmentedButton
 import androidx.compose.material3.SegmentedButtonDefaults
 import androidx.compose.material3.SingleChoiceSegmentedButtonRow
@@ -170,6 +171,45 @@ private fun Screen(rt: GatewayRuntime, modifier: Modifier, requestDialer: () -> 
         Section(t("Звонок", "Call")) {
             Text(h.calls.summary)
             Text(h.session ?: t("Нет активной сессии", "No active session"))
+            Section(t("حالة الصوت", "Audio direction")) {
+                Text(t("الاستقبال: ${audioLabel(h.audioDirection.receive, true)}", "Receive: ${audioLabel(h.audioDirection.receive, false)}"))
+                Text(t("الإرسال: ${audioLabel(h.audioDirection.send, true)}", "Send: ${audioLabel(h.audioDirection.send, false)}"))
+                if (h.audioDirection.detail.isNotBlank()) {
+                    Text(h.audioDirection.detail, style = MaterialTheme.typography.bodySmall)
+                }
+                Text(
+                    t("مستقر هنا تعني أن إطارات PCM مرّت في الاتجاه؛ تحقق من السماع الفعلي للطرفين للتأكد من جودة الصوت.",
+                        "Stable means PCM frames were observed in that direction; verify both sides can hear each other for end-to-end audio quality."),
+                    style = MaterialTheme.typography.bodySmall,
+                )
+            }
+        }
+        Section(t("ميكسر الصوت", "Audio mixer")) {
+            Text(t("خلوي → SIP: ${cur.cellularToSipGain}%", "Cellular → SIP: ${cur.cellularToSipGain}%"))
+            Slider(
+                value = cur.cellularToSipGain.toFloat(),
+                onValueChange = { rt.applySettings(cur.copy(cellularToSipGain = it.toInt().coerceIn(0, 200))) },
+                valueRange = 0f..200f,
+                steps = 19,
+            )
+            Toggle(t("كتم الإرسال إلى SIP", "Mute cellular → SIP"), cur.muteCellularToSip,
+                { rt.applySettings(cur.copy(muteCellularToSip = it)) }) {
+                t("يمنع صوت SIM من الوصول إلى SIP.", "Stops cellular audio from reaching SIP.")
+            }
+            Text(t("SIP → خلوي: ${cur.sipToCellularGain}%", "SIP → Cellular: ${cur.sipToCellularGain}%"))
+            Slider(
+                value = cur.sipToCellularGain.toFloat(),
+                onValueChange = { rt.applySettings(cur.copy(sipToCellularGain = it.toInt().coerceIn(0, 200))) },
+                valueRange = 0f..200f,
+                steps = 19,
+            )
+            Toggle(t("كتم الاستقبال من SIP", "Mute SIP → cellular"), cur.muteSipToCellular,
+                { rt.applySettings(cur.copy(muteSipToCellular = it)) }) {
+                t("يمنع صوت SIP من الوصول إلى SIM.", "Stops SIP audio from reaching cellular.")
+            }
+            Text(t("تُطبَّق إعدادات الميكسر من المكالمة التالية. 100% هو المستوى الطبيعي، و200% أقصى تضخيم مع منع التشبع.",
+                "Mixer settings apply from the next call. 100% is unity gain; 200% is the maximum with clipping protection."),
+                style = MaterialTheme.typography.bodySmall)
         }
         SettingsSection(rt)
         Section(t("Журнал", "Log")) {
@@ -250,6 +290,12 @@ private fun Screen(rt: GatewayRuntime, modifier: Modifier, requestDialer: () -> 
         DonateFooter()
     }
     }
+}
+
+private fun audioLabel(value: String, arabic: Boolean): String = when (value) {
+    "stable" -> if (arabic) "مستقر" else "stable"
+    "no frames" -> if (arabic) "لا توجد إطارات" else "no frames"
+    else -> if (arabic) "قيد القياس" else "not measured"
 }
 
 /**

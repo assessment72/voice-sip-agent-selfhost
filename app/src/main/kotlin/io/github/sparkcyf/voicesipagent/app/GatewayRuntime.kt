@@ -44,6 +44,12 @@ import java.util.concurrent.TimeUnit
 import java.util.concurrent.ScheduledFuture
 import java.util.concurrent.ScheduledThreadPoolExecutor
 
+data class AudioDirectionState(
+    val receive: String = "not measured",
+    val send: String = "not measured",
+    val detail: String = "",
+)
+
 data class HealthState(
     val shizuku: ShizukuConnector.State = ShizukuConnector.State.SHIZUKU_NOT_RUNNING,
     val shizukuDetail: String = "",
@@ -67,6 +73,7 @@ data class HealthState(
     val cellularReady: Boolean = false,
     val readinessDetail: String = "Checking gateway setup",
     val calls: CallSnapshot = CallSnapshot(),
+    val audioDirection: AudioDirectionState = AudioDirectionState(),
     val settingsPending: Boolean = false,
     val dialerChangePending: Boolean = false,
     val dialerChangeRunning: Boolean = false,
@@ -112,9 +119,25 @@ class GatewayRuntime private constructor(context: Context) {
     private fun audioFormat() = PcmFormat.NARROWBAND
 
     val cellular = CellularEndpoint(app,
-        PrivilegedAudioOpener(shizuku, { settings.audioMethod }, { settings.muteEarpiece }, ::audioFormat),
+        PrivilegedAudioOpener(
+            shizuku, { settings.audioMethod }, { settings.muteEarpiece }, ::audioFormat,
+            onAudioDirection = ::onAudioDirection,
+        ),
         logger = { AppLog.i(it) },
     )
+
+    private fun onAudioDirection(framesIn: Long, framesOut: Long, method: String) {
+        val receive = if (framesIn > 0) "stable" else "no frames"
+        val send = if (framesOut > 0) "stable" else "no frames"
+        _health.update {
+            it.copy(audioDirection = AudioDirectionState(
+                receive = receive,
+                send = send,
+                detail = "PCM frames: receive=$framesIn send=$framesOut method=$method",
+            ))
+        }
+        AppLog.i("audio direction: receive=$receive send=$send framesIn=$framesIn framesOut=$framesOut method=$method")
+    }
     /** Built-in SIP user agent. */
     private var sip: CallEndpoint? = null
     private var bridge: CallBridge? = null
@@ -969,6 +992,10 @@ class GatewayRuntime private constructor(context: Context) {
                 cellularInboundTarget = inboundTarget,
                 busyPolicy = s.busyPolicy,
                 allowedDialPrefixes = s.allowedPrefixes.split(',').map { it.trim() }.filter { it.isNotEmpty() },
+                cellularToSipGain = s.cellularToSipGain / 100f,
+                sipToCellularGain = s.sipToCellularGain / 100f,
+                muteCellularToSip = s.muteCellularToSip,
+                muteSipToCellular = s.muteSipToCellular,
             ),
             dialPolicyForA = { n -> if (cellular.isEmergencyNumber(n)) HangupCause.FORBIDDEN else null },
             log = { AppLog.i("bridge: $it") },

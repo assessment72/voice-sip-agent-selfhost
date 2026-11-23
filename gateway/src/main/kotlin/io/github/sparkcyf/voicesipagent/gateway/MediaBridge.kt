@@ -13,7 +13,14 @@ import java.util.concurrent.TimeUnit
  * cadence drives both directions so the path stays in a single clock domain; otherwise an
  * internal 20 ms ticker is used.
  */
-class MediaBridge(private val a: MediaPort, private val b: MediaPort) {
+class MediaBridge(
+    private val a: MediaPort,
+    private val b: MediaPort,
+    private val aToBGain: Float = 1f,
+    private val bToAGain: Float = 1f,
+    private val muteAToB: Boolean = false,
+    private val muteBToA: Boolean = false,
+) {
     init {
         require(a.format == b.format) { "Media formats differ: ${a.format} / ${b.format}" }
     }
@@ -49,8 +56,8 @@ class MediaBridge(private val a: MediaPort, private val b: MediaPort) {
         try {
             val fa = a.readFrame()
             val fb = b.readFrame()
-            b.writeFrame(fa)
-            a.writeFrame(fb)
+            b.writeFrame(mix(fa, aToBGain, muteAToB))
+            a.writeFrame(mix(fb, bToAGain, muteBToA))
             windowPeakA = maxOf(windowPeakA, VoiceFormat.peak(fa))
             windowPeakB = maxOf(windowPeakB, VoiceFormat.peak(fb))
             if (++frames % 50 == 0L) {
@@ -59,6 +66,17 @@ class MediaBridge(private val a: MediaPort, private val b: MediaPort) {
             }
         } catch (_: Throwable) {
             // A failing port must not kill the clock thread; leg teardown stops the bridge.
+        }
+    }
+
+    private fun mix(frame: ShortArray, gain: Float, muted: Boolean): ShortArray {
+        if (muted) return ShortArray(frame.size)
+        val safeGain = gain.coerceIn(0f, 2f)
+        if (safeGain == 1f) return frame
+        return ShortArray(frame.size) { index ->
+            (frame[index].toInt() * safeGain).toInt()
+                .coerceIn(Short.MIN_VALUE.toInt(), Short.MAX_VALUE.toInt())
+                .toShort()
         }
     }
 
