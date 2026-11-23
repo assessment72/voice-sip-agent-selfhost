@@ -73,4 +73,7 @@ dependencies {
     implementation(libs.kotlinx.coroutines.android)
     testImplementation(libs.junit)
     testImplementation(libs.mockito.core)
+    // Use a functional org.json implementation in local JVM tests; android.jar stubs throw
+    // from JSONObject.put()/JSONArray.put() outside an Android runtime.
+    testImplementation("org.json:json:20240303")
 }
