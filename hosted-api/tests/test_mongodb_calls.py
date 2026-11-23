@@ -49,10 +49,11 @@ def test_idempotency_and_active_slot_are_isolated_by_organization(repo):
     assert create(repo, organization_id="org-b")["id"] == org_b["id"]
 
 
-def test_only_one_active_call_per_organization(repo):
-    create(repo)
-    with pytest.raises(DeviceBusy):
-        create(repo, key="request-0000000002")
+def test_new_call_replaces_active_call_per_organization(repo):
+    first = create(repo)
+    second = create(repo, key="request-0000000002")
+    assert second["id"] != first["id"]
+    assert repo.calls.find_one({"_id": first["id"]})["reason_code"] == "superseded"
     assert create(repo, key="request-0000000001", organization_id="org-b")["state"] == "queued"
 
 

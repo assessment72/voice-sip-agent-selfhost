@@ -1,5 +1,10 @@
 package io.github.sparkcyf.voicesipagent.app
 
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.Context
+import android.content.Intent
+import android.os.BatteryManager
 import android.os.Bundle
 import android.os.Build
 import androidx.activity.compose.setContent
@@ -42,6 +47,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.ui.unit.LayoutDirection
@@ -82,6 +88,12 @@ private fun Screen(rt: GatewayRuntime, modifier: Modifier, requestDialer: () -> 
     val h by rt.health.collectAsState()
     val log by AppLog.tail.collectAsState()
     val cur by rt.settingsFlow.collectAsState()
+    val context = LocalContext.current
+    val battery = remember {
+        (context.getSystemService(Context.BATTERY_SERVICE) as BatteryManager)
+            .getIntProperty(BatteryManager.BATTERY_PROPERTY_CAPACITY)
+            .takeIf { it in 0..100 }
+    }
     currentUiLang = UiLang.of(cur.uiLanguage)
     CompositionLocalProvider(LocalLayoutDirection provides
         if (currentUiLang == UiLang.AR) LayoutDirection.Rtl else LayoutDirection.Ltr) {
@@ -127,6 +139,7 @@ private fun Screen(rt: GatewayRuntime, modifier: Modifier, requestDialer: () -> 
             Check(t("Доступ к звуку вызова", "Call audio access"), h.audioReady)
             Check(t("Исключён из экономии батареи", "Doze allowlisted"), p?.get(HealthKeys.DOZE_ALLOWLISTED) == true)
             Check(t("Регистрация SIP", "SIP registration"), h.sip.ready, h.sip.detail)
+            Text(t("البطارية: ${battery?.let { "$it%" } ?: "غير معروف"}", "Battery: ${battery?.let { "$it%" } ?: "unknown"}"))
             Text(h.readinessDetail, style = MaterialTheme.typography.bodySmall)
             if (h.effectiveCallAccess == CallAccess.DIALER && !h.holdsDialer) {
                 Text(t("Режим звонилки по умолчанию мостит звонки. Для ручного набора верни обычную звонилку.",
@@ -162,6 +175,22 @@ private fun Screen(rt: GatewayRuntime, modifier: Modifier, requestDialer: () -> 
         Section(t("Журнал", "Log")) {
             Text(log.takeLast(60).reversed().joinToString("\n"), fontFamily = FontFamily.Monospace,
                 fontSize = 11.sp, lineHeight = 14.sp)
+            FlowRow(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                OutlinedButton(onClick = {
+                    val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                    clipboard.setPrimaryClip(ClipData.newPlainText("Voice SIP Agent log", log.joinToString("\n")))
+                }) { Text(t("نسخ السجل", "Copy log")) }
+                OutlinedButton(onClick = {
+                    context.startActivity(Intent.createChooser(Intent(Intent.ACTION_SEND).apply {
+                        type = "text/plain"
+                        putExtra(Intent.EXTRA_SUBJECT, "Voice SIP Agent log")
+                        putExtra(Intent.EXTRA_TEXT, log.joinToString("\n"))
+                    }, t("تصدير السجل", "Export log")))
+                }) { Text(t("تصدير السجل", "Export log")) }
+            }
         }
         var advanced by remember { mutableStateOf(false) }
         OutlinedButton(onClick = { advanced = !advanced }) { Text(if (advanced) t("Скрыть доп. настройки", "Hide advanced settings") else t("Дополнительные настройки", "Advanced settings")) }

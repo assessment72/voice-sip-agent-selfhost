@@ -111,6 +111,15 @@ class MongoCallRepository:
                 raise IdempotencyConflict("idempotency_key_reused")
             return self._safe(existing)
 
+        # A new command supersedes the previous active command for the
+        # organization, freeing the single active-slot index before insert.
+        self.calls.update_many(
+            {"organization_id": organization_id, "active_slot": "primary",
+             "state": {"$nin": list(TERMINAL)}},
+            {"$set": {"state": "failed", "reason_code": "superseded",
+                      "updated_at": now}, "$unset": {"active_slot": ""}},
+        )
+
         call_id = str(uuid.uuid4())
         doc = {
             "_id": call_id,

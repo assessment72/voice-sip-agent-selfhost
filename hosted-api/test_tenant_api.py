@@ -508,7 +508,7 @@ def test_branch_is_owned_by_organization_and_device_can_be_assigned(tmp_path, mo
     assert listed[0]["branch_id"] == branch.json()["branchId"]
 
 
-def test_multiple_devices_can_claim_parallel_calls_but_one_call_per_device(tmp_path, monkeypatch):
+def test_new_call_supersedes_previous_call_for_the_organization(tmp_path, monkeypatch):
     client = setup_client(tmp_path, monkeypatch)
     org = create_org(client, "Alpha", "alpha", "owner-a")
     admin = auth(org["apiToken"], org["organizationId"])
@@ -538,12 +538,7 @@ def test_multiple_devices_can_claim_parallel_calls_but_one_call_per_device(tmp_p
     first_job = client.get(
         "/v1/device/call-jobs/next?wait=0", headers=auth(first_device["deviceToken"])
     ).json()["job"]
-    assert first_job["id"] == calls[0]
+    assert first_job["id"] == calls[1]
     assert client.get(
-        "/v1/device/call-jobs/next?wait=0", headers=auth(first_device["deviceToken"])
-    ).json()["job"] is None
-
-    second_job = client.get(
         "/v1/device/call-jobs/next?wait=0", headers=auth(second_device["deviceToken"])
-    ).json()["job"]
-    assert second_job["id"] == calls[1]
+    ).json()["job"] is None

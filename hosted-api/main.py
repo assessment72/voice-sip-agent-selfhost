@@ -312,10 +312,14 @@ def create_call(body: CreateCall, principal=Depends(caller),
             c.rollback()
             raise HTTPException(status_code=429, detail="rate_limit_exceeded")
         c.execute("INSERT INTO requests(principal,created_at) VALUES(?,?)", (principal, now))
-        active = c.execute("SELECT id FROM calls WHERE state NOT IN ('failed','ended') LIMIT 1").fetchone()
-        if active:
-            c.rollback()
-            raise HTTPException(status_code=409, detail="device_busy")
+        # A new command supersedes the previous command from this caller.
+        # Marking it terminal makes the handset tear down the old legs before
+        # it claims the replacement job.
+        c.execute(
+            "UPDATE calls SET state='failed', reason_code='superseded', updated_at=? "
+            "WHERE principal=? AND state NOT IN ('failed','ended')",
+            (now, principal),
+        )
         call_id = str(uuid.uuid4())
         events = json.dumps([{"state": "queued", "at": now, "atMs": time.time_ns() // 1_000_000}])
         c.execute("""INSERT INTO calls(id,idempotency_key,principal,phone_number,state,created_at,updated_at,expires_at,events)
@@ -1318,6 +1322,11 @@ def create_organization_call(organization_id: str, body: CreateCall,
             c.rollback()
             raise HTTPException(status_code=429, detail="rate_limit_exceeded")
         c.execute("INSERT INTO requests(principal,created_at) VALUES(?,?)", (tenant_principal, now))
+        c.execute(
+            "UPDATE calls SET state='failed', reason_code='superseded', updated_at=? "
+            "WHERE principal=? AND state NOT IN ('failed','ended')",
+            (now, tenant_principal),
+        )
         call_id = str(uuid.uuid4())
         expires = now + QUEUE_TTL
         events = json.dumps([{"state": "queued", "at": now, "atMs": time.time_ns() // 1_000_000}])
