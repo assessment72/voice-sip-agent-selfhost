@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import os
 from functools import lru_cache
+from datetime import datetime, timezone
 from typing import Any, Iterator
 
 from pymongo import ASCENDING, DESCENDING, IndexModel, MongoClient, ReturnDocument
@@ -135,8 +136,6 @@ def ensure_indexes(database: Database | None = None) -> None:
         "device_commands": [
             IndexModel([("device_id", ASCENDING), ("status", ASCENDING), ("created_at", ASCENDING)],
                        name="ix_command_delivery_queue"),
-            IndexModel([("expires_at", ASCENDING)], expireAfterSeconds=0,
-                       name="ttl_command_expiry"),
         ],
     }
     for name, indexes in definitions.items():
@@ -151,7 +150,8 @@ def consume_rate_limit(*, key_hash: str, window_start: int, limit: int,
     try:
         row = bucket.find_one_and_update(
             identity,
-            {"$inc": {"count": 1}, "$setOnInsert": {"expires_at": expires_at}},
+            {"$inc": {"count": 1},
+             "$setOnInsert": {"expires_at": datetime.fromtimestamp(expires_at, timezone.utc)}},
             upsert=True,
             return_document=ReturnDocument.AFTER,
         )
