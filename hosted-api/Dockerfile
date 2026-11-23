@@ -3,7 +3,9 @@ ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1
 WORKDIR /srv/hosted-api
 COPY requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt
-COPY main.py ./
+COPY main.py mongodb_store.py mongodb_calls.py ./
+COPY migrations ./migrations
+COPY admin ./admin
 RUN useradd --system --uid 10001 app && mkdir -p /data && chown -R app:app /srv/hosted-api /data
 USER app
 EXPOSE 8080
