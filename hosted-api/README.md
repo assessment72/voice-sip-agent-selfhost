@@ -68,10 +68,11 @@ The Android agent authenticates with the individual device token returned by `PO
 - The shared-token compatibility routes (`/v1/calls`, `/v1/device/jobs/next`, and `/v1/device/calls/*`) are disabled by default. Keep `ENABLE_LEGACY_CALL_API=false` and `ENABLE_LEGACY_DEVICE_API=false`; only enable them temporarily in an isolated migration environment.
 - Bootstrap organizations only with a separate high-entropy `ORG_BOOTSTRAP_TOKEN`. Store returned organization/device tokens in a secret manager or Android Keystore; they are shown once.
 - Owners can transfer ownership through `POST /v1/organizations/{organization_id}/members/{user_id}/transfer-ownership`. Member credentials can be rotated or revoked through the corresponding `/rotate-credential` and `/revoke` endpoints. The former owner is downgraded to admin; the new owner can revoke the former owner later if required.
-- `GET /health/database` checks the active SQLite database. `GET /health/mongodb` checks optional Atlas connectivity only; it does not mean API calls are stored in MongoDB.
-- API rate limits use atomic MongoDB fixed-window counters when `MONGODB_URI` is configured (IP + credential + sensitive-route dimensions). Set `REQUIRE_DISTRIBUTED_RATE_LIMIT=true` for multi-instance deployments; requests fail closed with 503 if the shared limiter is unavailable. Without Atlas, local development uses a SQLite fallback that is not distributed.
-- Vercel startup is deliberately blocked while call/device repositories still use SQLite. Do not set `ALLOW_UNSAFE_SQLITE_ON_VERCEL=true` to bypass this protection. MongoDB currently backs shared rate-limit counters only; **it is not yet the call, organization, device, or command datastore**.
-- The Vercel storage guard is intentional: serverless local SQLite is ephemeral and cannot provide durable shared call state. Complete the MongoDB route-repository migration and its integration tests before enabling a Vercel deployment.
+- `GET /health/database` checks the configured active backend. With MongoDB configured it returns `backend=mongodb`; local development without Atlas uses SQLite.
+- API rate limits use atomic MongoDB fixed-window counters when MongoDB is configured (IP + credential + sensitive-route dimensions). Requests fail closed with 503 if the shared limiter is unavailable.
+- Organization, membership, credential, branch, device enrollment, heartbeat, event, command, audit, and tenant call lifecycle routes select MongoDB repositories when Atlas is configured. Local development without Atlas retains the SQLite compatibility backend.
+- Vercel startup requires MongoDB and never initializes SQLite. Do not set `ALLOW_UNSAFE_SQLITE_ON_VERCEL=true`; the override is rejected.
+- The isolated `MONGODB_TEST_URI` / `MONGODB_TEST_DATABASE` pair is accepted as a runtime backend only for non-production Vercel environments. Production requires explicit `MONGODB_URI` and `MONGODB_DATABASE` values.
 - Administrative member and device changes are recorded in `admin_audit_events` and can be read by organization owners/admins at `GET /v1/admin/audit`. The audit feed never includes raw API tokens.
 - Android must independently reject emergency numbers using `TelephonyManager.isEmergencyNumber` before dialing.
 - Keep queue/call timeouts bounded. The included Caddy example caps request bodies at 64 KB; add network-level firewall and source allow-lists appropriate to your SIP topology.
@@ -79,25 +80,24 @@ The Android agent authenticates with the individual device token returned by `PO
 - This API is an initial test control plane, not a production-hardened multi-tenant service. Use a managed database, durable job leases, audit retention, monitoring, and per-principal credentials before production.
 
 
-## MongoDB Atlas persistence foundation (Preview preparation)
+## MongoDB route migration
 
-The branch now includes `mongodb_store.py` and the PyMongo SRV driver dependency. The module provides:
-- a cached PyMongo client suitable for warm Vercel function instances, with a conservative per-instance pool;
-- explicit database selection through `MONGODB_DATABASE`;
-- idempotent index definitions for calls, idempotency, tenant identities, devices, commands, events, heartbeats, and rate-limit windows;
-- a ping helper and transaction wrapper.
+The active tenant API routes now use MongoDB repositories when MongoDB is configured:
 
-**Important:** this is a persistence foundation only. The current API routes in `main.py` still use SQLite (`DATABASE_PATH`), and startup still executes SQLite DDL and the SQL migration. The MongoDB module is not yet wired into request handlers. Setting `MONGODB_URI` does not change the active storage backend.
+- Organization bootstrap and credential authentication.
+- Member creation, ownership transfer, suspension/revocation, and credential rotation.
+- Enrollment-token issuance and atomic single-use device enrollment.
+- Device heartbeats, events, activity, branch administration, and presence.
+- Device command creation, atomic delivery claim, and result acknowledgement.
+- Tenant call creation, idempotency, exclusive organization queue slot, device lease claim, state transitions, replay safety, call listing, and latency metrics.
+- Shared rate-limit windows and organization audit events.
 
-Do not deploy this revision as a MongoDB-backed production service. The next migration increment must port the call lifecycle and atomic job-claim path first, with race-condition tests, before migrating organization/device control-plane endpoints. The final cutover must remove SQLite startup and verify transaction behavior on the selected Atlas topology.
+Multi-document administrative operations and device enrollment use MongoDB transactions. The MongoDB startup path creates the required indexes and does not initialize SQLite. The legacy shared-token routes remain disabled on MongoDB so they cannot accidentally fall back to ephemeral SQLite.
 
+Local development without MongoDB still uses SQLite for compatibility and unit testing. The Vercel runtime requires an explicit MongoDB backend and fails closed if it is unavailable.
 
-### MongoDB call lifecycle repository (staged, not active)
+## Atlas test environment
 
-The branch now includes `mongodb_calls.py`, a separate repository implementing:
-- idempotent call creation and a unique active-call slot;
-- atomic single-device job claiming with a lease;
-- ownership-checked state transitions and replay-safe responses;
-- timeout cleanup and release of the active slot on terminal states.
+The isolated database is `voice_sip_agent_ci`. Vercel Preview can use `MONGODB_TEST_URI` and `MONGODB_TEST_DATABASE` as a fallback when `VERCEL_ENV` is not `production`. Production must use separately provisioned `MONGODB_URI` and `MONGODB_DATABASE` values. The live Atlas GitHub Actions test remains skipped until repository Actions secrets are configured; local/mocked repository tests do not replace the live Atlas test.
 
-The isolated tests use `mongomock` via `requirements-dev.txt`. This repository is **not yet wired into FastAPI handlers**; SQLite remains the active API backend. Do not set a MongoDB storage flag or use this as a production cutover until endpoint integration, real Atlas integration tests, transaction/race validation, and migration/rollback planning are complete.
+This branch is still a Draft PR. CI and repository tests do not certify live carrier calls, SIP/RTP audio, target-device behavior, backup/restore, or production readiness. Do not merge or deploy Production based only on these tests.
