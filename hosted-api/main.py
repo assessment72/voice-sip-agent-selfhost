@@ -1484,7 +1484,8 @@ def create_organization_branch(organization_id: str, body: CreateBranch,
         from mongodb_control import ControlConflict, create_branch as mongo_create_branch
         try:
             branch_id = mongo_create_branch(organization_id=organization_id,
-                                            name=body.name, code=body.code)
+                                            name=body.name, code=body.code,
+                                            actor_user_id=principal["user_id"])
         except ControlConflict:
             raise HTTPException(status_code=409, detail="branch_code_already_exists")
         return {"branchId": branch_id, "name": body.name, "code": body.code, "status": "active"}
