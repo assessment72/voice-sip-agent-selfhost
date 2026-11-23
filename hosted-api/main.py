@@ -936,3 +936,41 @@ def list_organization_branches(principal=Depends(organization_principal)):
             (principal["organization_id"],),
         ).fetchall()
     return {"branches": [dict(row) for row in rows], "count": len(rows)}
+
+
+@app.get("/v1/admin/metrics/latency")
+def organization_latency_metrics(principal=Depends(organization_principal)):
+    with db() as c:
+        rows = c.execute(
+            """SELECT calls.events FROM calls
+               JOIN call_tenant_assignments a ON a.call_id=calls.id
+               WHERE a.organization_id=?""",
+            (principal["organization_id"],),
+        ).fetchall()
+    samples = {"queue_to_cellular_ringing": [], "queue_to_bridged": [],
+               "cellular_answer_to_sip": []}
+    for row in rows:
+        try:
+            events = json.loads(row["events"])
+            times = {event.get("state"): event.get("atMs", int(event.get("at", 0)) * 1000)
+                     for event in events if event.get("state")}
+            queued, ringing = times.get("queued"), times.get("ringing_cellular")
+            bridged, answered, sip = (times.get("bridged"), times.get("cellular_answered"),
+                                       times.get("calling_sip"))
+            if queued is not None and ringing is not None and ringing >= queued:
+                samples["queue_to_cellular_ringing"].append(ringing - queued)
+            if queued is not None and bridged is not None and bridged >= queued:
+                samples["queue_to_bridged"].append(bridged - queued)
+            if answered is not None and sip is not None and sip >= answered:
+                samples["cellular_answer_to_sip"].append(sip - answered)
+        except (TypeError, ValueError, json.JSONDecodeError):
+            continue
+
+    def summarize(values):
+        ordered = sorted(values)
+        if not ordered:
+            return {"samples": 0, "averageMs": None, "p95Ms": None}
+        rank = max(0, int(0.95 * len(ordered) + 0.999999) - 1)
+        return {"samples": len(ordered), "averageMs": round(sum(ordered) / len(ordered), 2),
+                "p95Ms": ordered[min(rank, len(ordered) - 1)]}
+    return {name: summarize(values) for name, values in samples.items()}
