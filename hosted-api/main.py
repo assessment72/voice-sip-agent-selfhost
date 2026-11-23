@@ -143,7 +143,9 @@ def transition(c, call_id: str, state: str, reason: str | None = None):
     row = c.execute("SELECT * FROM calls WHERE id=?", (call_id,)).fetchone()
     if not row:
         raise HTTPException(status_code=404, detail="call_not_found")
-    if row["state"] in TERMINAL:
+    # Device outbox delivery is at-least-once. Treat replay of the current state as success
+    # so a lost HTTP response or process death before local acknowledgement cannot wedge the queue.
+    if row["state"] == state or row["state"] in TERMINAL:
         return row
     allowed = {
         "queued": {"ringing_cellular", "failed"},
