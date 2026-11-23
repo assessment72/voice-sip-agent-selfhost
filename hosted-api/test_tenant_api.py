@@ -469,7 +469,7 @@ def test_admin_dashboard_is_served_without_exposing_credentials(tmp_path, monkey
     client = setup_client(tmp_path, monkeypatch)
     response = client.get("/admin")
     assert response.status_code == 200
-    assert "إدارة الأجهزة والمكالمات" in response.text
+    assert "Voicx SIP — لوحة التحكم" in response.text
     assert "localStorage" not in response.text
 
 
