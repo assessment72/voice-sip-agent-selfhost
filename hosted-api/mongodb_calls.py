@@ -171,6 +171,7 @@ class MongoCallRepository:
                 "state": "queued",
                 "expires_at": {"$gte": now},
                 "$or": [
+                    {"claimed_by": device_id},
                     {"claimed_by": None},
                     {"claimed_by": {"$exists": False}},
                     {"claimed_at": {"$lt": now - claim_lease_seconds}},
