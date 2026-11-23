@@ -80,10 +80,13 @@ The migration is additive and intentionally does not delete or rewrite existing 
 ## API surface to implement in stages
 
 - `POST /v1/organizations` — bootstrap-only organization provisioning.
-- `POST /v1/organizations/{id}/members` and member role management.
+- `POST /v1/organizations/{id}/members` creates a member with a role-bound API credential shown once.
 - `POST /v1/organizations/{id}/enrollment-tokens`.
 - `POST /v1/device/enroll` — exchange a one-time enrollment token for a unique device credential.
 - `POST /v1/device/heartbeat` and `POST /v1/device/events`.
+- `GET /v1/admin/devices` and `GET /v1/admin/devices/{id}/activity` provide tenant-scoped device presence and event history.
+- `POST /v1/admin/device-commands`, `GET /v1/device/commands/next`, and `POST /v1/device/commands/{id}/result` provide an allow-listed command lifecycle.
+- `POST /v1/organizations/{id}/calls`, `GET /v1/device/call-jobs/next`, `POST /v1/device/tenant-calls/{id}/state`, and `GET /v1/admin/calls` provide tenant-scoped call creation, device claiming and monitoring.
 - `GET /v1/device/commands/next?wait=...` and command acknowledgement/result endpoints.
 - `GET /v1/admin/devices`, `GET /v1/admin/devices/{id}`, `GET /v1/admin/calls`.
 - Tenant-aware hosted-call create/read/state/metrics endpoints.
@@ -107,3 +110,25 @@ All admin endpoints require organization membership and role checks. All device 
 - Do not alter SIP credentials or existing Linphone registration settings.
 - No public deployment, production database migration, paid resource provisioning, live call or release signing without separate approval.
 - Required tests: cross-tenant denial, role matrix, revoked/expired tokens, enrollment replay, heartbeat presence boundaries, command expiry/idempotency, concurrent device claims, call assignment isolation, and legacy API regression.
+
+
+## Implemented backend slice
+
+The current branch now includes:
+- bootstrap-only organization creation using `ORG_BOOTSTRAP_TOKEN`;
+- one-time organization API credentials bound to a specific membership identity;
+- organization-scoped member creation and role enforcement;
+- limited-use enrollment tokens and one-time per-device credentials;
+- heartbeat ingestion, server-time-based online/unstable/offline calculation, device list and activity timeline;
+- device revocation and allow-listed command delivery/result lifecycle;
+- organization-scoped call creation, device job claiming, call state updates and admin call history.
+
+Required environment secret: `ORG_BOOTSTRAP_TOKEN` must be a long random secret configured out-of-band before organization bootstrap is enabled. Do not commit it. The bootstrap endpoint must remain disabled when the secret is absent.
+
+## Remaining production blockers
+
+- Admin web UI is not implemented yet.
+- Android agent has not yet been updated to use enrollment, per-device tokens, heartbeat, tenant job polling or commands.
+- Existing legacy global-token call routes remain for compatibility and must be disabled or isolated before a multi-tenant production release.
+- Add bounded heartbeat/event retention, tenant metrics, API credential revocation/rotation, organization suspension behavior, and audit coverage.
+- Production database deployment and migrations require backup/restore validation and a separate approval.
