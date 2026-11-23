@@ -189,7 +189,7 @@ CREATE TABLE IF NOT EXISTS request_limits (
 -- Append-only organization administration audit trail; never stores raw credentials.
 CREATE TABLE IF NOT EXISTS admin_audit_events (
   id TEXT PRIMARY KEY,
-  organization_id TEXT NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+  organization_id TEXT NOT NULL,
   actor_user_id TEXT NOT NULL,
   action TEXT NOT NULL,
   target_type TEXT NOT NULL,
