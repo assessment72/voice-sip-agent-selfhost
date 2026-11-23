@@ -143,6 +143,7 @@ class GatewayRuntime private constructor(context: Context) {
         Thread(task, "hosted-device-heartbeat").apply { isDaemon = true }
     }.apply { removeOnCancelPolicy = true }
     private var hostedHeartbeatTask: ScheduledFuture<*>? = null
+    @Volatile private var lastHostedNetworkType: String? = null
     private val _hostedDeviceMessage = MutableStateFlow("")
     val hostedDeviceMessage: StateFlow<String> = _hostedDeviceMessage
     private val hostedPollingEnabled = java.util.concurrent.atomic.AtomicBoolean(false)
@@ -340,6 +341,7 @@ class GatewayRuntime private constructor(context: Context) {
             )
             settingsStore.save(updated)
             _settings.value = updated
+            runCatching { HostedCallApiClient(cleanUrl, registration.deviceToken).reportEvent("device", "info", "device_enrolled") }
             _hostedDeviceMessage.value = "تم تسجيل الجهاز بنجاح · ${registration.deviceId}"
             AppLog.i("hosted device enrolled")
         } catch (e: Exception) {
@@ -373,7 +375,13 @@ class GatewayRuntime private constructor(context: Context) {
                 else -> "unknown"
             }
             val internet = capabilities?.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) == true
-            HostedCallApiClient(base, token).heartbeat(
+            val client = HostedCallApiClient(base, token)
+            val previousNetwork = lastHostedNetworkType
+            if (previousNetwork != null && previousNetwork != networkType) {
+                runCatching { client.reportEvent("network", "warning", "network_changed_to_$networkType") }
+            }
+            lastHostedNetworkType = networkType
+            client.heartbeat(
                 batteryLevel = battery,
                 networkType = networkType,
                 internetAvailable = internet,
@@ -509,6 +517,9 @@ class GatewayRuntime private constructor(context: Context) {
             while (true) {
                 try {
                     client.updateState(callId, state, reason)
+                    runCatching {
+                        client.reportEvent("call", if (state == "failed") "warning" else "info", "state_$state")
+                    }.onFailure { AppLog.w("hosted activity event failed: ${it.javaClass.simpleName}") }
                     break
                 } catch (e: Exception) {
                     if (attempt >= delaysMs.size) {
