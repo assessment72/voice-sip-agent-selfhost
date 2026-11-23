@@ -6,7 +6,7 @@ Working branch: `feature/hosted-call-api`
 Pull request: [#10 — Hosted Call API and cellular-first SIP bridge](https://github.com/assessment72/voice-sip-agent-selfhost/pull/10)  
 
 > **Report reading note:** Earlier sections are historical snapshots from the initial audit/remediation checkpoints. The final section, **Extended remediation and validation update**, is the authoritative latest status and supersedes earlier interim CI counts and blocker descriptions.
-Audited code commit: `d9098ef475a20f9f3d6fdfd1d99441576d6e89f6`
+Audited code commit: `7198b68f129a413e025bc03076522a8964e1b181`
 
 ## Scope and safety boundary
 
@@ -337,7 +337,7 @@ No Production deployment, merge, production secret change, SIP credential change
 
 ## Extended remediation and validation update — 2026-11-23
 
-Latest code checkpoint before this report update: `d9098ef475a20f9f3d6fdfd1d99441576d6e89f6`.
+Latest code checkpoint before this report update: `7198b68f129a413e025bc03076522a8964e1b181`.
 
 ### Additional code changes
 
@@ -385,3 +385,16 @@ The single skipped Hosted API test is the live Atlas integration test because CI
 **NO-GO for commercial production and customer pilot.** The code-level regression suite and container smoke tests now pass, but the database cutover, Atlas integration verification, SIP/media security validation, and physical-device test matrix remain mandatory. Keep PR #10 open and Draft. Do not bypass the Vercel SQLite guard, merge, or deploy Production until these blockers are closed and separately approved.
 
 No merge, Production deployment, Production secret change, Atlas data/index write, SIP credential change, or paid call was performed.
+
+
+### Final SIP shutdown-test stabilization and latest-head verification
+
+- Replaced the flaky `SipShutdownTest` immediate UDP-port rebind assertion. The test now verifies the transport's actual closed state (`closed && socket.isClosed`) directly through an internal read-only property. This avoids false failures if the OS reuses an ephemeral UDP port between socket close and the test's rebind attempt.
+- Migrated FastAPI startup from deprecated `@app.on_event("startup")` to a lifespan handler; the Vercel SQLite startup guard and optional Atlas index initialization remain in that lifecycle.
+- Latest code commit: `7198b68f129a413e025bc03076522a8964e1b181`.
+- Hosted API: [45178773817](https://github.com/assessment72/voice-sip-agent-selfhost/actions/runs/45178773817) — **success**, 55 passed, 1 skipped, 1 warning. Docker image build and container smoke tests passed.
+- SIP/Gateway JVM CI: [45178773708](https://github.com/assessment72/voice-sip-agent-selfhost/actions/runs/45178773708) — **success**.
+- Android build/tests: [45178765993](https://github.com/assessment72/voice-sip-agent-selfhost/actions/runs/45178765993) — **success**, including unit tests and Debug APK assembly/upload.
+- Latest Debug APK artifact: [voice-sip-agent-debug-7198b68f129a413e025bc03076522a8964e1b181](https://github.com/assessment72/voice-sip-agent-selfhost/actions/runs/45178765993) (artifact ID `14820785798`, SHA-256 `99e64a16a0e15542d3cdaf615b4615bf3f0e6a451df6d3dc14b8207db690721b`, expires 2026-12-07). It is a Debug build, not a signed Release APK.
+
+All three latest-head workflows passed. This establishes code/build validation only; it does not replace the still-skipped live Atlas test or physical SIM/PBX/media acceptance.
