@@ -50,6 +50,10 @@ data class GatewaySettings(
     val hostedApiUrl: String = "",
     /** Per-device bearer credential, sealed with Android Keystore. */
     val hostedDeviceToken: String = "",
+    /** Server-issued device identity; not a credential. */
+    val hostedDeviceId: String = "",
+    /** Organization assigned by enrollment; not a credential. */
+    val hostedOrganizationId: String = "",
     val busyPolicy: BusyPolicy = BusyPolicy.REJECT,
     val audioMethod: Int = AudioMethod.AUTO,
     val callAccess: Int = CallAccess.AUTO,
@@ -116,6 +120,8 @@ class SettingsStore(context: Context) {
         allowedPrefixes = prefs.getString("allowed_prefixes", "")!!,
         hostedApiUrl = prefs.getString("hosted_api_url", "")!!,
         hostedDeviceToken = prefs.getString("hosted_device_token_sealed", null)?.let { unsealWithAlias(it, HOSTED_KEY_ALIAS) }.orEmpty(),
+        hostedDeviceId = prefs.getString("hosted_device_id", "").orEmpty(),
+        hostedOrganizationId = prefs.getString("hosted_organization_id", "").orEmpty(),
         busyPolicy = runCatching { BusyPolicy.valueOf(prefs.getString("busy_policy", "REJECT")!!) }.getOrDefault(BusyPolicy.REJECT),
         audioMethod = prefs.getInt("audio_method", AudioMethod.AUTO).takeIf { it in 0..2 } ?: AudioMethod.AUTO,
         callAccess = prefs.getInt("call_access", CallAccess.AUTO).takeIf { it in 0..2 } ?: CallAccess.AUTO,
@@ -147,6 +153,8 @@ class SettingsStore(context: Context) {
             .putString("allowed_prefixes", s.allowedPrefixes.trim())
             .putString("hosted_api_url", s.hostedApiUrl.trim())
             .putString("hosted_device_token_sealed", sealWithAlias(s.hostedDeviceToken, HOSTED_KEY_ALIAS))
+            .putString("hosted_device_id", s.hostedDeviceId)
+            .putString("hosted_organization_id", s.hostedOrganizationId)
             .putString("busy_policy", s.busyPolicy.name)
             .putInt("audio_method", s.audioMethod)
             .putInt("call_access", s.callAccess)
@@ -154,6 +162,14 @@ class SettingsStore(context: Context) {
             .putBoolean("server_mode", s.serverMode)
             .putString("ui_lang", s.uiLanguage)
             .apply()
+    }
+
+    /** Stable non-secret ID used by this installation when enrolling with an organization. */
+    fun getOrCreateHostedExternalDeviceId(): String {
+        prefs.getString("hosted_external_device_id", null)?.let { return it }
+        val created = java.util.UUID.randomUUID().toString()
+        prefs.edit().putString("hosted_external_device_id", created).commit()
+        return prefs.getString("hosted_external_device_id", created) ?: created
     }
 
     private fun key(alias: String = KEY_ALIAS): SecretKey {
