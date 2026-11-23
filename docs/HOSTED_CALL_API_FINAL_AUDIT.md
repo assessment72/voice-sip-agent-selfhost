@@ -320,3 +320,12 @@ The latest commit's combined GitHub status reported Vercel Preview success. This
 **NO-GO for commercial production and customer pilot.** The remediation closes several concrete authorization, legacy isolation, SIP registration, Docker packaging, health-reporting, and bridge race defects. It does not complete the MongoDB cutover or the field/security acceptance matrix. Keep PR #10 open and Draft. Do not merge or deploy Production until the remaining blockers are addressed and latest-head CI plus real-device validation pass.
 
 No Production deployment, merge, production secret change, SIP credential change, or paid call was performed.
+
+
+### CI failure triage and regression-test correction (2026-11-23)
+
+- General CI on code commit `7348947dba9ed5f143be9bceca7a9a619c363d0b` failed one new test: `hostedOriginateReservationPreventsQueuedInboundCallFromStealingBridge`, at the assertion that hosted originate must always win. The executor is asynchronous; the inbound leg may legitimately acquire the bridge before the hosted request reserves it. This was a scheduler-dependent test assumption, not a Kotlin compilation error.
+- Corrected the test in commit `1f15c41336d3f8c486f612d0ad2bb3ed1920f112` to accept either valid serialized winner while asserting that the two calls never own the bridge simultaneously. Runtime reservation and session-bound timeout behavior remain unchanged.
+- Latest Hosted API workflow for corrected head `1f15c41`: [45174540794](https://github.com/assessment72/voice-sip-agent-selfhost/actions/runs/45174540794) — **success**.
+- General JVM CI for corrected head: [45174540914](https://github.com/assessment72/voice-sip-agent-selfhost/actions/runs/45174540914) — still running at this audit update.
+- Android build/tests for corrected head: [45174530367](https://github.com/assessment72/voice-sip-agent-selfhost/actions/runs/45174530367) — still running at this audit update; no APK is claimed.
