@@ -459,7 +459,19 @@ class GatewayRuntime private constructor(context: Context) {
         }
         hostedListener = listener
         activeBridge.addListener(listener)
-        if (!activeBridge.originateCellularThenSip(job.phoneNumber, sipTarget)) {
+        if (!activeBridge.originateCellularThenSip(job.phoneNumber, sipTarget) { sessionId ->
+                // Bind the duration guard to this exact bridge session. A later unrelated
+                // inbound call must never be ended by an old hosted-call timer.
+                worker.execute {
+                    if (hostedCallId == job.id) {
+                        hostedCallTimer?.cancel(false)
+                        hostedCallTimer = worker.schedule(
+                            { activeBridge.endSession(sessionId, HangupCause.NORMAL) },
+                            30, TimeUnit.MINUTES,
+                        )
+                    }
+                }
+            }) {
             activeBridge.removeListener(listener)
             hostedListener = null
             reportHostedState(client, job.id, "failed", "bridge_busy")
@@ -468,8 +480,6 @@ class GatewayRuntime private constructor(context: Context) {
             return
         }
         reportHostedState(client, job.id, "ringing_cellular")
-        hostedCallTimer?.cancel(false)
-        hostedCallTimer = worker.schedule({ activeBridge.endActiveSession(HangupCause.NORMAL) }, 30, TimeUnit.MINUTES)
     }
 
     private fun onHostedSessionChanged(
