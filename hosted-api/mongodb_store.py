@@ -10,10 +10,10 @@ import os
 from functools import lru_cache
 from typing import Any, Iterator
 
-from pymongo import ASCENDING, DESCENDING, IndexModel, MongoClient
+from pymongo import ASCENDING, DESCENDING, IndexModel, MongoClient, ReturnDocument
 from pymongo.collection import Collection
 from pymongo.database import Database
-from pymongo.errors import PyMongoError
+from pymongo.errors import DuplicateKeyError, PyMongoError
 
 
 class MongoConfigurationError(RuntimeError):
@@ -141,6 +141,28 @@ def ensure_indexes(database: Database | None = None) -> None:
     }
     for name, indexes in definitions.items():
         db[name].create_indexes(indexes)
+
+
+def consume_rate_limit(*, key_hash: str, window_start: int, limit: int,
+                        expires_at: int) -> tuple[bool, int]:
+    """Atomically consume one shared fixed-window token across serverless instances."""
+    bucket = collection("rate_limit_windows")
+    identity = {"principal": key_hash, "window_start": window_start}
+    try:
+        row = bucket.find_one_and_update(
+            identity,
+            {"$inc": {"count": 1}, "$setOnInsert": {"expires_at": expires_at}},
+            upsert=True,
+            return_document=ReturnDocument.AFTER,
+        )
+    except DuplicateKeyError:
+        # Concurrent first writes may race on the unique (principal, window) index.
+        row = bucket.find_one_and_update(
+            identity, {"$inc": {"count": 1}},
+            upsert=False, return_document=ReturnDocument.AFTER,
+        )
+    count = int((row or {}).get("count", 0))
+    return count <= limit, count
 
 
 def ping() -> bool:
