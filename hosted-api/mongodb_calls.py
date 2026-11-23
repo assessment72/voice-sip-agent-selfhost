@@ -9,7 +9,7 @@ import time
 import uuid
 from typing import Any
 
-from pymongo import ASCENDING, IndexModel, ReturnDocument
+from pymongo import ASCENDING, DESCENDING, IndexModel, ReturnDocument
 from pymongo.collection import Collection
 from pymongo.errors import DuplicateKeyError
 
@@ -81,7 +81,7 @@ class MongoCallRepository:
                 name="ix_org_call_device_owner",
             ),
             IndexModel(
-                [("organization_id", ASCENDING), ("created_at", __import__("pymongo").DESCENDING)],
+                [("organization_id", ASCENDING), ("created_at", DESCENDING)],
                 name="ix_call_org_created",
             ),
         ])
