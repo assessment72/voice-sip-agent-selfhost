@@ -1,0 +1,85 @@
+<!doctype html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Hosted Call — إدارة الأجهزة</title>
+<style>
+:root{color-scheme:dark;--bg:#0b1220;--panel:#121c2e;--line:#26364d;--muted:#9fb0c5;--text:#edf4fc;--blue:#4da3ff;--green:#27c58a;--amber:#f4b942;--red:#f16b75}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:15px system-ui,-apple-system,"Segoe UI",sans-serif}
+main{max-width:1180px;margin:auto;padding:24px}h1{font-size:25px;margin:0 0 6px}p{color:var(--muted);margin:0 0 18px}
+.panel{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:16px;margin:14px 0}
+.grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px}.metric{padding:14px;border-radius:12px;background:#17263a}.metric small{display:block;color:var(--muted)}.metric strong{font-size:28px}
+input,button{font:inherit;border-radius:9px;padding:10px 12px;border:1px solid var(--line);background:#0d1727;color:var(--text)}
+input{width:100%}button{cursor:pointer;background:#17375a;border-color:#275a8c}button.secondary{background:#202e40}button:disabled{opacity:.5;cursor:wait}
+.row{display:flex;gap:10px;align-items:center;flex-wrap:wrap}.field{flex:1;min-width:220px}table{width:100%;border-collapse:collapse;min-width:700px}th,td{text-align:right;padding:11px;border-bottom:1px solid var(--line);font-size:13px}th{color:var(--muted);font-weight:600}.scroll{overflow:auto}.pill{padding:4px 8px;border-radius:20px;font-size:12px;background:#24354b}.online{color:var(--green)}.unstable{color:var(--amber)}.offline{color:var(--red)}.muted{color:var(--muted)}.error{color:var(--red);margin-top:10px}.ok{color:var(--green)}.actions{display:flex;gap:6px;flex-wrap:wrap}.actions button{padding:6px 9px;font-size:12px}.hidden{display:none}
+@media(max-width:720px){main{padding:14px}.grid{grid-template-columns:repeat(2,minmax(0,1fr))}.panel{padding:12px}}
+</style>
+</head>
+<body>
+<main>
+<header><h1>إدارة الأجهزة والمكالمات</h1><p>لوحة المؤسسة — حالة الأجهزة والنشاط والمكالمات والأوامر</p></header>
+<section class="panel">
+ <div class="row">
+  <div class="field"><label for="org">معرّف المؤسسة</label><input id="org" autocomplete="off" placeholder="Organization ID"></div>
+  <div class="field"><label for="token">رمز المؤسسة</label><input id="token" type="password" autocomplete="off" placeholder="Bearer API token"></div>
+  <button id="connect">اتصال وعرض البيانات</button>
+ </div>
+ <div id="message" role="status" aria-live="polite" class="muted" style="margin-top:10px">الرمز يبقى في ذاكرة الصفحة فقط ولا يُحفظ في التخزين المحلي.</div>
+</section>
+<section id="dashboard" class="hidden">
+ <div class="grid">
+  <div class="metric"><small>الأجهزة المتصلة</small><strong id="online">—</strong></div>
+  <div class="metric"><small>غير مستقرة</small><strong id="unstable">—</strong></div>
+  <div class="metric"><small>غير متصلة</small><strong id="offline">—</strong></div>
+  <div class="metric"><small>المكالمات المسجلة</small><strong id="calls">—</strong></div>
+ </div>
+ <section class="panel">
+  <div class="row" style="justify-content:space-between"><h2>الأجهزة</h2><button class="secondary" id="refresh">تحديث</button></div>
+  <div class="scroll"><table><thead><tr><th>الجهاز</th><th>الفرع</th><th>الحالة</th><th>آخر ظهور</th><th>البطارية</th><th>SIP</th><th>الشريحة</th><th>الأوامر</th></tr></thead><tbody id="devices"></tbody></table></div>
+ </section>
+ <section class="panel"><h2>المكالمات</h2><div class="scroll"><table><thead><tr><th>معرّف المكالمة</th><th>الحالة</th><th>الجهاز</th><th>وقت الإنشاء</th><th>آخر تحديث</th><th>السبب</th></tr></thead><tbody id="callRows"></tbody></table></div></section>
+</section>
+</main>
+<script>
+(()=> {
+ let orgId="", token="";
+ const el=id=>document.getElementById(id);
+ const msg=(text,kind="muted")=>{el("message").className=kind;el("message").textContent=text};
+ const headers=()=>({"Authorization":"Bearer "+token,"X-Organization-ID":orgId,"Content-Type":"application/json"});
+ async function api(path,options={}) {
+  const response=await fetch(path,{...options,headers:{...headers(),...(options.headers||{})}});
+  const body=await response.json().catch(()=>({}));
+  if(!response.ok) throw new Error(body.detail||("HTTP "+response.status));
+  return body;
+ }
+ const age=value=>value==null?"لم يتصل":value<60?"منذ "+value+" ث":"منذ "+Math.floor(value/60)+" د";
+ function deviceRow(d){
+  const tr=document.createElement("tr");
+  const values=[d.display_name+" · "+d.external_device_id,d.branch_name||"—",d.presence,age(d.lastSeenAgeSeconds),d.battery_level==null?"—":d.battery_level+"%",d.sip_status,d.sim_status];
+  values.forEach((v,i)=>{const td=document.createElement("td");td.textContent=v??"—";if(i===2)td.className=d.presence;tr.appendChild(td)});
+  const td=document.createElement("td"), actions=document.createElement("div");actions.className="actions";
+  ["refresh_status","pause_calls","resume_calls"].forEach(type=>{const btn=document.createElement("button");btn.textContent=({refresh_status:"تحديث الحالة",pause_calls:"إيقاف المكالمات",resume_calls:"استئناف المكالمات"})[type];btn.onclick=()=>sendCommand(d.id,type,btn);actions.appendChild(btn)});
+  td.appendChild(actions);tr.appendChild(td);return tr;
+ }
+ async function sendCommand(deviceId,type,button){
+  button.disabled=true;
+  try{await api("/v1/admin/device-commands",{method:"POST",body:JSON.stringify({deviceId,commandType:type})});msg("تم وضع الأمر في قائمة الانتظار. ينتظر استلام الجهاز له.","ok")}
+  catch(e){msg("تعذر إرسال الأمر: "+e.message,"error")}finally{button.disabled=false}
+ }
+ async function refresh(){
+  const [deviceData,callData]=await Promise.all([api("/v1/admin/devices"),api("/v1/admin/calls")]);
+  const devices=deviceData.devices||[],calls=callData.calls||[];
+  el("online").textContent=devices.filter(x=>x.presence==="online").length;
+  el("unstable").textContent=devices.filter(x=>x.presence==="unstable").length;
+  el("offline").textContent=devices.filter(x=>x.presence==="offline").length;
+  el("calls").textContent=calls.length;
+  el("devices").replaceChildren(...devices.map(deviceRow));
+  el("callRows").replaceChildren(...calls.map(c=>{const tr=document.createElement("tr");[c.id,c.state,c.device_id||"بانتظار جهاز",new Date(c.created_at*1000).toLocaleString(),new Date(c.updated_at*1000).toLocaleString(),c.reason_code||"—"].forEach(v=>{const td=document.createElement("td");td.textContent=v??"—";tr.appendChild(td)});return tr}));
+  el("dashboard").classList.remove("hidden");msg("تم تحديث بيانات المؤسسة.","ok");
+ }
+ el("connect").onclick=async()=>{orgId=el("org").value.trim();token=el("token").value.trim();if(!orgId||!token){msg("أدخل معرّف المؤسسة ورمزها.","error");return}try{await refresh()}catch(e){msg("فشل الاتصال: "+e.message,"error");el("dashboard").classList.add("hidden")}};
+ el("refresh").onclick=()=>refresh().catch(e=>msg("تعذر التحديث: "+e.message,"error"));
+ window.addEventListener("beforeunload",()=>{token=""});
+})();
+</script>
+</body></html>
