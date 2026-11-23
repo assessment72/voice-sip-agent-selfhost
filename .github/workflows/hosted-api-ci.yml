@@ -27,3 +27,5 @@ jobs:
           python-version: "3.12"
       - run: pip install -r requirements-dev.txt
       - run: pytest -q
+      - name: Build production container image
+        run: docker build --pull -t hosted-call-api:ci .
