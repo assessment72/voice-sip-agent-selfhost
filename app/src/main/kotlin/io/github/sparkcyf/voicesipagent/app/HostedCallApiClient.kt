@@ -94,6 +94,18 @@ class HostedCallApiClient(
         request("POST", "/v1/device/heartbeat", body)
     }
 
+    fun reportEvent(eventType: String, severity: String, eventCode: String) {
+        requireDeviceToken()
+        require(eventType.length in 1..64)
+        require(severity in setOf("debug", "info", "warning", "error", "critical"))
+        require(eventCode.length in 1..80)
+        val body = JSONObject()
+            .put("eventType", eventType)
+            .put("severity", severity)
+            .put("eventCode", eventCode)
+        request("POST", "/v1/device/events", body)
+    }
+
     private fun requireDeviceToken() {
         require(deviceToken.isNotBlank()) { "Device is not enrolled" }
     }
