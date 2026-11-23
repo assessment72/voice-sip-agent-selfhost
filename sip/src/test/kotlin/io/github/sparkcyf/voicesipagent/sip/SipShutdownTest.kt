@@ -24,7 +24,6 @@ class SipShutdownTest {
             try {
                 ua.start()
                 assertTrue(ready.await(2, TimeUnit.SECONDS))
-                val port = ua.transport.localPort
                 val lateTask = AtomicInteger()
                 ua.schedule(60_000) { lateTask.incrementAndGet() }
                 // The local peer deliberately never answers either REGISTER.
