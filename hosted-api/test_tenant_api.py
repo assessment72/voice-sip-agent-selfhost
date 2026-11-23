@@ -347,7 +347,7 @@ def test_owner_can_transfer_ownership_without_invalidating_new_owner_token(tmp_p
     assert client.post(
         f"/v1/organizations/{org['organizationId']}/members/operator-1/revoke",
         headers=owner_headers,
-    ).status_code == 403
+    ).status_code == 409
     # The new owner can revoke the previous owner, now an admin member.
     assert client.post(
         f"/v1/organizations/{org['organizationId']}/members/owner-a/revoke",
