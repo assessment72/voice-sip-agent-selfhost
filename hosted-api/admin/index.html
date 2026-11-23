@@ -37,6 +37,7 @@ input{width:100%}button{cursor:pointer;background:#17375a;border-color:#275a8c}b
   <div class="row" style="justify-content:space-between"><h2>الأجهزة</h2><button class="secondary" id="refresh">تحديث</button></div>
   <div class="scroll"><table><thead><tr><th>الجهاز</th><th>الفرع</th><th>الحالة</th><th>آخر ظهور</th><th>البطارية</th><th>SIP</th><th>الشريحة</th><th>الأوامر</th></tr></thead><tbody id="devices"></tbody></table></div>
  </section>
+ <section class="panel"><h2>النشاط الأخير</h2><div class="scroll"><table><thead><tr><th>الجهاز</th><th>الحدث</th><th>الخطورة</th><th>الرمز</th><th>وقت الاستلام</th></tr></thead><tbody id="activityRows"></tbody></table></div></section>
  <section class="panel"><h2>المكالمات</h2><div class="scroll"><table><thead><tr><th>معرّف المكالمة</th><th>الحالة</th><th>الجهاز</th><th>وقت الإنشاء</th><th>آخر تحديث</th><th>السبب</th></tr></thead><tbody id="callRows"></tbody></table></div></section>
 </section>
 </main>
@@ -67,18 +68,20 @@ input{width:100%}button{cursor:pointer;background:#17375a;border-color:#275a8c}b
   catch(e){msg("تعذر إرسال الأمر: "+e.message,"error")}finally{button.disabled=false}
  }
  async function refresh(){
-  const [deviceData,callData]=await Promise.all([api("/v1/admin/devices"),api("/v1/admin/calls")]);
-  const devices=deviceData.devices||[],calls=callData.calls||[];
+  const [deviceData,callData,activityData]=await Promise.all([api("/v1/admin/devices"),api("/v1/admin/calls"),api("/v1/admin/activity?limit=50")]);
+  const devices=deviceData.devices||[],calls=callData.calls||[],events=activityData.events||[];
   el("online").textContent=devices.filter(x=>x.presence==="online").length;
   el("unstable").textContent=devices.filter(x=>x.presence==="unstable").length;
   el("offline").textContent=devices.filter(x=>x.presence==="offline").length;
   el("calls").textContent=calls.length;
   el("devices").replaceChildren(...devices.map(deviceRow));
+  el("activityRows").replaceChildren(...events.map(e=>{const tr=document.createElement("tr");[e.display_name,e.event_type,e.severity,e.event_code,new Date(e.received_at*1000).toLocaleString()].forEach(v=>{const td=document.createElement("td");td.textContent=v??"—";tr.appendChild(td)});return tr}));
   el("callRows").replaceChildren(...calls.map(c=>{const tr=document.createElement("tr");[c.id,c.state,c.device_id||"بانتظار جهاز",new Date(c.created_at*1000).toLocaleString(),new Date(c.updated_at*1000).toLocaleString(),c.reason_code||"—"].forEach(v=>{const td=document.createElement("td");td.textContent=v??"—";tr.appendChild(td)});return tr}));
   el("dashboard").classList.remove("hidden");msg("تم تحديث بيانات المؤسسة.","ok");
  }
  el("connect").onclick=async()=>{orgId=el("org").value.trim();token=el("token").value.trim();if(!orgId||!token){msg("أدخل معرّف المؤسسة ورمزها.","error");return}try{await refresh()}catch(e){msg("فشل الاتصال: "+e.message,"error");el("dashboard").classList.add("hidden")}};
  el("refresh").onclick=()=>refresh().catch(e=>msg("تعذر التحديث: "+e.message,"error"));
+ setInterval(()=>{if(token&&!el("dashboard").classList.contains("hidden"))refresh().catch(e=>msg("تعذر التحديث: "+e.message,"error"))},30000);
  window.addEventListener("beforeunload",()=>{token=""});
 })();
 </script>
