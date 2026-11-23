@@ -39,7 +39,7 @@ REQUIRE_DISTRIBUTED_RATE_LIMIT = os.getenv(
 
 
 def mongodb_enabled() -> bool:
-    if mongodb_enabled():
+    if os.getenv("MONGODB_URI", "").strip():
         return True
     # The isolated Atlas test credentials are a runtime fallback for Vercel
     # Preview only. Production must have its own explicit MONGODB_URI.
