@@ -596,12 +596,15 @@ def add_organization_member(organization_id: str, body: OrganizationMemberReques
     if principal["role"] != "owner" and body.role == "admin":
         raise HTTPException(status_code=403, detail="owner_role_required")
     now = int(time.time())
+    raw_token = secrets.token_urlsafe(40)
     with db() as c:
+        c.execute("BEGIN IMMEDIATE")
         existing = c.execute(
             "SELECT role,status FROM organization_memberships WHERE organization_id=? AND user_id=?",
             (organization_id, body.userId),
         ).fetchone()
         if existing:
+            c.rollback()
             raise HTTPException(status_code=409, detail="membership_already_exists")
         c.execute(
             """INSERT INTO organization_memberships
@@ -609,7 +612,17 @@ def add_organization_member(organization_id: str, body: OrganizationMemberReques
                VALUES(?,?,?,'active',?,?)""",
             (organization_id, body.userId, body.role, now, now),
         )
-    return {"organizationId": organization_id, "userId": body.userId, "role": body.role, "status": "active"}
+        c.execute(
+            """INSERT INTO organization_api_credentials
+               (id,organization_id,label,user_id,token_hash,token_prefix,scopes,created_at)
+               VALUES(?,?,?,?,?,?, '[]',?)""",
+            (str(uuid.uuid4()), organization_id, f"{body.role} member credential",
+             body.userId, _hash_secret(raw_token), raw_token[:8], now),
+        )
+        c.commit()
+    return {"organizationId": organization_id, "userId": body.userId, "role": body.role,
+            "status": "active", "apiToken": raw_token,
+            "tokenWarning": "Shown once. Store securely; only its hash is retained."}
 
 
 @app.post("/v1/admin/devices/{device_id}/revoke")
