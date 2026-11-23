@@ -9,6 +9,8 @@ def setup_client(tmp_path, monkeypatch):
     monkeypatch.setattr(main, "CALL_TOKEN", "legacy-call-token")
     monkeypatch.setattr(main, "PREFIXES", ("+9677",))
     monkeypatch.setattr(main, "DEVICE_TOKEN", "legacy-device-token")
+    monkeypatch.setattr(main, "LEGACY_CALL_API_ENABLED", True)
+    monkeypatch.setattr(main, "LEGACY_DEVICE_API_ENABLED", True)
     monkeypatch.setattr(main, "BOOTSTRAP_TOKEN", "test-bootstrap-secret")
     monkeypatch.setattr(main, "PRESENCE_ONLINE_SECONDS", 60)
     monkeypatch.setattr(main, "PRESENCE_UNSTABLE_SECONDS", 120)
