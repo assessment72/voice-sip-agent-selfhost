@@ -70,3 +70,14 @@ The branch now includes `mongodb_store.py` and the PyMongo SRV driver dependency
 **Important:** this is a persistence foundation only. The current API routes in `main.py` still use SQLite (`DATABASE_PATH`), and startup still executes SQLite DDL and the SQL migration. The MongoDB module is not yet wired into request handlers. Setting `MONGODB_URI` does not change the active storage backend.
 
 Do not deploy this revision as a MongoDB-backed production service. The next migration increment must port the call lifecycle and atomic job-claim path first, with race-condition tests, before migrating organization/device control-plane endpoints. The final cutover must remove SQLite startup and verify transaction behavior on the selected Atlas topology.
+
+
+### MongoDB call lifecycle repository (staged, not active)
+
+The branch now includes `mongodb_calls.py`, a separate repository implementing:
+- idempotent call creation and a unique active-call slot;
+- atomic single-device job claiming with a lease;
+- ownership-checked state transitions and replay-safe responses;
+- timeout cleanup and release of the active slot on terminal states.
+
+The isolated tests use `mongomock` via `requirements-dev.txt`. This repository is **not yet wired into FastAPI handlers**; SQLite remains the active API backend. Do not set a MongoDB storage flag or use this as a production cutover until endpoint integration, real Atlas integration tests, transaction/race validation, and migration/rollback planning are complete.
