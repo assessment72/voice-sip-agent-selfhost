@@ -440,3 +440,17 @@ The Preview health response proves that the running Vercel Preview function auth
 - Verify backups/restore, monitoring, rate-limit behavior under multiple serverless instances, and disaster recovery.
 - Complete physical HONOR MTN-NX1 / Android 16, SIM, SIP/RTP, two-way audio, interruption/recovery, and signed Release APK validation.
 - Do not merge PR #10 or deploy Production as part of this checkpoint. The PR remains Draft/unmerged; no Production environment variables, production database, SIP credentials, or paid calls were changed.
+
+
+### Live Atlas integration suite expanded — 2026-11-23
+
+Commit `01ac896eb883033639e5c94f01a556b98a263b5c` extends the opt-in Atlas suite beyond the call repository. The new control-plane integration test uses a unique organization and verifies transactional bootstrap, member creation, ownership transfer, member revocation, credential rotation, enrollment-token consumption, device creation, heartbeat persistence, event history, command delivery/result, audit/activity reads, and device revocation. Cleanup deletes only records matching the generated organization/device identifiers.
+
+Validation on commit `01ac896`:
+
+- Hosted API workflow [45189637833](https://github.com/assessment72/voice-sip-agent-selfhost/actions/runs/45189637833): **success** — 66 passed, 3 skipped, 1 warning; Docker image build and container health smoke test passed.
+- Live Atlas integration step: **skipped**, because repository Actions secrets are not configured. The three skipped tests include opt-in live Atlas tests; no claim of live transaction execution is made.
+- General JVM CI [45189637564](https://github.com/assessment72/voice-sip-agent-selfhost/actions/runs/45189637564): in progress when recorded.
+- Android build/tests [45189637639](https://github.com/assessment72/voice-sip-agent-selfhost/actions/runs/45189637639): in progress when recorded.
+
+The separate Vercel Preview health check on code commit `ad7d344` returned HTTP 200 with `backend=mongodb`, confirming runtime connectivity and MongoDB selection with the isolated Preview credential. It is not a substitute for the expanded live Atlas transaction suite.
