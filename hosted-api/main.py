@@ -141,8 +141,9 @@ def transition(c, call_id: str, state: str, reason: str | None = None):
     if state not in allowed.get(row["state"], set()):
         raise HTTPException(status_code=409, detail="invalid_state_transition")
     now = int(time.time())
+    now_ms = time.time_ns() // 1_000_000
     events = json.loads(row["events"])
-    events.append({"state": state, "at": now, "reasonCode": reason})
+    events.append({"state": state, "at": now, "atMs": now_ms, "reasonCode": reason})
     c.execute("UPDATE calls SET state=?,updated_at=?,reason_code=?,events=? WHERE id=?",
               (state, now, reason, json.dumps(events), call_id))
     return c.execute("SELECT * FROM calls WHERE id=?", (call_id,)).fetchone()
@@ -173,7 +174,7 @@ def create_call(body: CreateCall, principal=Depends(caller),
             c.rollback()
             raise HTTPException(status_code=409, detail="device_busy")
         call_id = str(uuid.uuid4())
-        events = json.dumps([{"state": "queued", "at": now}])
+        events = json.dumps([{"state": "queued", "at": now, "atMs": time.time_ns() // 1_000_000}])
         c.execute("""INSERT INTO calls(id,idempotency_key,principal,phone_number,state,created_at,updated_at,expires_at,events)
                      VALUES(?,?,?,?,?,?,?,?,?)""",
                   (call_id, idempotency_key, principal, number, "queued", now, now, now + QUEUE_TTL, events))
@@ -189,6 +190,46 @@ def get_call(call_id: str, principal=Depends(caller)):
             raise HTTPException(status_code=404, detail="call_not_found")
         return safe_call(row)
 
+
+
+@app.get("/v1/metrics/latency")
+def latency_metrics(principal=Depends(caller)):
+    """Caller-authenticated aggregate latency metrics; never returns call IDs or numbers."""
+    with db() as c:
+        rows = c.execute("SELECT events FROM calls WHERE principal=?", (principal,)).fetchall()
+
+    samples = {"queue_to_cellular_ringing": [], "queue_to_bridged": [], "cellular_answer_to_sip": []}
+    for row in rows:
+        try:
+            events = json.loads(row["events"])
+            times = {event.get("state"): event.get("atMs", int(event.get("at", 0)) * 1000)
+                     for event in events if event.get("state")}
+            queued = times.get("queued")
+            ringing = times.get("ringing_cellular")
+            bridged = times.get("bridged")
+            answered = times.get("cellular_answered")
+            sip = times.get("calling_sip")
+            if queued is not None and ringing is not None and ringing >= queued:
+                samples["queue_to_cellular_ringing"].append(ringing - queued)
+            if queued is not None and bridged is not None and bridged >= queued:
+                samples["queue_to_bridged"].append(bridged - queued)
+            if answered is not None and sip is not None and sip >= answered:
+                samples["cellular_answer_to_sip"].append(sip - answered)
+        except (TypeError, ValueError, json.JSONDecodeError):
+            continue
+
+    def summary(values):
+        ordered = sorted(values)
+        if not ordered:
+            return {"samples": 0, "averageMs": None, "p95Ms": None}
+        rank = max(0, int((0.95 * len(ordered) + 0.999999)) - 1)
+        return {
+            "samples": len(ordered),
+            "averageMs": round(sum(ordered) / len(ordered), 2),
+            "p95Ms": ordered[min(rank, len(ordered) - 1)],
+        }
+
+    return {name: summary(values) for name, values in samples.items()}
 
 @app.get("/v1/device/jobs/next")
 def next_job(device_id=Depends(device), wait: int = Query(default=20, ge=0, le=25)):
