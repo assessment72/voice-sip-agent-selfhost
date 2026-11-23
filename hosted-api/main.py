@@ -797,14 +797,6 @@ def create_organization_call(organization_id: str, body: CreateCall,
         if count >= RATE_LIMIT:
             c.rollback()
             raise HTTPException(status_code=429, detail="rate_limit_exceeded")
-        active = c.execute(
-            """SELECT calls.id FROM calls JOIN call_tenant_assignments a ON a.call_id=calls.id
-               WHERE a.organization_id=? AND calls.state NOT IN ('failed','ended') LIMIT 1""",
-            (organization_id,),
-        ).fetchone()
-        if active:
-            c.rollback()
-            raise HTTPException(status_code=409, detail="organization_busy")
         c.execute("INSERT INTO requests(principal,created_at) VALUES(?,?)", (tenant_principal, now))
         call_id = str(uuid.uuid4())
         expires = now + QUEUE_TTL
@@ -843,7 +835,12 @@ def next_organization_call_job(wait: int = Query(default=20, ge=0, le=25),
                      (SELECT call_id FROM call_tenant_assignments WHERE organization_id=?)""",
                 (now - 30, device_ctx["organization_id"]),
             )
-            row = c.execute(
+            active_for_device = c.execute(
+                """SELECT id FROM calls WHERE claimed_by=?
+                   AND state NOT IN ('failed','ended') LIMIT 1""",
+                (device_ctx["device_id"],),
+            ).fetchone()
+            row = None if active_for_device else c.execute(
                 """SELECT calls.* FROM calls
                    JOIN call_tenant_assignments a ON a.call_id=calls.id
                    WHERE a.organization_id=? AND calls.state='queued'
