@@ -17,6 +17,8 @@ permissions:
 jobs:
   test:
     runs-on: ubuntu-latest
+    env:
+      HAS_ATLAS_TEST: ${{ secrets.MONGODB_TEST_URI != '' && secrets.MONGODB_TEST_DATABASE != '' }}
     defaults:
       run:
         working-directory: hosted-api
@@ -28,7 +30,7 @@ jobs:
       - run: pip install -r requirements-dev.txt
       - run: pytest -q
       - name: Live Atlas repository integration test
-        if: ${{ secrets.MONGODB_TEST_URI != '' && secrets.MONGODB_TEST_DATABASE != '' }}
+        if: ${{ env.HAS_ATLAS_TEST == 'true' }}
         env:
           MONGODB_TEST_URI: ${{ secrets.MONGODB_TEST_URI }}
           MONGODB_TEST_DATABASE: ${{ secrets.MONGODB_TEST_DATABASE }}
