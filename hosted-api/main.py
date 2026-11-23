@@ -394,7 +394,9 @@ def update_call(call_id: str, body: CallUpdate, device_id=Depends(device)):
         if row["claimed_by"] != device_id:
             raise HTTPException(status_code=403, detail="job_not_owned")
         updated = transition(c, call_id, body.state, body.reasonCode)
-        return safe_call(updated)
+        result = safe_call(updated)
+        c.commit()
+        return result
 
 
 @app.get("/health")
@@ -1117,6 +1119,9 @@ def next_organization_call_job(wait: int = Query(default=20, ge=0, le=25),
 def update_organization_call_state(call_id: str, body: CallUpdate,
                                    device_ctx=Depends(authenticated_device)):
     with db() as c:
+        # Keep ownership validation and state transition in one write transaction.
+        # Otherwise a concurrent lease reclaim could race between the SELECT and UPDATE.
+        c.execute("BEGIN IMMEDIATE")
         row = c.execute(
             """SELECT calls.claimed_by FROM calls
                JOIN call_tenant_assignments a ON a.call_id=calls.id
