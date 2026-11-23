@@ -314,3 +314,13 @@ def test_legacy_shared_tokens_are_blocked_when_mongodb_is_active(monkeypatch):
     with pytest.raises(HTTPException) as device_error:
         main.device("Bearer legacy")
     assert device_error.value.status_code == 404
+
+
+
+def test_atlas_test_credentials_are_preview_only(monkeypatch):
+    monkeypatch.delenv("MONGODB_URI", raising=False)
+    monkeypatch.setenv("MONGODB_TEST_URI", "mongodb://preview-only")
+    monkeypatch.setenv("VERCEL_ENV", "preview")
+    assert main.mongodb_enabled() is True
+    monkeypatch.setenv("VERCEL_ENV", "production")
+    assert main.mongodb_enabled() is False
