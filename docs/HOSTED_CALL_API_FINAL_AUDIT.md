@@ -258,3 +258,11 @@ The client pool is intentionally conservative for Vercel serverless instances (m
 - Corrected `app/build.gradle.kts` to add `testImplementation("org.json:json:20240303")`, providing a functional JSON implementation to JVM tests without changing Android runtime behavior.
 - Fix commit: `542847430730b3857e231da73883aed9c3062ee5`.
 - A new CI result for the fix commit has not yet been observed. Keep Android validation pending until the workflow completes successfully and the APK assembly step runs.
+
+
+### Shared index alignment correction
+
+- Reviewed `mongodb_store.ensure_indexes()` after the call repository gained organization-scoped unique indexes.
+- Replaced the staged global call idempotency/queue/claim index definitions with the same organization-scoped key patterns and names used by `MongoCallRepository.ensure_indexes()`; added the partial unique active-call slot index.
+- Updated repository index declarations and unit assertions so both initialization paths agree.
+- This is a staged schema definition only. No Atlas index was created, dropped, or modified by this change. If a prior environment already created the legacy global `uq_call_principal_idempotency` index, a deliberate, separately reviewed index migration must drop/replace it before cross-organization duplicate idempotency keys are supported. Do not silently drop indexes during cold start.
