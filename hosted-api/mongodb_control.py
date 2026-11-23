@@ -170,17 +170,20 @@ def heartbeat(*, device_id: str, organization_id: str, payload: dict[str, Any]) 
         "agent_status": payload.get("agentStatus", "unknown"),
         "active_call_id": "active" if payload.get("activeCall") else None, "updated_at": now,
     }
-    result = collection("devices").update_one(
-        {"_id": device_id, "organization_id": organization_id, "status": "active"},
-        {"$set": update},
-    )
-    if result.matched_count != 1:
-        raise ControlNotFound("device_not_found")
-    collection("heartbeats").insert_one({
-        "_id": _id(), "device_id": device_id, "received_at": now, **update,
-    })
-    return now
 
+    def write(session):
+        result = collection("devices").update_one(
+            {"_id": device_id, "organization_id": organization_id, "status": "active"},
+            {"$set": update}, session=session,
+        )
+        if result.matched_count != 1:
+            raise ControlNotFound("device_not_found")
+        collection("heartbeats").insert_one({
+            "_id": _id(), "device_id": device_id, "received_at": now, **update,
+        }, session=session)
+
+    with_transaction(write)
+    return now
 
 def list_devices(organization_id: str) -> list[dict[str, Any]]:
     return list(collection("devices").find(
@@ -402,13 +405,15 @@ def revoke_device(*, organization_id: str, device_id: str, actor_user_id: str) -
 def create_command(*, organization_id: str, device_id: str, command_type: str,
                    expires_in_seconds: int, actor_user_id: str) -> tuple[str, int]:
     now, command_id = _now(), _id()
-    device = collection("devices").find_one(
-        {"_id": device_id, "organization_id": organization_id, "status": "active"}
-    )
-    if not device:
-        raise ControlNotFound("active_device_not_found")
     expires_at = now + expires_in_seconds
+
     def write(session):
+        device = collection("devices").find_one(
+            {"_id": device_id, "organization_id": organization_id, "status": "active"},
+            session=session,
+        )
+        if not device:
+            raise ControlNotFound("active_device_not_found")
         collection("device_commands").insert_one({
             "_id": command_id, "organization_id": organization_id, "device_id": device_id,
             "command_type": command_type, "payload": {}, "status": "pending",
@@ -422,9 +427,9 @@ def create_command(*, organization_id: str, device_id: str, command_type: str,
             "target_id": command_id, "metadata": {"command_type": command_type, "device_id": device_id},
             "created_at": now,
         }, session=session)
+
     with_transaction(write)
     return command_id, expires_at
-
 
 def claim_command(*, device_id: str, organization_id: str) -> dict[str, Any] | None:
     now = _now()
