@@ -220,3 +220,12 @@ The client pool is intentionally conservative for Vercel serverless instances (m
 - Declared `dnspython` explicitly for MongoDB SRV URI resolution; removed the obsolete `pymongo[srv]` extra.
 - First CI execution exposed an incorrect test expectation in the repeatable-index test (the fake recorded one batch per invocation). The assertion was corrected; the rerun is pending.
 - **Important:** this remains a connectivity/collection-index foundation. Main API persistence is still SQLite. The health probe passing would prove connectivity only, not MongoDB CRUD, transaction semantics, tenant isolation, or production readiness.
+
+
+## MongoDB call lifecycle repository — staged implementation
+
+- Added `hosted-api/mongodb_calls.py` with idempotent create, unique active-slot enforcement, atomic job claim/lease reclaim, timeout terminalization, owner-checked state transitions, and active-slot release.
+- Added isolated MongoDB behavior tests in `hosted-api/tests/test_mongodb_calls.py`, using `mongomock` from `requirements-dev.txt`.
+- Dedicated Hosted API CI now installs development test dependencies.
+- This is a repository-level increment only. FastAPI routes, metrics, tenant ownership, device enrollment, and admin/control-plane paths remain SQLite-backed. No backend cutover has been enabled.
+- Required before integration: run CI cleanly, verify claim/transition races against a real replica-set Atlas test database, add organization/device scoping to the call document and repository signatures, then migrate all dependent read/write paths together.
