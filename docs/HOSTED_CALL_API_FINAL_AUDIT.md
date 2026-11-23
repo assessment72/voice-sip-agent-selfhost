@@ -398,3 +398,45 @@ No merge, Production deployment, Production secret change, Atlas data/index writ
 - Latest Debug APK artifact: [voice-sip-agent-debug-7198b68f129a413e025bc03076522a8964e1b181](https://github.com/assessment72/voice-sip-agent-selfhost/actions/runs/45178765993) (artifact ID `14820785798`, SHA-256 `99e64a16a0e15542d3cdaf615b4615bf3f0e6a451df6d3dc14b8207db690721b`, expires 2026-12-07). It is a Debug build, not a signed Release APK.
 
 All three latest-head workflows passed. This establishes code/build validation only; it does not replace the still-skipped live Atlas test or physical SIM/PBX/media acceptance.
+
+
+---
+
+## MongoDB tenant-route migration — 2026-11-23
+
+Authoritative migration checkpoint: `ad7d34417424bbcbca1ecfeccf15a542dff28c09` on `feature/hosted-call-api`.
+
+### Implemented on this branch
+
+- Replaced SQLite runtime access for tenant organization authentication and bootstrap with MongoDB-backed credentials and membership lookups.
+- Migrated member creation, ownership transfer, member revocation, credential rotation, branch administration, and append-only-by-application audit event writes/reads.
+- Migrated enrollment-token issuance and device enrollment. Enrollment token consumption, device creation, and device credential creation execute in a MongoDB transaction.
+- Migrated device authentication, heartbeat snapshots/history, event ingestion, device/activity listing, device revocation, and device command delivery/result lifecycle.
+- Migrated tenant call creation, idempotency, organization active-call slot, job claim/lease, device ownership validation, replay-safe state transitions, call detail/listing, and latency aggregation.
+- Migrated distributed rate-limit windows and created the required MongoDB indexes.
+- Vercel startup now requires MongoDB, initializes MongoDB indexes, and does not initialize SQLite. The unsafe SQLite override is rejected. Local development without MongoDB continues to use SQLite.
+- Legacy shared-token routes are blocked when MongoDB is active so they cannot silently fall back to per-instance SQLite.
+- Vercel Preview may use the isolated `MONGODB_TEST_URI` / `MONGODB_TEST_DATABASE` variables only when `VERCEL_ENV` is not `production`. Production requires explicit independent `MONGODB_URI` / `MONGODB_DATABASE`.
+
+### Verification evidence
+
+| Check | Result |
+|---|---|
+| Hosted API tests, run [45189039695](https://github.com/assessment72/voice-sip-agent-selfhost/actions/runs/45189039695) | **success** — 66 passed, 2 skipped, 1 warning |
+| Docker production-image build | **success** |
+| Container smoke test: `/health` and `/health/database` | **success** |
+| General JVM CI, run [45189051659](https://github.com/assessment72/voice-sip-agent-selfhost/actions/runs/45189051659) | **success** |
+| Vercel Preview deployment for commit `ad7d344` | **READY** |
+| Live Preview `GET /health/database` | **HTTP 200** — `{"status":"ok","backend":"mongodb"}` |
+| Optional GitHub Actions live Atlas repository test | **skipped** — GitHub Actions secrets are not configured |
+| Android build/tests | In progress at this checkpoint; do not claim success until completed |
+
+The Preview health response proves that the running Vercel Preview function authenticated to the isolated Atlas database using the configured Preview runtime credential and selected MongoDB as its active backend. It also confirms startup index initialization did not block the function. It does not prove that every transactional write path has been exercised against Atlas.
+
+### Remaining validation and release boundary
+
+- Run the optional live Atlas integration test with the least-privilege application URI. The existing GitHub workflow skips this test until `MONGODB_TEST_URI` and `MONGODB_TEST_DATABASE` are configured as repository Actions secrets.
+- Exercise multi-document transaction workflows against Atlas, including enrollment, ownership transfer, member revocation/rotation, and device command + audit writes.
+- Verify backups/restore, monitoring, rate-limit behavior under multiple serverless instances, and disaster recovery.
+- Complete physical HONOR MTN-NX1 / Android 16, SIM, SIP/RTP, two-way audio, interruption/recovery, and signed Release APK validation.
+- Do not merge PR #10 or deploy Production as part of this checkpoint. The PR remains Draft/unmerged; no Production environment variables, production database, SIP credentials, or paid calls were changed.
