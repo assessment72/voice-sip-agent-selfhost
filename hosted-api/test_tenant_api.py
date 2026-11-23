@@ -232,6 +232,23 @@ def test_tenant_call_is_scoped_and_claimed_only_by_owning_org_device(tmp_path, m
     )
     assert state.status_code == 200
     assert state.json()["state"] == "ringing_cellular"
+    for next_state in ("cellular_answered", "calling_sip", "bridged"):
+        state = client.post(
+            f"/v1/device/tenant-calls/{job['id']}/state",
+            json={"state": next_state},
+            headers=auth(alpha_device["deviceToken"]),
+        )
+        assert state.status_code == 200
+    metrics = client.get(
+        "/v1/admin/metrics/latency",
+        headers=auth(alpha["apiToken"], alpha["organizationId"]),
+    )
+    assert metrics.status_code == 200
+    assert metrics.json()["queue_to_bridged"]["samples"] == 1
+    assert client.get(
+        "/v1/admin/metrics/latency",
+        headers=auth(beta["apiToken"], beta["organizationId"]),
+    ).json()["queue_to_bridged"]["samples"] == 0
 
 
 def test_device_command_delivery_and_completion_are_device_scoped(tmp_path, monkeypatch):
