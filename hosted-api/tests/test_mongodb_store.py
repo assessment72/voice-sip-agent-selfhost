@@ -46,7 +46,7 @@ def test_call_idempotency_index_is_unique():
     idem = next(index for index in indexes
                 if index.document["name"] == "uq_call_principal_idempotency")
     assert idem.document["unique"] is True
-    assert idem.document["key"] == [("principal", 1), ("idempotency_key", 1)]
+    assert list(idem.document["key"].items()) == [("principal", 1), ("idempotency_key", 1)]
 
 
 def test_branch_code_uniqueness_only_applies_to_string_codes():
