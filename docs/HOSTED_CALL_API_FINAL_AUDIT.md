@@ -131,3 +131,10 @@ Additional outbox boundary tests on commit `54a9ab8645b8c7887896598257b8a5ecfaf2
 - Verify malformed persisted JSON is retained unchanged and causes new enqueue attempts to fail closed rather than silently replacing potentially important updates.
 
 The test suite remains pending CI validation on the latest branch head.
+
+
+### Enrollment identity isolation guard
+
+Commits `24fa5124d1c6dcf366ae6a361027810410670ac4` and `d7822a99f65a8095bd9c05b6c103a70d3ec2fcea` add a fail-closed outbox emptiness check and prevent re-enrolling/replacing the hosted device credential while any pending or unreadable outbox data exists. This avoids sending an older organization's queued call-state updates under a newly enrolled device token. The guard clears only after the pending outbox is drained; corrupt storage is deliberately treated as non-empty.
+
+Commit `d5bd1a642058f90f2b10b7df46e3de592b9948ae` extends the queue unit test to verify the empty-vs-corrupt distinction. Latest CI for these newest commits is still pending confirmation.
