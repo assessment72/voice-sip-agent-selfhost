@@ -123,8 +123,18 @@ def test_live_atlas_control_plane_transactions_and_device_lifecycle(atlas_contro
     owner_id = f"owner-{uuid.uuid4().hex}"
     operator_id = f"operator-{uuid.uuid4().hex}"
     operator2_id = f"operator2-{uuid.uuid4().hex}"
+    rate_key = f"ci-rate-{uuid.uuid4().hex}"
 
     try:
+        rate_window = int(__import__("time").time())
+        assert mongodb_store.consume_rate_limit(
+            key_hash=rate_key, window_start=rate_window, limit=1,
+            expires_at=rate_window + 180,
+        ) == (True, 1)
+        assert mongodb_store.consume_rate_limit(
+            key_hash=rate_key, window_start=rate_window, limit=1,
+            expires_at=rate_window + 180,
+        ) == (False, 2)
         org_id = mongodb_control.bootstrap_organization(
             slug=slug, name="Atlas CI organization", owner_user_id=owner_id,
             token_hash=f"owner-hash-{uuid.uuid4().hex}", token_prefix="ci-owner",
@@ -213,6 +223,7 @@ def test_live_atlas_control_plane_transactions_and_device_lifecycle(atlas_contro
         )
         assert mongodb_control.authenticate_device(device_hash) is None
     finally:
+        database.rate_limit_windows.delete_many({"principal": rate_key})
         if org_id:
             device_ids = [row["_id"] for row in database.devices.find(
                 {"organization_id": org_id}, {"_id": 1}
