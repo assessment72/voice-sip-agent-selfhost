@@ -731,3 +731,137 @@ def list_organization_calls(limit: int = Query(default=50, ge=1, le=200),
             (principal["organization_id"], limit),
         ).fetchall()
     return {"calls": [dict(row) for row in rows], "count": len(rows)}
+
+
+@app.post("/v1/organizations/{organization_id}/calls", status_code=202)
+def create_organization_call(organization_id: str, body: CreateCall,
+                             idempotency_key: str = Header(alias="Idempotency-Key", min_length=16, max_length=128),
+                             principal=Depends(organization_principal)):
+    if principal["organization_id"] != organization_id:
+        raise HTTPException(status_code=404, detail="organization_not_found")
+    number = normalize_number(body.phoneNumber)
+    tenant_principal = f"org:{organization_id}"
+    now = int(time.time())
+    with db() as c:
+        c.execute("BEGIN IMMEDIATE")
+        old = c.execute(
+            "SELECT * FROM calls WHERE principal=? AND idempotency_key=?",
+            (tenant_principal, idempotency_key),
+        ).fetchone()
+        if old:
+            if old["phone_number"] != number:
+                c.rollback()
+                raise HTTPException(status_code=409, detail="idempotency_key_reused")
+            c.commit()
+            return safe_call(old)
+        c.execute("DELETE FROM requests WHERE created_at<?", (now - 60,))
+        count = c.execute(
+            "SELECT COUNT(*) FROM requests WHERE principal=?", (tenant_principal,)
+        ).fetchone()[0]
+        if count >= RATE_LIMIT:
+            c.rollback()
+            raise HTTPException(status_code=429, detail="rate_limit_exceeded")
+        active = c.execute(
+            """SELECT calls.id FROM calls JOIN call_tenant_assignments a ON a.call_id=calls.id
+               WHERE a.organization_id=? AND calls.state NOT IN ('failed','ended') LIMIT 1""",
+            (organization_id,),
+        ).fetchone()
+        if active:
+            c.rollback()
+            raise HTTPException(status_code=409, detail="organization_busy")
+        c.execute("INSERT INTO requests(principal,created_at) VALUES(?,?)", (tenant_principal, now))
+        call_id = str(uuid.uuid4())
+        expires = now + QUEUE_TTL
+        events = json.dumps([{"state": "queued", "at": now, "atMs": time.time_ns() // 1_000_000}])
+        c.execute(
+            """INSERT INTO calls(id,idempotency_key,principal,phone_number,state,created_at,
+               updated_at,expires_at,events) VALUES(?,?,?,?,?,?,?,?,?)""",
+            (call_id, idempotency_key, tenant_principal, number, "queued", now, now, expires, events),
+        )
+        c.execute(
+            """INSERT INTO call_tenant_assignments(call_id,organization_id,created_at)
+               VALUES(?,?,?)""",
+            (call_id, organization_id, now),
+        )
+        c.commit()
+    return {"id": call_id, "state": "queued", "createdAt": now, "updatedAt": now, "expiresAt": expires}
+
+
+@app.get("/v1/device/call-jobs/next")
+def next_organization_call_job(wait: int = Query(default=20, ge=0, le=25),
+                               device_ctx=Depends(authenticated_device)):
+    deadline = time.monotonic() + wait
+    while True:
+        now = int(time.time())
+        with db() as c:
+            c.execute("BEGIN IMMEDIATE")
+            c.execute(
+                """UPDATE calls SET state='failed',reason_code='queue_expired',updated_at=?
+                   WHERE id IN (SELECT call_id FROM call_tenant_assignments WHERE organization_id=?)
+                     AND state='queued' AND expires_at<?""",
+                (now, device_ctx["organization_id"], now),
+            )
+            c.execute(
+                """UPDATE calls SET claimed_by=NULL,claimed_at=NULL
+                   WHERE state='queued' AND claimed_at<? AND id IN
+                     (SELECT call_id FROM call_tenant_assignments WHERE organization_id=?)""",
+                (now - 30, device_ctx["organization_id"]),
+            )
+            row = c.execute(
+                """SELECT calls.* FROM calls
+                   JOIN call_tenant_assignments a ON a.call_id=calls.id
+                   WHERE a.organization_id=? AND calls.state='queued'
+                     AND calls.claimed_by IS NULL AND calls.expires_at>=?
+                   ORDER BY calls.created_at LIMIT 1""",
+                (device_ctx["organization_id"], now),
+            ).fetchone()
+            if row:
+                c.execute(
+                    """UPDATE calls SET claimed_by=?,claimed_at=? WHERE id=?
+                       AND state='queued' AND claimed_by IS NULL""",
+                    (device_ctx["device_id"], now, row["id"]),
+                )
+                c.execute(
+                    "UPDATE call_tenant_assignments SET device_id=? WHERE call_id=?",
+                    (device_ctx["device_id"], row["id"]),
+                )
+                c.commit()
+                return {"job": {"id": row["id"], "phoneNumber": row["phone_number"],
+                                "expiresAt": row["expires_at"]}}
+            c.commit()
+        if time.monotonic() >= deadline:
+            return {"job": None}
+        time.sleep(min(0.25, max(0.0, deadline - time.monotonic())))
+
+
+@app.post("/v1/device/tenant-calls/{call_id}/state")
+def update_organization_call_state(call_id: str, body: CallUpdate,
+                                   device_ctx=Depends(authenticated_device)):
+    with db() as c:
+        row = c.execute(
+            """SELECT calls.claimed_by FROM calls
+               JOIN call_tenant_assignments a ON a.call_id=calls.id
+               WHERE calls.id=? AND a.organization_id=? AND a.device_id=?""",
+            (call_id, device_ctx["organization_id"], device_ctx["device_id"]),
+        ).fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="call_not_found")
+        if row["claimed_by"] != device_ctx["device_id"]:
+            raise HTTPException(status_code=403, detail="job_not_owned")
+        updated = transition(c, call_id, body.state, body.reasonCode)
+        return safe_call(updated)
+
+
+@app.get("/v1/admin/calls/{call_id}")
+def get_organization_call(call_id: str, principal=Depends(organization_principal)):
+    with db() as c:
+        row = c.execute(
+            """SELECT calls.id,calls.state,calls.created_at,calls.updated_at,calls.reason_code,
+                      a.device_id
+               FROM calls JOIN call_tenant_assignments a ON a.call_id=calls.id
+               WHERE calls.id=? AND a.organization_id=?""",
+            (call_id, principal["organization_id"]),
+        ).fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="call_not_found")
+    return dict(row)
