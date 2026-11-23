@@ -100,7 +100,7 @@ def startup():
     is_vercel = os.getenv("VERCEL", "").lower() in {"1", "true", "yes"}
     mongo_configured = bool(os.getenv("MONGODB_URI", "").strip())
     if is_vercel and not mongo_configured:
-        raise RuntimeError("production_blocked_mongodb_required")
+        raise RuntimeError("production_blocked_sqlite_not_durable_use_mongodb_repository")
     if is_vercel and os.getenv("ALLOW_UNSAFE_SQLITE_ON_VERCEL", "false").lower() in {"1", "true", "yes"}:
         raise RuntimeError("unsafe_sqlite_override_is_not_supported")
     if mongo_configured:
