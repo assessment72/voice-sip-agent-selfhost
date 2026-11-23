@@ -867,6 +867,17 @@ def add_organization_member(organization_id: str, body: OrganizationMemberReques
         raise HTTPException(status_code=403, detail="owner_role_required")
     now = int(time.time())
     raw_token = secrets.token_urlsafe(40)
+    if os.getenv("MONGODB_URI", "").strip():
+        from mongodb_control import ControlConflict, add_member as mongo_add_member
+        try:
+            mongo_add_member(organization_id=organization_id, user_id=body.userId, role=body.role,
+                             token_hash=_hash_secret(raw_token), token_prefix=raw_token[:8],
+                             actor_user_id=principal["user_id"])
+        except ControlConflict:
+            raise HTTPException(status_code=409, detail="membership_already_exists")
+        return {"organizationId": organization_id, "userId": body.userId, "role": body.role,
+                "status": "active", "apiToken": raw_token,
+                "tokenWarning": "Shown once. Store securely; only its hash is retained."}
     with db() as c:
         c.execute("BEGIN IMMEDIATE")
         existing = c.execute(
@@ -908,6 +919,17 @@ def transfer_organization_ownership(organization_id: str, user_id: str,
     if user_id == principal["user_id"]:
         raise HTTPException(status_code=409, detail="already_owner")
     now = int(time.time())
+    if os.getenv("MONGODB_URI", "").strip():
+        from mongodb_control import ControlConflict, ControlNotFound, transfer_ownership as mongo_transfer
+        try:
+            mongo_transfer(organization_id=organization_id, previous_owner=principal["user_id"],
+                           new_owner=user_id, actor_user_id=principal["user_id"])
+        except ControlNotFound as exc:
+            raise HTTPException(status_code=404, detail=str(exc))
+        except ControlConflict as exc:
+            raise HTTPException(status_code=409, detail=str(exc))
+        return {"organizationId": organization_id, "previousOwnerUserId": principal["user_id"],
+                "newOwnerUserId": user_id, "status": "transferred"}
     with db() as c:
         c.execute("BEGIN IMMEDIATE")
         target = c.execute(
@@ -951,6 +973,18 @@ def revoke_organization_member(organization_id: str, user_id: str,
     if principal["organization_id"] != organization_id:
         raise HTTPException(status_code=404, detail="organization_not_found")
     now = int(time.time())
+    if os.getenv("MONGODB_URI", "").strip():
+        from mongodb_control import ControlConflict, ControlNotFound, revoke_member as mongo_revoke_member
+        try:
+            mongo_revoke_member(organization_id=organization_id, user_id=user_id,
+                                actor_user_id=principal["user_id"], actor_role=principal["role"])
+        except ControlNotFound as exc:
+            raise HTTPException(status_code=404, detail=str(exc))
+        except PermissionError as exc:
+            raise HTTPException(status_code=403, detail=str(exc))
+        except ControlConflict as exc:
+            raise HTTPException(status_code=409, detail=str(exc))
+        return {"organizationId": organization_id, "userId": user_id, "status": "revoked"}
     with db() as c:
         c.execute("BEGIN IMMEDIATE")
         member = c.execute(
@@ -990,6 +1024,18 @@ def rotate_member_credential(organization_id: str, user_id: str,
         raise HTTPException(status_code=403, detail="insufficient_role")
     raw_token = secrets.token_urlsafe(40)
     now = int(time.time())
+    if os.getenv("MONGODB_URI", "").strip():
+        from mongodb_control import ControlNotFound, rotate_member_credential as mongo_rotate
+        try:
+            mongo_rotate(organization_id=organization_id, user_id=user_id,
+                         actor_user_id=principal["user_id"], actor_role=principal["role"],
+                         token_hash=_hash_secret(raw_token), token_prefix=raw_token[:8])
+        except ControlNotFound as exc:
+            raise HTTPException(status_code=404, detail=str(exc))
+        except PermissionError as exc:
+            raise HTTPException(status_code=403, detail=str(exc))
+        return {"organizationId": organization_id, "userId": user_id,
+                "apiToken": raw_token, "tokenWarning": "Shown once. Previous credentials were revoked."}
     with db() as c:
         c.execute("BEGIN IMMEDIATE")
         member = c.execute(
@@ -1024,6 +1070,14 @@ def rotate_member_credential(organization_id: str, user_id: str,
 @app.post("/v1/admin/devices/{device_id}/revoke")
 def revoke_device(device_id: str, principal=Depends(require_org_admin)):
     now = int(time.time())
+    if os.getenv("MONGODB_URI", "").strip():
+        from mongodb_control import ControlNotFound, revoke_device as mongo_revoke_device
+        try:
+            mongo_revoke_device(organization_id=principal["organization_id"], device_id=device_id,
+                                actor_user_id=principal["user_id"])
+        except ControlNotFound:
+            raise HTTPException(status_code=404, detail="device_not_found")
+        return {"deviceId": device_id, "status": "revoked"}
     with db() as c:
         c.execute("BEGIN IMMEDIATE")
         row = c.execute(
@@ -1052,6 +1106,16 @@ def revoke_device(device_id: str, principal=Depends(require_org_admin)):
 def create_device_command(body: DeviceCommandRequest, principal=Depends(require_org_admin)):
     now = int(time.time())
     command_id = str(uuid.uuid4())
+    if os.getenv("MONGODB_URI", "").strip():
+        from mongodb_control import ControlNotFound, create_command as mongo_create_command
+        try:
+            command_id, expires_at = mongo_create_command(
+                organization_id=principal["organization_id"], device_id=body.deviceId,
+                command_type=body.commandType, expires_in_seconds=body.expiresInSeconds,
+                actor_user_id=principal["user_id"])
+        except ControlNotFound:
+            raise HTTPException(status_code=404, detail="active_device_not_found")
+        return {"commandId": command_id, "status": "pending", "expiresAt": expires_at}
     with db() as c:
         c.execute("BEGIN IMMEDIATE")
         target = c.execute(
@@ -1080,6 +1144,15 @@ def create_device_command(body: DeviceCommandRequest, principal=Depends(require_
 @app.get("/v1/device/commands/next")
 def next_device_command(wait: int = Query(default=20, ge=0, le=25),
                         device_ctx=Depends(authenticated_device)):
+    if os.getenv("MONGODB_URI", "").strip():
+        from mongodb_control import claim_command as mongo_claim_command
+        deadline = time.monotonic() + wait
+        while True:
+            command = mongo_claim_command(device_id=device_ctx["device_id"],
+                                          organization_id=device_ctx["organization_id"])
+            if command is not None or time.monotonic() >= deadline:
+                return {"command": command}
+            time.sleep(min(0.25, max(0.0, deadline - time.monotonic())))
     deadline = time.monotonic() + wait
     while True:
         now = int(time.time())
@@ -1113,6 +1186,17 @@ def next_device_command(wait: int = Query(default=20, ge=0, le=25),
 def update_device_command(command_id: str, body: DeviceCommandResult,
                           device_ctx=Depends(authenticated_device)):
     now = int(time.time())
+    if os.getenv("MONGODB_URI", "").strip():
+        from mongodb_control import ControlConflict, ControlNotFound, update_command_result as mongo_update_command
+        try:
+            mongo_update_command(command_id=command_id, device_id=device_ctx["device_id"],
+                                 organization_id=device_ctx["organization_id"], status=body.status,
+                                 result_code=body.resultCode, result_summary=body.resultSummary)
+        except ControlNotFound:
+            raise HTTPException(status_code=404, detail="command_not_found")
+        except ControlConflict:
+            raise HTTPException(status_code=409, detail="command_not_active")
+        return {"commandId": command_id, "status": body.status}
     with db() as c:
         c.execute("BEGIN IMMEDIATE")
         row = c.execute(
