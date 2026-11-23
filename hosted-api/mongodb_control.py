@@ -469,3 +469,39 @@ def update_command_result(*, command_id: str, device_id: str, organization_id: s
     )
     if result.modified_count != 1:
         raise ControlConflict("command_not_active")
+
+
+def latency_metrics(*, organization_id: str) -> dict[str, Any]:
+    samples: dict[str, list[int]] = {
+        "queue_to_cellular_ringing": [],
+        "queue_to_bridged": [],
+        "cellular_answer_to_sip": [],
+    }
+    for call in collection("calls").find(
+        {"organization_id": organization_id}, {"events": 1, "_id": 0}
+    ):
+        events = call.get("events", [])
+        times = {
+            event.get("state"): event.get("atMs", int(event.get("at", 0)) * 1000)
+            for event in events if event.get("state")
+        }
+        queued, ringing = times.get("queued"), times.get("ringing_cellular")
+        bridged, answered, sip = (
+            times.get("bridged"), times.get("cellular_answered"), times.get("calling_sip")
+        )
+        if queued is not None and ringing is not None and ringing >= queued:
+            samples["queue_to_cellular_ringing"].append(ringing - queued)
+        if queued is not None and bridged is not None and bridged >= queued:
+            samples["queue_to_bridged"].append(bridged - queued)
+        if answered is not None and sip is not None and sip >= answered:
+            samples["cellular_answer_to_sip"].append(sip - answered)
+
+    def summarize(values: list[int]) -> dict[str, Any]:
+        ordered = sorted(values)
+        if not ordered:
+            return {"samples": 0, "averageMs": None, "p95Ms": None}
+        rank = max(0, int(0.95 * len(ordered) + 0.999999) - 1)
+        return {"samples": len(ordered), "averageMs": round(sum(ordered) / len(ordered), 2),
+                "p95Ms": ordered[min(rank, len(ordered) - 1)]}
+
+    return {name: summarize(values) for name, values in samples.items()}
