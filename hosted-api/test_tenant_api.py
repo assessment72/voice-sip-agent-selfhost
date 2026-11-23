@@ -296,6 +296,54 @@ def test_suspended_organization_credentials_are_rejected(tmp_path, monkeypatch):
     assert response.json()["detail"] == "organization_access_denied"
 
 
+def test_member_revocation_and_credential_rotation_revoke_old_tokens(tmp_path, monkeypatch):
+    client = setup_client(tmp_path, monkeypatch)
+    org = create_org(client, "Alpha", "alpha", "owner-a")
+    owner_headers = auth(org["apiToken"], org["organizationId"])
+    member = client.post(
+        f"/v1/organizations/{org['organizationId']}/members",
+        json={"userId": "operator-1", "role": "operator"},
+        headers=owner_headers,
+    )
+    assert member.status_code == 201
+    old_token = member.json()["apiToken"]
+    rotated = client.post(
+        f"/v1/organizations/{org['organizationId']}/members/operator-1/rotate-credential",
+        headers=owner_headers,
+    )
+    assert rotated.status_code == 200
+    new_token = rotated.json()["apiToken"]
+    assert client.get(
+        "/v1/admin/devices",
+        headers=auth(old_token, org["organizationId"]),
+    ).status_code == 403
+    assert client.get(
+        "/v1/admin/devices",
+        headers=auth(new_token, org["organizationId"]),
+    ).status_code == 200
+    revoked = client.post(
+        f"/v1/organizations/{org['organizationId']}/members/operator-1/revoke",
+        headers=owner_headers,
+    )
+    assert revoked.status_code == 200
+    assert revoked.json()["status"] == "revoked"
+    assert client.get(
+        "/v1/admin/devices",
+        headers=auth(new_token, org["organizationId"]),
+    ).status_code == 403
+
+
+def test_owner_membership_cannot_be_revoked_without_transfer(tmp_path, monkeypatch):
+    client = setup_client(tmp_path, monkeypatch)
+    org = create_org(client, "Alpha", "alpha", "owner-a")
+    response = client.post(
+        f"/v1/organizations/{org['organizationId']}/members/owner-a/revoke",
+        headers=auth(org["apiToken"], org["organizationId"]),
+    )
+    assert response.status_code == 409
+    assert response.json()["detail"] == "owner_transfer_required"
+
+
 def test_device_command_delivery_and_completion_are_device_scoped(tmp_path, monkeypatch):
     client = setup_client(tmp_path, monkeypatch)
     org = create_org(client, "Alpha", "alpha", "owner-a")
