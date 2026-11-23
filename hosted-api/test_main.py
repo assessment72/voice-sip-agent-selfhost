@@ -8,6 +8,8 @@ def setup_client(tmp_path, monkeypatch):
     monkeypatch.setattr(main, "DB", str(tmp_path / "calls.sqlite3"))
     monkeypatch.setattr(main, "CALL_TOKEN", "test-caller-token")
     monkeypatch.setattr(main, "DEVICE_TOKEN", "test-device-token")
+    monkeypatch.setattr(main, "LEGACY_CALL_API_ENABLED", True)
+    monkeypatch.setattr(main, "LEGACY_DEVICE_API_ENABLED", True)
     monkeypatch.setattr(main, "PREFIXES", ("+9677",))
     monkeypatch.setattr(main, "RATE_LIMIT", 20)
     main.init_db()
@@ -16,6 +18,22 @@ def setup_client(tmp_path, monkeypatch):
 
 def headers(token, **extra):
     return {"Authorization": f"Bearer {token}", **extra}
+
+
+def test_legacy_shared_token_routes_are_disabled_by_default(tmp_path, monkeypatch):
+    client = setup_client(tmp_path, monkeypatch)
+    monkeypatch.setattr(main, "LEGACY_CALL_API_ENABLED", False)
+    monkeypatch.setattr(main, "LEGACY_DEVICE_API_ENABLED", False)
+    call = client.post(
+        "/v1/calls", json={"phoneNumber": "777405578"},
+        headers=headers("test-caller-token", **{"Idempotency-Key": str(uuid.uuid4())}),
+    )
+    jobs = client.get("/v1/device/jobs/next?wait=0",
+                      headers=headers("test-device-token"))
+    assert call.status_code == 404
+    assert call.json()["detail"] == "legacy_call_api_disabled"
+    assert jobs.status_code == 404
+    assert jobs.json()["detail"] == "legacy_device_api_disabled"
 
 
 def test_authentication_and_validation(tmp_path, monkeypatch):
