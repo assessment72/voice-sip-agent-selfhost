@@ -150,7 +150,7 @@ class MongoCallRepository:
                  "$unset": {"active_slot": ""}},
             )
 
-        return self.calls.find_one_and_update(
+        claimed = self.calls.find_one_and_update(
             {
                 "state": "queued",
                 "expires_at": {"$gte": now},
@@ -163,9 +163,8 @@ class MongoCallRepository:
             {"$set": {"claimed_by": device_id, "claimed_at": now}},
             sort=[("created_at", ASCENDING)],
             return_document=ReturnDocument.AFTER,
-        ) and self._job_result(self.calls.find_one({
-            "state": "queued", "claimed_by": device_id, "claimed_at": now,
-        }))
+        )
+        return self._job_result(claimed)
 
     @staticmethod
     def _job_result(doc: dict[str, Any] | None) -> dict[str, Any]:
