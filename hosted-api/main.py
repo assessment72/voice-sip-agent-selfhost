@@ -974,3 +974,18 @@ def organization_latency_metrics(principal=Depends(organization_principal)):
         return {"samples": len(ordered), "averageMs": round(sum(ordered) / len(ordered), 2),
                 "p95Ms": ordered[min(rank, len(ordered) - 1)]}
     return {name: summarize(values) for name, values in samples.items()}
+
+
+@app.get("/v1/admin/activity")
+def organization_activity(limit: int = Query(default=50, ge=1, le=200),
+                          principal=Depends(organization_principal)):
+    with db() as c:
+        rows = c.execute(
+            """SELECT e.event_type,e.severity,e.event_code,e.occurred_at,e.received_at,
+                      d.id AS device_id,d.display_name
+               FROM device_events e JOIN devices d ON d.id=e.device_id
+               WHERE e.organization_id=? AND d.organization_id=?
+               ORDER BY e.received_at DESC LIMIT ?""",
+            (principal["organization_id"], principal["organization_id"], limit),
+        ).fetchall()
+    return {"events": [dict(row) for row in rows], "count": len(rows)}
