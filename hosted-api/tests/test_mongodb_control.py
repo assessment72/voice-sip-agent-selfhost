@@ -107,7 +107,9 @@ def test_branches_and_append_only_audit_queries_are_organization_scoped(db):
         target_type="branch", target_id=branch_id, metadata={"code": "N"},
     )
     assert len(mongodb_control.list_audit(org_a, 10)) == 3
-    assert mongodb_control.list_audit(org_b, 10) == []
+    org_b_audit = mongodb_control.list_audit(org_b, 10)
+    assert len(org_b_audit) == 1
+    assert org_b_audit[0]["action"] == "organization.created"
 
 
 
