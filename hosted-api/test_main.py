@@ -237,6 +237,32 @@ def test_parallel_pollers_cannot_claim_the_same_job(tmp_path, monkeypatch):
     assert claimed[0]["id"] == created["id"]
 
 
+def test_rate_limit_enforces_sensitive_bootstrap_requests(tmp_path, monkeypatch):
+    client = setup_client(tmp_path, monkeypatch)
+    monkeypatch.setattr(main, "BOOTSTRAP_TOKEN", "bootstrap-test-token")
+    responses = []
+    for index in range(6):
+        responses.append(client.post(
+            "/v1/organizations/bootstrap",
+            json={"name": f"Org {index}", "slug": f"org-{index}", "ownerUserId": f"owner-{index}"},
+            headers=headers("bootstrap-test-token"),
+        ))
+    assert [response.status_code for response in responses[:5]] == [201] * 5
+    assert responses[5].status_code == 429
+    with main.db() as connection:
+        stored = [row["key_hash"] for row in connection.execute("SELECT key_hash FROM request_limits")]
+    assert "bootstrap-test-token" not in stored
+
+
+def test_distributed_rate_limit_requirement_fails_closed_without_mongodb(tmp_path, monkeypatch):
+    client = setup_client(tmp_path, monkeypatch)
+    monkeypatch.delenv("MONGODB_URI", raising=False)
+    monkeypatch.setattr(main, "REQUIRE_DISTRIBUTED_RATE_LIMIT", True)
+    response = client.post("/v1/device/enroll", json={})
+    assert response.status_code == 503
+    assert response.json()["detail"] == "rate_limiter_unavailable"
+
+
 def test_database_health_probes_the_active_sqlite_backend(tmp_path, monkeypatch):
     client = setup_client(tmp_path, monkeypatch)
     response = client.get("/health/database")
