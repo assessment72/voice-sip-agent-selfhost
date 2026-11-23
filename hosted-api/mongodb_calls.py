@@ -80,6 +80,10 @@ class MongoCallRepository:
                  ("claimed_by", ASCENDING)],
                 name="ix_org_call_device_owner",
             ),
+            IndexModel(
+                [("organization_id", ASCENDING), ("created_at", __import__("pymongo").DESCENDING)],
+                name="ix_call_org_created",
+            ),
         ])
 
     @staticmethod
