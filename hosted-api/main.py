@@ -1145,6 +1145,17 @@ def update_device_command(command_id: str, body: DeviceCommandResult,
 @app.get("/v1/admin/calls")
 def list_organization_calls(limit: int = Query(default=50, ge=1, le=200),
                              principal=Depends(organization_principal)):
+    if os.getenv("MONGODB_URI", "").strip():
+        from mongodb_store import collection
+        rows = list(collection("calls").find(
+            {"organization_id": principal["organization_id"]},
+            {"_id": 1, "state": 1, "created_at": 1, "updated_at": 1,
+             "reason_code": 1, "claimed_by": 1},
+        ).sort("created_at", -1).limit(limit))
+        calls = [{"id": row["_id"], "state": row["state"], "created_at": row["created_at"],
+                  "updated_at": row["updated_at"], "reason_code": row.get("reason_code"),
+                  "device_id": row.get("claimed_by")} for row in rows]
+        return {"calls": calls, "count": len(calls)}
     with db() as c:
         rows = c.execute(
             """SELECT calls.id,calls.state,calls.created_at,calls.updated_at,calls.reason_code,
@@ -1168,6 +1179,20 @@ def create_organization_call(organization_id: str, body: CreateCall,
     number = normalize_number(body.phoneNumber)
     tenant_principal = f"org:{organization_id}"
     now = int(time.time())
+    if os.getenv("MONGODB_URI", "").strip():
+        from mongodb_calls import DeviceBusy, IdempotencyConflict, MongoCallRepository
+        repository = MongoCallRepository(__import__("mongodb_store").collection("calls"))
+        try:
+            result = repository.create_call(
+                organization_id=organization_id, principal=tenant_principal,
+                idempotency_key=idempotency_key, phone_number=number,
+                now=now, queue_ttl=QUEUE_TTL,
+            )
+        except IdempotencyConflict:
+            raise HTTPException(status_code=409, detail="idempotency_key_reused")
+        except DeviceBusy:
+            raise HTTPException(status_code=409, detail="device_busy")
+        return result
     with db() as c:
         c.execute("BEGIN IMMEDIATE")
         old = c.execute(
@@ -1208,6 +1233,20 @@ def create_organization_call(organization_id: str, body: CreateCall,
 @app.get("/v1/device/call-jobs/next")
 def next_organization_call_job(wait: int = Query(default=20, ge=0, le=25),
                                device_ctx=Depends(authenticated_device)):
+    if os.getenv("MONGODB_URI", "").strip():
+        from mongodb_calls import MongoCallRepository
+        repository = MongoCallRepository(__import__("mongodb_store").collection("calls"))
+        deadline = time.monotonic() + wait
+        while True:
+            result = repository.claim_next(
+                organization_id=device_ctx["organization_id"], device_id=device_ctx["device_id"],
+                now=int(time.time()), queue_ttl=QUEUE_TTL,
+                cellular_ring_timeout=CELL_RING_TIMEOUT, sip_ring_timeout=SIP_RING_TIMEOUT,
+                max_call_seconds=MAX_CALL,
+            )
+            if result["job"] is not None or time.monotonic() >= deadline:
+                return result
+            time.sleep(min(0.25, max(0.0, deadline - time.monotonic())))
     deadline = time.monotonic() + wait
     while True:
         now = int(time.time())
@@ -1260,6 +1299,20 @@ def next_organization_call_job(wait: int = Query(default=20, ge=0, le=25),
 @app.post("/v1/device/tenant-calls/{call_id}/state")
 def update_organization_call_state(call_id: str, body: CallUpdate,
                                    device_ctx=Depends(authenticated_device)):
+    if os.getenv("MONGODB_URI", "").strip():
+        from mongodb_calls import CallNotFound, InvalidTransition, JobNotOwned, MongoCallRepository
+        repository = MongoCallRepository(__import__("mongodb_store").collection("calls"))
+        try:
+            return repository.transition(
+                organization_id=device_ctx["organization_id"], call_id=call_id,
+                device_id=device_ctx["device_id"], state=body.state, reason_code=body.reasonCode,
+            )
+        except CallNotFound:
+            raise HTTPException(status_code=404, detail="call_not_found")
+        except JobNotOwned:
+            raise HTTPException(status_code=403, detail="job_not_owned")
+        except InvalidTransition:
+            raise HTTPException(status_code=409, detail="invalid_state_transition")
     with db() as c:
         # Keep ownership validation and state transition in one write transaction.
         # Otherwise a concurrent lease reclaim could race between the SELECT and UPDATE.
@@ -1282,6 +1335,18 @@ def update_organization_call_state(call_id: str, body: CallUpdate,
 
 @app.get("/v1/admin/calls/{call_id}")
 def get_organization_call(call_id: str, principal=Depends(organization_principal)):
+    if os.getenv("MONGODB_URI", "").strip():
+        from mongodb_store import collection
+        row = collection("calls").find_one(
+            {"_id": call_id, "organization_id": principal["organization_id"]},
+            {"_id": 1, "state": 1, "created_at": 1, "updated_at": 1,
+             "reason_code": 1, "claimed_by": 1},
+        )
+        if not row:
+            raise HTTPException(status_code=404, detail="call_not_found")
+        return {"id": row["_id"], "state": row["state"], "created_at": row["created_at"],
+                "updated_at": row["updated_at"], "reason_code": row.get("reason_code"),
+                "device_id": row.get("claimed_by")}
     with db() as c:
         row = c.execute(
             """SELECT calls.id,calls.state,calls.created_at,calls.updated_at,calls.reason_code,
