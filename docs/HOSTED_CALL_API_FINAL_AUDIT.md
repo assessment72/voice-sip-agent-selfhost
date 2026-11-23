@@ -146,3 +146,44 @@ For latest code/test commit `d5bd1a642058f90f2b10b7df46e3de592b9948ae`:
 - Hosted Call API tests [run 45100662245](https://github.com/assessment72/voice-sip-agent-selfhost/actions/runs/45100662245): **success**.
 - General CI [run 45100662265](https://github.com/assessment72/voice-sip-agent-selfhost/actions/runs/45100662265): **success**.
 - Android build and tests [run 45100662254](https://github.com/assessment72/voice-sip-agent-selfhost/actions/runs/45100662254): **still in progress** at the latest check, specifically `testDebugUnitTest`. An earlier attempt for the same workflow was cancelled and a job-only rerun was started. No Android APK artifact is claimed until assembly and upload steps complete.
+
+
+## MongoDB Atlas / Vercel Preview integration review (2026-11-23)
+
+### Infrastructure setup evidence
+
+- Created a dedicated Atlas database user `voice_sip_agent_api`, scoped to cluster `AdasmsCluster` and `readWrite` on database `voice_sip_agent` only.
+- Created database `voice_sip_agent` and initial collection `call_jobs`.
+- Added Vercel Preview-only variables to project `voice-sip-agent-hosted-api`, restricted to Git branch `feature/hosted-call-api`:
+  - `MONGODB_URI` (sensitive)
+  - `MONGODB_DATABASE=voice_sip_agent`
+- Confirmed both variables are present in the branch-scoped Preview environment. No Production variables were added.
+- Existing Atlas network access list contains `0.0.0.0/0`. This entry was pre-existing and was not modified. It is broad and must be narrowed to the actual application egress ranges or a supported private connectivity design before production use.
+
+### Application compatibility finding — BLOCKED
+
+The application has **not** been migrated to MongoDB. The current `hosted-api/main.py` (994 lines at review) imports `sqlite3`, opens `DATABASE_PATH`, runs SQLite-specific startup DDL and PRAGMA statements, reads a SQLite migration containing 13 relational tables, and relies throughout on SQL transactions and SQLite row semantics. The review identified approximately 169 SQLite/SQL-dependent code locations in this module.
+
+The current `hosted-api/requirements.txt` contains FastAPI, Uvicorn, pytest, and httpx only; it does not include a MongoDB driver. The new Vercel variables are therefore configuration only and are not read by the current application. The existing Vercel Preview deployment is **not** evidence of MongoDB persistence.
+
+A safe migration must preserve, at minimum:
+- atomic idempotent call creation and per-principal rate limits;
+- single-device job claiming and lease recovery under concurrent workers;
+- call-state transition validation and at-least-once replay semantics;
+- organization/member/branch/device credential isolation;
+- enrollment-token use limits, device command delivery/acknowledgement, heartbeat/event history;
+- uniqueness constraints, expiry cleanup, and audit/event ordering.
+
+A direct SQL-to-Mongo rewrite or adding a driver without a complete repository abstraction and concurrency tests would risk duplicate calls, double claims, cross-tenant access, or lost device updates. No such partial rewrite was committed.
+
+### Required implementation and release gates
+
+1. Design a document schema and indexes for calls, rate-limit windows, organizations, memberships, branches, devices, credentials, enrollment tokens, commands, heartbeats, events, and tenant assignments.
+2. Implement one cached PyMongo client per warm Vercel process and explicit transaction handling compatible with the selected Atlas topology. Verify transaction support before depending on multi-document transactions.
+3. Replace SQLite-specific startup migrations with idempotent MongoDB index/schema initialization; never execute SQLite migrations against MongoDB.
+4. Add repository-level tests for concurrent idempotency, competing device claims, transaction rollback, replay-safe transitions, tenant isolation, expiry/lease recovery, and restart behavior.
+5. Run the full Hosted API CI suite and a Preview deployment using the MongoDB-backed code, then verify persistence across separate function invocations.
+6. Restrict the existing broad Atlas network access rule before production; validate Vercel serverless egress/network reachability.
+7. Keep PR #10 Draft and unmerged; do not deploy Production, send real calls, or alter SIP credentials as part of this work.
+
+**Status:** Atlas database/user and Preview environment variables are provisioned. Application-level MongoDB migration, CI validation on migrated code, and runtime persistence verification remain incomplete. This service is not production-ready.
