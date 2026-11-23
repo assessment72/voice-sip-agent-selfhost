@@ -148,7 +148,7 @@ def _consume_local_rate_limit(key_hash: str, window_start: int, limit: int) -> t
 
 
 def _rate_limit_check(key_hash: str, window_start: int, limit: int) -> tuple[bool, int]:
-    if os.getenv("MONGODB_URI", "").strip():
+    if mongodb_enabled():
         from mongodb_store import consume_rate_limit
         return consume_rate_limit(
             key_hash=key_hash, window_start=window_start, limit=limit,
@@ -209,7 +209,7 @@ def token_ok(provided: str | None, expected: str) -> bool:
 
 
 def caller(authorization: str | None = Header(default=None)):
-    if os.getenv("MONGODB_URI", "").strip():
+    if mongodb_enabled():
         raise HTTPException(status_code=404, detail="legacy_shared_token_api_disabled_on_mongodb")
     if not LEGACY_CALL_API_ENABLED:
         raise HTTPException(status_code=404, detail="legacy_call_api_disabled")
@@ -220,7 +220,7 @@ def caller(authorization: str | None = Header(default=None)):
 
 
 def device(authorization: str | None = Header(default=None)):
-    if os.getenv("MONGODB_URI", "").strip():
+    if mongodb_enabled():
         raise HTTPException(status_code=404, detail="legacy_shared_token_api_disabled_on_mongodb")
     if not LEGACY_DEVICE_API_ENABLED:
         raise HTTPException(status_code=404, detail="legacy_device_api_disabled")
@@ -428,7 +428,7 @@ def health():
 @app.get("/health/database")
 def database_health():
     """Probe the database actually used by FastAPI routes."""
-    if os.getenv("MONGODB_URI", "").strip():
+    if mongodb_enabled():
         from mongodb_store import health_snapshot
         snapshot = health_snapshot()
         if snapshot["status"] != "ok":
@@ -521,7 +521,7 @@ def organization_principal(authorization: str | None = Header(default=None),
     token = authorization[7:] if authorization and authorization.startswith("Bearer ") else None
     if not token:
         raise HTTPException(status_code=401, detail="unauthorized")
-    if os.getenv("MONGODB_URI", "").strip():
+    if mongodb_enabled():
         from mongodb_control import authenticate_organization
         row = authenticate_organization(_hash_secret(token), x_organization_id)
         if not row:
@@ -553,7 +553,7 @@ def authenticated_device(authorization: str | None = Header(default=None)):
     token = authorization[7:] if authorization and authorization.startswith("Bearer ") else None
     if not token:
         raise HTTPException(status_code=401, detail="unauthorized")
-    if os.getenv("MONGODB_URI", "").strip():
+    if mongodb_enabled():
         from mongodb_control import authenticate_device
         row = authenticate_device(_hash_secret(token))
         if not row:
@@ -584,7 +584,7 @@ def bootstrap_organization(body: OrganizationBootstrap,
     org_id = str(uuid.uuid4())
     raw_token = secrets.token_urlsafe(40)
     credential_id = str(uuid.uuid4())
-    if os.getenv("MONGODB_URI", "").strip():
+    if mongodb_enabled():
         from mongodb_control import ControlConflict, bootstrap_organization as mongo_bootstrap
         try:
             org_id = mongo_bootstrap(slug=body.slug, name=body.name, owner_user_id=body.ownerUserId,
@@ -628,7 +628,7 @@ def create_enrollment_token(organization_id: str, body: EnrollmentTokenRequest,
     now = int(time.time())
     raw_token = secrets.token_urlsafe(40)
     token_id = str(uuid.uuid4())
-    if os.getenv("MONGODB_URI", "").strip():
+    if mongodb_enabled():
         from mongodb_control import create_enrollment_token as mongo_create_enrollment
         token_id = mongo_create_enrollment(
             organization_id=organization_id, token_hash=_hash_secret(raw_token), label=body.label,
@@ -657,7 +657,7 @@ def enroll_device(body: DeviceEnrollment):
     raw_device_token = secrets.token_urlsafe(48)
     device_id = str(uuid.uuid4())
     credential_id = str(uuid.uuid4())
-    if os.getenv("MONGODB_URI", "").strip():
+    if mongodb_enabled():
         from mongodb_control import ControlConflict, ControlNotFound, enroll_device as mongo_enroll
         try:
             enrolled_id, organization_id = mongo_enroll(
@@ -728,7 +728,7 @@ def enroll_device(body: DeviceEnrollment):
 def device_heartbeat(body: DeviceHeartbeat, device_ctx=Depends(authenticated_device)):
     now = int(time.time())
     device_id = device_ctx["device_id"]
-    if os.getenv("MONGODB_URI", "").strip():
+    if mongodb_enabled():
         from mongodb_control import ControlNotFound, heartbeat as mongo_heartbeat
         try:
             server_time = mongo_heartbeat(device_id=device_id,
@@ -762,7 +762,7 @@ def device_heartbeat(body: DeviceHeartbeat, device_ctx=Depends(authenticated_dev
 @app.get("/v1/admin/devices")
 def list_organization_devices(principal=Depends(organization_principal)):
     now = int(time.time())
-    if os.getenv("MONGODB_URI", "").strip():
+    if mongodb_enabled():
         from mongodb_control import list_devices as mongo_list_devices
         rows = mongo_list_devices(principal["organization_id"])
         result = []
@@ -805,7 +805,7 @@ def list_organization_devices(principal=Depends(organization_principal)):
 @app.get("/v1/admin/devices/{device_id}/activity")
 def device_activity(device_id: str, limit: int = Query(default=50, ge=1, le=200),
                     principal=Depends(organization_principal)):
-    if os.getenv("MONGODB_URI", "").strip():
+    if mongodb_enabled():
         from mongodb_control import ControlNotFound, list_device_events
         try:
             rows = list_device_events(organization_id=principal["organization_id"],
@@ -844,7 +844,7 @@ def report_device_event(body: dict, device_ctx=Depends(authenticated_device)):
     if severity not in {"debug", "info", "warning", "error", "critical"}:
         raise HTTPException(status_code=422, detail="invalid_event_severity")
     now = int(time.time())
-    if os.getenv("MONGODB_URI", "").strip():
+    if mongodb_enabled():
         from mongodb_control import append_device_event
         append_device_event(organization_id=device_ctx["organization_id"],
                             device_id=device_ctx["device_id"], event_type=event_type,
@@ -888,7 +888,7 @@ def add_organization_member(organization_id: str, body: OrganizationMemberReques
         raise HTTPException(status_code=403, detail="owner_role_required")
     now = int(time.time())
     raw_token = secrets.token_urlsafe(40)
-    if os.getenv("MONGODB_URI", "").strip():
+    if mongodb_enabled():
         from mongodb_control import ControlConflict, add_member as mongo_add_member
         try:
             mongo_add_member(organization_id=organization_id, user_id=body.userId, role=body.role,
@@ -940,7 +940,7 @@ def transfer_organization_ownership(organization_id: str, user_id: str,
     if user_id == principal["user_id"]:
         raise HTTPException(status_code=409, detail="already_owner")
     now = int(time.time())
-    if os.getenv("MONGODB_URI", "").strip():
+    if mongodb_enabled():
         from mongodb_control import ControlConflict, ControlNotFound, transfer_ownership as mongo_transfer
         try:
             mongo_transfer(organization_id=organization_id, previous_owner=principal["user_id"],
@@ -994,7 +994,7 @@ def revoke_organization_member(organization_id: str, user_id: str,
     if principal["organization_id"] != organization_id:
         raise HTTPException(status_code=404, detail="organization_not_found")
     now = int(time.time())
-    if os.getenv("MONGODB_URI", "").strip():
+    if mongodb_enabled():
         from mongodb_control import ControlConflict, ControlNotFound, revoke_member as mongo_revoke_member
         try:
             mongo_revoke_member(organization_id=organization_id, user_id=user_id,
@@ -1045,7 +1045,7 @@ def rotate_member_credential(organization_id: str, user_id: str,
         raise HTTPException(status_code=403, detail="insufficient_role")
     raw_token = secrets.token_urlsafe(40)
     now = int(time.time())
-    if os.getenv("MONGODB_URI", "").strip():
+    if mongodb_enabled():
         from mongodb_control import ControlNotFound, rotate_member_credential as mongo_rotate
         try:
             mongo_rotate(organization_id=organization_id, user_id=user_id,
@@ -1091,7 +1091,7 @@ def rotate_member_credential(organization_id: str, user_id: str,
 @app.post("/v1/admin/devices/{device_id}/revoke")
 def revoke_device(device_id: str, principal=Depends(require_org_admin)):
     now = int(time.time())
-    if os.getenv("MONGODB_URI", "").strip():
+    if mongodb_enabled():
         from mongodb_control import ControlNotFound, revoke_device as mongo_revoke_device
         try:
             mongo_revoke_device(organization_id=principal["organization_id"], device_id=device_id,
@@ -1127,7 +1127,7 @@ def revoke_device(device_id: str, principal=Depends(require_org_admin)):
 def create_device_command(body: DeviceCommandRequest, principal=Depends(require_org_admin)):
     now = int(time.time())
     command_id = str(uuid.uuid4())
-    if os.getenv("MONGODB_URI", "").strip():
+    if mongodb_enabled():
         from mongodb_control import ControlNotFound, create_command as mongo_create_command
         try:
             command_id, expires_at = mongo_create_command(
@@ -1165,7 +1165,7 @@ def create_device_command(body: DeviceCommandRequest, principal=Depends(require_
 @app.get("/v1/device/commands/next")
 def next_device_command(wait: int = Query(default=20, ge=0, le=25),
                         device_ctx=Depends(authenticated_device)):
-    if os.getenv("MONGODB_URI", "").strip():
+    if mongodb_enabled():
         from mongodb_control import claim_command as mongo_claim_command
         deadline = time.monotonic() + wait
         while True:
@@ -1207,7 +1207,7 @@ def next_device_command(wait: int = Query(default=20, ge=0, le=25),
 def update_device_command(command_id: str, body: DeviceCommandResult,
                           device_ctx=Depends(authenticated_device)):
     now = int(time.time())
-    if os.getenv("MONGODB_URI", "").strip():
+    if mongodb_enabled():
         from mongodb_control import ControlConflict, ControlNotFound, update_command_result as mongo_update_command
         try:
             mongo_update_command(command_id=command_id, device_id=device_ctx["device_id"],
@@ -1250,7 +1250,7 @@ def update_device_command(command_id: str, body: DeviceCommandResult,
 @app.get("/v1/admin/calls")
 def list_organization_calls(limit: int = Query(default=50, ge=1, le=200),
                              principal=Depends(organization_principal)):
-    if os.getenv("MONGODB_URI", "").strip():
+    if mongodb_enabled():
         from mongodb_store import collection
         rows = list(collection("calls").find(
             {"organization_id": principal["organization_id"]},
@@ -1284,7 +1284,7 @@ def create_organization_call(organization_id: str, body: CreateCall,
     number = normalize_number(body.phoneNumber)
     tenant_principal = f"org:{organization_id}"
     now = int(time.time())
-    if os.getenv("MONGODB_URI", "").strip():
+    if mongodb_enabled():
         from mongodb_calls import DeviceBusy, IdempotencyConflict, MongoCallRepository
         repository = MongoCallRepository(__import__("mongodb_store").collection("calls"))
         try:
@@ -1338,7 +1338,7 @@ def create_organization_call(organization_id: str, body: CreateCall,
 @app.get("/v1/device/call-jobs/next")
 def next_organization_call_job(wait: int = Query(default=20, ge=0, le=25),
                                device_ctx=Depends(authenticated_device)):
-    if os.getenv("MONGODB_URI", "").strip():
+    if mongodb_enabled():
         from mongodb_calls import MongoCallRepository
         repository = MongoCallRepository(__import__("mongodb_store").collection("calls"))
         deadline = time.monotonic() + wait
@@ -1404,7 +1404,7 @@ def next_organization_call_job(wait: int = Query(default=20, ge=0, le=25),
 @app.post("/v1/device/tenant-calls/{call_id}/state")
 def update_organization_call_state(call_id: str, body: CallUpdate,
                                    device_ctx=Depends(authenticated_device)):
-    if os.getenv("MONGODB_URI", "").strip():
+    if mongodb_enabled():
         from mongodb_calls import CallNotFound, InvalidTransition, JobNotOwned, MongoCallRepository
         repository = MongoCallRepository(__import__("mongodb_store").collection("calls"))
         try:
@@ -1440,7 +1440,7 @@ def update_organization_call_state(call_id: str, body: CallUpdate,
 
 @app.get("/v1/admin/calls/{call_id}")
 def get_organization_call(call_id: str, principal=Depends(organization_principal)):
-    if os.getenv("MONGODB_URI", "").strip():
+    if mongodb_enabled():
         from mongodb_store import collection
         row = collection("calls").find_one(
             {"_id": call_id, "organization_id": principal["organization_id"]},
@@ -1480,7 +1480,7 @@ def create_organization_branch(organization_id: str, body: CreateBranch,
         raise HTTPException(status_code=404, detail="organization_not_found")
     now = int(time.time())
     branch_id = str(uuid.uuid4())
-    if os.getenv("MONGODB_URI", "").strip():
+    if mongodb_enabled():
         from mongodb_control import ControlConflict, create_branch as mongo_create_branch
         try:
             branch_id = mongo_create_branch(organization_id=organization_id,
@@ -1502,7 +1502,7 @@ def create_organization_branch(organization_id: str, body: CreateBranch,
 
 @app.get("/v1/admin/branches")
 def list_organization_branches(principal=Depends(organization_principal)):
-    if os.getenv("MONGODB_URI", "").strip():
+    if mongodb_enabled():
         from mongodb_control import list_branches as mongo_list_branches
         rows = mongo_list_branches(principal["organization_id"])
         branches = [{key: value for key, value in row.items() if key != "_id"} | {"id": row["_id"]} for row in rows]
@@ -1518,7 +1518,7 @@ def list_organization_branches(principal=Depends(organization_principal)):
 
 @app.get("/v1/admin/metrics/latency")
 def organization_latency_metrics(principal=Depends(organization_principal)):
-    if os.getenv("MONGODB_URI", "").strip():
+    if mongodb_enabled():
         from mongodb_control import latency_metrics
         return latency_metrics(organization_id=principal["organization_id"])
     with db() as c:
@@ -1560,7 +1560,7 @@ def organization_latency_metrics(principal=Depends(organization_principal)):
 @app.get("/v1/admin/audit")
 def organization_audit_log(limit: int = Query(default=50, ge=1, le=200),
                             principal=Depends(require_org_admin)):
-    if os.getenv("MONGODB_URI", "").strip():
+    if mongodb_enabled():
         from mongodb_control import list_audit
         rows = list_audit(principal["organization_id"], limit)
         events = [{key: value for key, value in row.items() if key != "_id"} | {"id": row["_id"]} for row in rows]
@@ -1584,7 +1584,7 @@ def organization_audit_log(limit: int = Query(default=50, ge=1, le=200),
 @app.get("/v1/admin/activity")
 def organization_activity(limit: int = Query(default=50, ge=1, le=200),
                           principal=Depends(organization_principal)):
-    if os.getenv("MONGODB_URI", "").strip():
+    if mongodb_enabled():
         from mongodb_control import list_activity
         rows = list_activity(principal["organization_id"], limit)
         return {"events": rows, "count": len(rows)}
