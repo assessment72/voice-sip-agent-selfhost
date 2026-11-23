@@ -72,6 +72,9 @@ def init_db():
         credential_columns = {row["name"] for row in c.execute("PRAGMA table_info(organization_api_credentials)")}
         if credential_columns and "user_id" not in credential_columns:
             c.execute("ALTER TABLE organization_api_credentials ADD COLUMN user_id TEXT")
+        device_columns = {row["name"] for row in c.execute("PRAGMA table_info(devices)")}
+        if device_columns and "branch_id" not in device_columns:
+            c.execute("ALTER TABLE devices ADD COLUMN branch_id TEXT REFERENCES branches(id) ON DELETE SET NULL")
 
 
 @app.on_event("startup")
@@ -296,6 +299,11 @@ class OrganizationBootstrap(BaseModel):
     ownerUserId: str = Field(min_length=1, max_length=128)
 
 
+class CreateBranch(BaseModel):
+    name: str = Field(min_length=2, max_length=120)
+    code: str | None = Field(default=None, min_length=1, max_length=32, pattern=r"^[A-Za-z0-9_-]+$")
+
+
 class EnrollmentTokenRequest(BaseModel):
     label: str = Field(min_length=1, max_length=100)
     expiresInSeconds: int = Field(default=3600, ge=60, le=604800)
@@ -307,6 +315,7 @@ class DeviceEnrollment(BaseModel):
     externalDeviceId: str = Field(min_length=1, max_length=128)
     displayName: str = Field(min_length=1, max_length=120)
     branchName: str | None = Field(default=None, max_length=120)
+    branchId: str | None = Field(default=None, max_length=64)
     appId: str | None = Field(default=None, max_length=160)
     appVersion: str | None = Field(default=None, max_length=40)
     androidVersion: str | None = Field(default=None, max_length=40)
@@ -446,14 +455,24 @@ def enroll_device(body: DeviceEnrollment):
         if not enrollment:
             c.rollback()
             raise HTTPException(status_code=401, detail="enrollment_token_invalid")
+        branch_name = body.branchName
+        if body.branchId:
+            branch = c.execute(
+                "SELECT name FROM branches WHERE id=? AND organization_id=? AND status='active'",
+                (body.branchId, enrollment["organization_id"]),
+            ).fetchone()
+            if not branch:
+                c.rollback()
+                raise HTTPException(status_code=404, detail="branch_not_found")
+            branch_name = branch["name"]
         try:
             c.execute(
                 """INSERT INTO devices
-                   (id,organization_id,external_device_id,display_name,branch_name,status,presence,
+                   (id,organization_id,external_device_id,display_name,branch_name,branch_id,status,presence,
                     app_id,app_version,android_version,manufacturer,model,created_at,updated_at)
-                   VALUES(?,?,?,?,?,'active','offline',?,?,?,?,?,?,?)""",
+                   VALUES(?,?,?,?,?,?, 'active','offline',?,?,?,?,?,?,?)""",
                 (device_id, enrollment["organization_id"], body.externalDeviceId, body.displayName,
-                 body.branchName, body.appId, body.appVersion, body.androidVersion,
+                 branch_name, body.branchId, body.appId, body.appVersion, body.androidVersion,
                  body.manufacturer, body.model, now, now),
             )
         except sqlite3.IntegrityError:
@@ -890,3 +909,33 @@ def admin_dashboard():
     if not page.exists():
         raise HTTPException(status_code=404, detail="admin_dashboard_not_found")
     return HTMLResponse(page.read_text(encoding="utf-8"))
+
+
+@app.post("/v1/organizations/{organization_id}/branches", status_code=201)
+def create_organization_branch(organization_id: str, body: CreateBranch,
+                               principal=Depends(require_org_admin)):
+    if principal["organization_id"] != organization_id:
+        raise HTTPException(status_code=404, detail="organization_not_found")
+    now = int(time.time())
+    branch_id = str(uuid.uuid4())
+    try:
+        with db() as c:
+            c.execute(
+                """INSERT INTO branches(id,organization_id,name,code,created_at,updated_at)
+                   VALUES(?,?,?,?,?,?)""",
+                (branch_id, organization_id, body.name, body.code, now, now),
+            )
+    except sqlite3.IntegrityError:
+        raise HTTPException(status_code=409, detail="branch_code_already_exists")
+    return {"branchId": branch_id, "name": body.name, "code": body.code, "status": "active"}
+
+
+@app.get("/v1/admin/branches")
+def list_organization_branches(principal=Depends(organization_principal)):
+    with db() as c:
+        rows = c.execute(
+            """SELECT id,name,code,status,created_at
+               FROM branches WHERE organization_id=? ORDER BY name""",
+            (principal["organization_id"],),
+        ).fetchall()
+    return {"branches": [dict(row) for row in rows], "count": len(rows)}
