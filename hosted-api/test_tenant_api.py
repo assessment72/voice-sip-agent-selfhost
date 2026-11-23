@@ -261,3 +261,22 @@ def test_device_command_delivery_and_completion_are_device_scoped(tmp_path, monk
     )
     assert result.status_code == 200
     assert result.json()["status"] == "completed"
+
+
+def test_member_creation_issues_identity_bound_credential(tmp_path, monkeypatch):
+    client = setup_client(tmp_path, monkeypatch)
+    org = create_org(client, "Alpha", "alpha", "owner-a")
+    created = client.post(
+        f"/v1/organizations/{org['organizationId']}/members",
+        json={"userId": "operator-1", "role": "operator"},
+        headers=auth(org["apiToken"], org["organizationId"]),
+    )
+    assert created.status_code == 201
+    assert created.json()["apiToken"]
+    # The new member token is tied to the operator membership, not the owner.
+    denied = client.post(
+        f"/v1/organizations/{org['organizationId']}/enrollment-tokens",
+        json={"label": "operator cannot enroll"},
+        headers=auth(created.json()["apiToken"], org["organizationId"]),
+    )
+    assert denied.status_code == 403
