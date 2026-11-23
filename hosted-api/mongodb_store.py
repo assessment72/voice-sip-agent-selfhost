@@ -24,7 +24,9 @@ class MongoConfigurationError(RuntimeError):
 @lru_cache(maxsize=1)
 def get_client() -> MongoClient:
     """Reuse one small pool per warm Vercel function instance."""
-    uri = os.getenv("MONGODB_URI", "").strip()
+    uri = (os.getenv("MONGODB_URI", "").strip() or
+           (os.getenv("MONGODB_TEST_URI", "").strip()
+            if os.getenv("VERCEL_ENV", "").lower() != "production" else ""))
     if not uri:
         raise MongoConfigurationError("MONGODB_URI is required when MONGODB is enabled")
     # Serverless instances are short-lived and independently pooled. Keep the
@@ -43,7 +45,9 @@ def get_client() -> MongoClient:
 
 
 def get_database() -> Database:
-    name = os.getenv("MONGODB_DATABASE", "").strip()
+    name = (os.getenv("MONGODB_DATABASE", "").strip() or
+            (os.getenv("MONGODB_TEST_DATABASE", "").strip()
+             if os.getenv("VERCEL_ENV", "").lower() != "production" else ""))
     if not name:
         raise MongoConfigurationError("MONGODB_DATABASE is required when MONGODB is enabled")
     return get_client()[name]
