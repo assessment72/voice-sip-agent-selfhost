@@ -82,3 +82,16 @@ Validation status for these follow-up commits:
 - GitHub Actions execution for commit `fde3fcc` has not yet been independently confirmed through the available workflow-run lookup (that lookup exposes pull-request-triggered runs only).
 - The new code is not yet certified by a successful CI run on this commit.
 - Process-death/restart behavior and queue ordering still require device/instrumented tests.
+
+
+### Replay-safety correction for the durable outbox
+
+Code review found that the API transition function previously returned HTTP 409 when a non-terminal state was replayed. That would prevent an at-least-once outbox from clearing an item if the server had accepted the first request but the response was lost.
+
+Fixed on the working branch:
+- `d945e273fa7f5cf718cf05353aa456fe5555ccba`: return the current call row when the requested state already equals the persisted state.
+- `4b1e62f52d8c82b382080abdece4f19855d3105c`: add API regression coverage that replays each state in the lifecycle and expects HTTP 200.
+
+This makes same-state replay safe for both legacy and organization-scoped device state routes because both use the shared transition function. It does not make arbitrary out-of-order transitions valid.
+
+The latest commit's CI status remains unverified; the available workflow-run lookup returned no pull-request-triggered runs for this commit. Do not interpret that as a pass.
