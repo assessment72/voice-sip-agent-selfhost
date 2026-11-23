@@ -249,3 +249,12 @@ The client pool is intentionally conservative for Vercel serverless instances (m
   - General CI [45104528416](https://github.com/assessment72/voice-sip-agent-selfhost/actions/runs/45104528416): in progress at audit time.
   - Android build/tests [45104528390](https://github.com/assessment72/voice-sip-agent-selfhost/actions/runs/45104528390): pending at audit time.
 - No FastAPI route was switched to MongoDB. No Preview or Production deployment, merge, real call, SIP credential change, or production database mutation was performed.
+
+
+### Android JVM test failure diagnosis and correction
+
+- Downloaded and inspected the test-report artifact for Android run [45103628992](https://github.com/assessment72/voice-sip-agent-selfhost/actions/runs/45103628992).
+- The failing cases were in `HostedStateUpdateQueueTest`: Android's mock `org.json.JSONObject.put()` throws `RuntimeException: Method put ... not mocked` when invoked by local JVM tests. This was a test-runtime dependency issue, not evidence of a queue ordering or persistence assertion failure.
+- Corrected `app/build.gradle.kts` to add `testImplementation("org.json:json:20240303")`, providing a functional JSON implementation to JVM tests without changing Android runtime behavior.
+- Fix commit: `542847430730b3857e231da73883aed9c3062ee5`.
+- A new CI result for the fix commit has not yet been observed. Keep Android validation pending until the workflow completes successfully and the APK assembly step runs.
