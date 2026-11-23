@@ -34,7 +34,7 @@ def test_ensure_indexes_creates_expected_collections_and_is_repeatable():
     mongodb_store.ensure_indexes(db)
 
     assert len(db.collections) >= 13
-    assert all(count == 2 for count in first_counts.values())
+    assert all(count == 1 for count in first_counts.values())
     assert all(len(col.index_batches) == 2 for col in db.collections.values())
 
 
