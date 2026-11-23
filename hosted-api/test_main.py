@@ -1,3 +1,4 @@
+import pytest
 import uuid
 
 from fastapi.testclient import TestClient
@@ -261,6 +262,14 @@ def test_distributed_rate_limit_requirement_fails_closed_without_mongodb(tmp_pat
     response = client.post("/v1/device/enroll", json={})
     assert response.status_code == 503
     assert response.json()["detail"] == "rate_limiter_unavailable"
+
+
+def test_vercel_startup_refuses_ephemeral_sqlite_by_default(tmp_path, monkeypatch):
+    monkeypatch.setattr(main, "DB", str(tmp_path / "vercel.sqlite3"))
+    monkeypatch.setenv("VERCEL", "1")
+    monkeypatch.delenv("ALLOW_UNSAFE_SQLITE_ON_VERCEL", raising=False)
+    with pytest.raises(RuntimeError, match="production_blocked_sqlite_not_durable"):
+        main.startup()
 
 
 def test_database_health_probes_the_active_sqlite_backend(tmp_path, monkeypatch):
