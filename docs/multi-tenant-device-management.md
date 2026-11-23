@@ -59,7 +59,7 @@ Emergency-number rejection, destination allow-lists, per-organization and per-de
 ## Relational model
 
 The additive SQLite foundation migration is in `hosted-api/migrations/001_tenant_device_foundation.sql`. It introduces:
-- organizations and organization memberships;
+- organizations, first-class branches and organization memberships;
 - organization API credentials and limited-use device enrollment tokens;
 - devices and unique per-device credentials;
 - latest presence on devices plus heartbeat history;
@@ -81,6 +81,7 @@ The migration is additive and intentionally does not delete or rewrite existing 
 
 - `POST /v1/organizations` — bootstrap-only organization provisioning.
 - `POST /v1/organizations/{id}/members` creates a member with a role-bound API credential shown once.
+- `POST /v1/organizations/{id}/branches` and `GET /v1/admin/branches` manage organization-owned branches.
 - `POST /v1/organizations/{id}/enrollment-tokens`.
 - `POST /v1/device/enroll` — exchange a one-time enrollment token for a unique device credential.
 - `POST /v1/device/heartbeat` and `POST /v1/device/events`.
@@ -118,6 +119,7 @@ The current branch now includes:
 - bootstrap-only organization creation using `ORG_BOOTSTRAP_TOKEN`;
 - one-time organization API credentials bound to a specific membership identity;
 - organization-scoped member creation and role enforcement;
+- first-class organization branches with branch-to-device assignment;
 - limited-use enrollment tokens and one-time per-device credentials;
 - heartbeat ingestion, server-time-based online/unstable/offline calculation, device list and activity timeline;
 - role-bound member API credentials, device revocation and a browser-based Arabic admin dashboard served at `/admin`;
