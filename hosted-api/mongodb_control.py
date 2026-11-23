@@ -257,3 +257,218 @@ def list_activity(organization_id: str, limit: int) -> list[dict[str, Any]]:
         event["device_id"] = device["_id"] if device else None
         event["display_name"] = device.get("display_name") if device else None
     return events
+
+
+
+def add_member(*, organization_id: str, user_id: str, role: str, token_hash: str,
+              token_prefix: str, actor_user_id: str) -> None:
+    now = _now()
+    def write(session):
+        collection("memberships").insert_one({
+            "_id": _id(), "organization_id": organization_id, "user_id": user_id,
+            "role": role, "status": "active", "created_at": now, "updated_at": now,
+        }, session=session)
+        collection("api_credentials").insert_one({
+            "_id": _id(), "organization_id": organization_id, "label": f"{role} member credential",
+            "user_id": user_id, "token_hash": token_hash, "token_prefix": token_prefix,
+            "scopes": [], "last_used_at": None, "expires_at": None, "revoked_at": None,
+            "created_at": now,
+        }, session=session)
+        collection("admin_audit_events").insert_one({
+            "_id": _id(), "organization_id": organization_id, "actor_user_id": actor_user_id,
+            "action": "member.created", "target_type": "membership", "target_id": user_id,
+            "metadata": {"role": role}, "created_at": now,
+        }, session=session)
+    try:
+        with_transaction(write)
+    except DuplicateKeyError as exc:
+        raise ControlConflict("membership_already_exists") from exc
+
+
+def transfer_ownership(*, organization_id: str, previous_owner: str,
+                       new_owner: str, actor_user_id: str) -> None:
+    now = _now()
+    def write(session):
+        members = collection("memberships")
+        target = members.find_one({"organization_id": organization_id, "user_id": new_owner,
+                                   "status": "active"}, session=session)
+        if not target:
+            raise ControlNotFound("active_member_not_found")
+        if target["role"] == "owner":
+            raise ControlConflict("target_already_owner")
+        old = members.update_one(
+            {"organization_id": organization_id, "user_id": previous_owner,
+             "role": "owner", "status": "active"},
+            {"$set": {"role": "admin", "updated_at": now}}, session=session,
+        )
+        if old.modified_count != 1:
+            raise ControlConflict("owner_membership_changed")
+        members.update_one(
+            {"organization_id": organization_id, "user_id": new_owner, "status": "active"},
+            {"$set": {"role": "owner", "updated_at": now}}, session=session,
+        )
+        collection("admin_audit_events").insert_one({
+            "_id": _id(), "organization_id": organization_id, "actor_user_id": actor_user_id,
+            "action": "organization.ownership_transferred", "target_type": "membership",
+            "target_id": new_owner, "metadata": {"previous_owner_user_id": previous_owner},
+            "created_at": now,
+        }, session=session)
+    with_transaction(write)
+
+
+def revoke_member(*, organization_id: str, user_id: str, actor_user_id: str,
+                  actor_role: str) -> None:
+    now = _now()
+    def write(session):
+        members = collection("memberships")
+        member = members.find_one({"organization_id": organization_id, "user_id": user_id},
+                                  session=session)
+        if not member:
+            raise ControlNotFound("member_not_found")
+        if member["role"] == "owner":
+            raise ControlConflict("owner_transfer_required")
+        if actor_role != "owner" and member["role"] == "admin":
+            raise PermissionError("owner_role_required")
+        members.update_one({"organization_id": organization_id, "user_id": user_id},
+                           {"$set": {"status": "suspended", "updated_at": now}}, session=session)
+        collection("api_credentials").update_many(
+            {"organization_id": organization_id, "user_id": user_id, "revoked_at": None},
+            {"$set": {"revoked_at": now}}, session=session,
+        )
+        collection("admin_audit_events").insert_one({
+            "_id": _id(), "organization_id": organization_id, "actor_user_id": actor_user_id,
+            "action": "member.revoked", "target_type": "membership", "target_id": user_id,
+            "metadata": {"role": member["role"]}, "created_at": now,
+        }, session=session)
+    with_transaction(write)
+
+
+def rotate_member_credential(*, organization_id: str, user_id: str, actor_user_id: str,
+                             actor_role: str, token_hash: str, token_prefix: str) -> None:
+    now = _now()
+    def write(session):
+        member = collection("memberships").find_one(
+            {"organization_id": organization_id, "user_id": user_id, "status": "active"},
+            session=session,
+        )
+        if not member:
+            raise ControlNotFound("active_member_not_found")
+        if actor_role != "owner" and member["role"] in {"owner", "admin"}:
+            raise PermissionError("owner_role_required")
+        collection("api_credentials").update_many(
+            {"organization_id": organization_id, "user_id": user_id, "revoked_at": None},
+            {"$set": {"revoked_at": now}}, session=session,
+        )
+        collection("api_credentials").insert_one({
+            "_id": _id(), "organization_id": organization_id, "label": "Rotated member credential",
+            "user_id": user_id, "token_hash": token_hash, "token_prefix": token_prefix,
+            "scopes": [], "last_used_at": None, "expires_at": None, "revoked_at": None,
+            "created_at": now,
+        }, session=session)
+        collection("admin_audit_events").insert_one({
+            "_id": _id(), "organization_id": organization_id, "actor_user_id": actor_user_id,
+            "action": "member.credential_rotated", "target_type": "credential_set",
+            "target_id": user_id, "metadata": {}, "created_at": now,
+        }, session=session)
+    with_transaction(write)
+
+
+def revoke_device(*, organization_id: str, device_id: str, actor_user_id: str) -> None:
+    now = _now()
+    def write(session):
+        device = collection("devices").find_one(
+            {"_id": device_id, "organization_id": organization_id}, session=session
+        )
+        if not device:
+            raise ControlNotFound("device_not_found")
+        collection("devices").update_one(
+            {"_id": device_id, "organization_id": organization_id},
+            {"$set": {"status": "revoked", "presence": "offline", "updated_at": now}},
+            session=session,
+        )
+        collection("device_credentials").update_many(
+            {"device_id": device_id, "revoked_at": None},
+            {"$set": {"revoked_at": now}}, session=session,
+        )
+        collection("device_commands").update_many(
+            {"device_id": device_id, "status": {"$in": ["pending", "delivered"]}},
+            {"$set": {"status": "cancelled"}}, session=session,
+        )
+        collection("admin_audit_events").insert_one({
+            "_id": _id(), "organization_id": organization_id, "actor_user_id": actor_user_id,
+            "action": "device.revoked", "target_type": "device", "target_id": device_id,
+            "metadata": {}, "created_at": now,
+        }, session=session)
+    with_transaction(write)
+
+
+def create_command(*, organization_id: str, device_id: str, command_type: str,
+                   expires_in_seconds: int, actor_user_id: str) -> tuple[str, int]:
+    now, command_id = _now(), _id()
+    device = collection("devices").find_one(
+        {"_id": device_id, "organization_id": organization_id, "status": "active"}
+    )
+    if not device:
+        raise ControlNotFound("active_device_not_found")
+    expires_at = now + expires_in_seconds
+    def write(session):
+        collection("device_commands").insert_one({
+            "_id": command_id, "organization_id": organization_id, "device_id": device_id,
+            "command_type": command_type, "payload": {}, "status": "pending",
+            "created_by": actor_user_id, "created_at": now, "expires_at": expires_at,
+            "delivered_at": None, "acknowledged_at": None, "completed_at": None,
+            "result_code": None, "result_summary": None,
+        }, session=session)
+        collection("admin_audit_events").insert_one({
+            "_id": _id(), "organization_id": organization_id, "actor_user_id": actor_user_id,
+            "action": "device.command_created", "target_type": "device_command",
+            "target_id": command_id, "metadata": {"command_type": command_type, "device_id": device_id},
+            "created_at": now,
+        }, session=session)
+    with_transaction(write)
+    return command_id, expires_at
+
+
+def claim_command(*, device_id: str, organization_id: str) -> dict[str, Any] | None:
+    now = _now()
+    commands = collection("device_commands")
+    commands.update_many(
+        {"device_id": device_id, "organization_id": organization_id,
+         "status": "pending", "expires_at": {"$lte": now}},
+        {"$set": {"status": "expired"}},
+    )
+    row = commands.find_one_and_update(
+        {"device_id": device_id, "organization_id": organization_id,
+         "status": "pending", "expires_at": {"$gt": now}},
+        {"$set": {"status": "delivered", "delivered_at": now}},
+        sort=[("created_at", ASCENDING)], return_document=ReturnDocument.AFTER,
+    )
+    if not row:
+        return None
+    return {"id": row["_id"], "type": row["command_type"],
+            "payload": row.get("payload", {}), "expiresAt": row["expires_at"]}
+
+
+def update_command_result(*, command_id: str, device_id: str, organization_id: str,
+                          status: str, result_code: str | None,
+                          result_summary: str | None) -> None:
+    now = _now()
+    row = collection("device_commands").find_one({
+        "_id": command_id, "device_id": device_id, "organization_id": organization_id
+    })
+    if not row:
+        raise ControlNotFound("command_not_found")
+    if row["status"] not in {"delivered", "acknowledged"}:
+        raise ControlConflict("command_not_active")
+    fields: dict[str, Any] = {"status": status}
+    if status == "acknowledged":
+        fields["acknowledged_at"] = now
+    else:
+        fields.update({"completed_at": now, "result_code": result_code,
+                       "result_summary": result_summary})
+    result = collection("device_commands").update_one(
+        {"_id": command_id, "device_id": device_id, "organization_id": organization_id,
+         "status": row["status"]}, {"$set": fields},
+    )
+    if result.modified_count != 1:
+        raise ControlConflict("command_not_active")
