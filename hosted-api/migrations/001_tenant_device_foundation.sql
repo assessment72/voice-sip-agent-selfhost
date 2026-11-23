@@ -176,3 +176,26 @@ CREATE TABLE IF NOT EXISTS call_tenant_assignments (
 );
 CREATE INDEX IF NOT EXISTS idx_call_tenant_org ON call_tenant_assignments(organization_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_call_tenant_device ON call_tenant_assignments(device_id, created_at DESC);
+
+
+-- Local-development limiter fallback. Multi-instance deployments must use Atlas.
+CREATE TABLE IF NOT EXISTS request_limits (
+  key_hash TEXT NOT NULL,
+  window_start INTEGER NOT NULL,
+  count INTEGER NOT NULL,
+  PRIMARY KEY (key_hash, window_start)
+);
+
+-- Append-only organization administration audit trail; never stores raw credentials.
+CREATE TABLE IF NOT EXISTS admin_audit_events (
+  id TEXT PRIMARY KEY,
+  organization_id TEXT NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+  actor_user_id TEXT NOT NULL,
+  action TEXT NOT NULL,
+  target_type TEXT NOT NULL,
+  target_id TEXT NOT NULL,
+  metadata_json TEXT NOT NULL DEFAULT '{}',
+  created_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_audit_org_created
+  ON admin_audit_events(organization_id, created_at DESC);
