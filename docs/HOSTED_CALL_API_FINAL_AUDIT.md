@@ -329,3 +329,57 @@ No Production deployment, merge, production secret change, SIP credential change
 - Latest Hosted API workflow for corrected head `1f15c41`: [45174540794](https://github.com/assessment72/voice-sip-agent-selfhost/actions/runs/45174540794) — **success**.
 - General JVM CI for corrected head: [45174540914](https://github.com/assessment72/voice-sip-agent-selfhost/actions/runs/45174540914) — still running at this audit update.
 - Android build/tests for corrected head: [45174530367](https://github.com/assessment72/voice-sip-agent-selfhost/actions/runs/45174530367) — still running at this audit update; no APK is claimed.
+
+
+---
+
+## Extended remediation and validation update — 2026-11-23
+
+Latest code checkpoint before this report update: `d9098ef475a20f9f3d6fdfd1d99441576d6e89f6`.
+
+### Additional code changes
+
+- Added shared fixed-window rate limiting backed by MongoDB for IP, credential, and sensitive routes. Local SQLite fallback remains for development only. On Vercel, distributed rate limiting defaults to required and fails closed with HTTP 503 if the shared limiter is unavailable.
+- MongoDB TTL expiry values are stored as BSON dates (not Unix integers); removed the ineffective TTL index on numeric device-command expiry values.
+- Added an append-only `admin_audit_events` table with SQLite triggers preventing update/delete. Member creation, member revocation, credential rotation, ownership transfer, device revocation, and device-command creation are recorded without storing raw credentials. Owners/admins can read `GET /v1/admin/audit`.
+- Added explicit organization ownership transfer. The previous owner becomes admin; the new owner becomes owner; audit event is written in the same transaction. An owner cannot be revoked until ownership is transferred.
+- Made tenant call ownership verification and state transition one SQLite write transaction, including the final commit. This fixed a regression where the first response appeared successful but the state transition was rolled back when the connection closed.
+- Bounded SIP brute-force source-IP tracking maps to 4,096 entries and prunes stale entries, limiting memory growth from source-IP rotation.
+- Added Caddy request-body limit (64 KB), Docker health check, non-root/read-only API container hardening, and Compose health dependency.
+- Removed pytest/httpx from production requirements; kept them in development requirements.
+- Hosted API CI now builds the Docker image and runs the container, then checks `/health` and `/health/database`.
+- Added a Vercel startup guard: while FastAPI routes still use SQLite, Vercel startup refuses to serve API traffic unless an explicitly unsafe override is set. Keep that override false. This intentionally prevents ephemeral per-instance SQLite from being used as production call storage.
+
+### Latest CI evidence
+
+All latest-code workflows completed successfully on commit `d9098ef475a20f9f3d6fdfd1d99441576d6e89f6`:
+- Hosted API: [45177232141](https://github.com/assessment72/voice-sip-agent-selfhost/actions/runs/45177232141) — **success**, 55 passed, 1 skipped. Docker build and container smoke test also passed.
+- JVM SIP/Gateway: [45177232172](https://github.com/assessment72/voice-sip-agent-selfhost/actions/runs/45177232172) — **success**.
+- Android tests and Debug APK: [45177232137](https://github.com/assessment72/voice-sip-agent-selfhost/actions/runs/45177232137) — **success**. Unit tests, Debug APK assembly, and artifact upload completed.
+- Debug APK artifact: [voice-sip-agent-debug-e1cd26a65c3424fa38a83a1aecf1f28b6c2aab35](https://github.com/assessment72/voice-sip-agent-selfhost/actions/runs/45177232137) (artifact ID `14820322882`, expires 2026-12-07). This is a **Debug** APK, not a signed production Release APK.
+
+The single skipped Hosted API test is the live Atlas integration test because CI does not have `MONGODB_TEST_URI` and `MONGODB_TEST_DATABASE`. No Atlas test collection was created by this pass.
+
+### Atlas and Vercel configuration observed (read-only)
+
+- Atlas account: `Primary`; project: `Adasms`; cluster: `AdasmsCluster`; Free tier; AWS Singapore (`AP_SOUTHEAST_1`); cluster was active.
+- Database `voice_sip_agent` exists and contains only `call_jobs`; the collection count is zero and its only index is the default `_id_`.
+- Vercel project `voice-sip-agent-hosted-api` has Preview-only `MONGODB_URI` (encrypted/sensitive) and `MONGODB_DATABASE=voice_sip_agent` scoped to `feature/hosted-call-api`. The secret value was not decrypted or displayed. No Production variable was added.
+- The latest Vercel Preview deployment for the branch was marked READY at build/deployment level. The runtime was not certified as operational; the new startup guard intentionally blocks the SQLite-backed API until the MongoDB route migration is completed.
+
+### Remaining release blockers
+
+1. **MongoDB is not yet the active persistence backend for FastAPI routes.** The current API still stores organizations, memberships, devices, commands, calls, and state transitions in SQLite. MongoDB currently backs the distributed rate limiter and has a separately tested call repository module, but the route layer has not been migrated. The existing Atlas `call_jobs` collection is empty and is not yet the route datastore.
+2. **Atlas integration test remains skipped in CI.** A controlled Atlas integration run must be authorized and use a dedicated test database/collection; do not run destructive tests against business collections.
+3. **Membership lifecycle is improved but not complete.** Ownership transfer, member creation/revocation, credential rotation, and audit events exist. Invitations/acceptance, full scope-based permissions, organization suspension workflows, and audit export/retention policy still need completion.
+4. **SIP brute-force tracking is now bounded but remains process-local.** It is not a distributed ban service across multiple SIP gateways.
+5. **Media security is not certified.** No SRTP/TLS media path, G.711 codec negotiation, packet capture, PBX interoperability, NAT traversal, or real bidirectional media test was performed.
+6. **Android field validation is outstanding.** No physical HONOR MTN-NX1 installation, SIM 1/SIM 2 call matrix, Doze/reboot/process-kill recovery, or carrier call was performed.
+7. **Backup/restore and operational readiness remain unproven.** No restore drill, external alerting, production monitoring, or disaster recovery exercise was run.
+8. **Git history secret scan is not complete.** No live secret values were added by this pass; this does not prove that no historical secret exists.
+
+### Release decision
+
+**NO-GO for commercial production and customer pilot.** The code-level regression suite and container smoke tests now pass, but the database cutover, Atlas integration verification, SIP/media security validation, and physical-device test matrix remain mandatory. Keep PR #10 open and Draft. Do not bypass the Vercel SQLite guard, merge, or deploy Production until these blockers are closed and separately approved.
+
+No merge, Production deployment, Production secret change, Atlas data/index write, SIP credential change, or paid call was performed.
