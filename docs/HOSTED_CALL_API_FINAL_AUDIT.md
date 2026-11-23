@@ -113,3 +113,14 @@ GitHub Actions runs were created for commit `188b5378df6f8387e23f8bebc4be55e23f1
 | Hosted Call API tests | [45099943473](https://github.com/assessment72/voice-sip-agent-selfhost/actions/runs/45099943473) | in progress |
 
 These runs are not yet passes. The Android unit-test step, general JVM test step, and hosted API pytest step were running when checked. Final conclusions must be recorded only after GitHub reports completed results.
+
+
+### Android outbox unit tests added
+
+Commit `730fb79167ebe5576d95e64cb97a17df46a32805` adds `HostedStateUpdateQueueTest` covering:
+- FIFO ordering and acknowledgement/removal behavior.
+- Deduplication of identical pending transitions while preserving distinct failure reasons.
+- Recovery of persisted queue entries through a newly constructed queue instance sharing the same preferences (process-recreation model).
+- Rejection of blank call/state values and safe handling of an already-removed/unknown acknowledgement.
+
+These are JVM unit tests using mocked Android preferences. They validate serialization/persistence behavior at the queue abstraction level, not an actual Android OS process kill or device storage failure. The new tests still require a completed Android CI run on this commit before being called passed.
