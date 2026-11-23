@@ -1,8 +1,7 @@
-"""MongoDB persistence foundation for the Hosted Call API.
+"""Shared MongoDB client, indexes, rate limits and transaction helpers.
 
-This module deliberately does not replace the SQLite repository by itself.
-Route migration must use these collections and atomic operations, then remove
-SQLite startup/migrations in a separately tested change.
+Tenant-facing FastAPI routes select MongoDB repositories when configured.
+SQLite remains a local-development compatibility backend only.
 """
 from __future__ import annotations
 
