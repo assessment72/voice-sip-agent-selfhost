@@ -266,3 +266,6 @@ The client pool is intentionally conservative for Vercel serverless instances (m
 - Replaced the staged global call idempotency/queue/claim index definitions with the same organization-scoped key patterns and names used by `MongoCallRepository.ensure_indexes()`; added the partial unique active-call slot index.
 - Updated repository index declarations and unit assertions so both initialization paths agree.
 - This is a staged schema definition only. No Atlas index was created, dropped, or modified by this change. If a prior environment already created the legacy global `uq_call_principal_idempotency` index, a deliberate, separately reviewed index migration must drop/replace it before cross-organization duplicate idempotency keys are supported. Do not silently drop indexes during cold start.
+
+
+- Atlas integration-test safety refinement: the test now uses the explicitly configured `MONGODB_TEST_DATABASE` and a random per-run collection name, then drops only that collection. This is compatible with the existing database-scoped test user and does not require broader database privileges or database-wide deletion. Commit: `4cf8ddeb82c585a71e203c4ef1d2d3fae5204529`.
