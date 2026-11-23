@@ -99,3 +99,12 @@ def test_expired_queue_is_terminal_and_releases_slot(repo):
 def test_unknown_call_is_not_found(repo):
     with pytest.raises(CallNotFound):
         transition(repo, "missing", "ringing_cellular", now=1000)
+
+
+
+def test_claim_replay_by_same_device_returns_the_same_job(repo):
+    created = create(repo)
+    first = claim(repo, device="device-a", now=1001)
+    replay = claim(repo, device="device-a", now=1002)
+    assert first["job"]["id"] == created["id"]
+    assert replay["job"]["id"] == created["id"]
