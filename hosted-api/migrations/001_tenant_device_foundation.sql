@@ -28,6 +28,7 @@ CREATE TABLE IF NOT EXISTS organization_api_credentials (
   id TEXT PRIMARY KEY,
   organization_id TEXT NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
   label TEXT NOT NULL,
+  user_id TEXT NOT NULL,
   token_hash TEXT NOT NULL UNIQUE,
   token_prefix TEXT NOT NULL,
   scopes TEXT NOT NULL DEFAULT '[]',
