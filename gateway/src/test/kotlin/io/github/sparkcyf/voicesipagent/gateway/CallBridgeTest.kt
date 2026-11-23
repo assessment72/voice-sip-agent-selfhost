@@ -67,6 +67,43 @@ class CallBridgeTest {
     }
 
     @Test
+    fun hostedOriginateReservationPreventsQueuedInboundCallFromStealingBridge() {
+        val incoming = cell.incoming("13800001234")
+        assertTrue(bridge.originateCellularThenSip("+967777405578", "sip:linphone@example.test"))
+        settle()
+        assertEquals(HangupCause.BUSY, incoming.endCause)
+        assertEquals("+967777405578", cell.dialed.single().target)
+        assertTrue("the rejected cellular inbound leg must not create a SIP leg", sip.dialed.isEmpty())
+        assertEquals("hosted-outbound", bridge.session?.origin)
+    }
+
+    @Test
+    fun oldHostedDurationGuardCannotEndANewerBridgeSession() {
+        var hostedSessionId: Int? = null
+        assertTrue(
+            bridge.originateCellularThenSip("+967777405578", "sip:linphone@example.test") {
+                hostedSessionId = it
+            }
+        )
+        settle()
+        val hostedCellularLeg = cell.dialed.single()
+        val oldId = hostedSessionId ?: error("hosted session callback was not invoked")
+        hostedCellularLeg.remoteEnded(HangupCause.NO_ANSWER)
+        settle()
+        assertNull(bridge.session)
+
+        val laterInbound = cell.incoming("13800009999")
+        settle()
+        val laterSessionId = bridge.session?.id ?: error("later inbound session was not created")
+        assertTrue(laterSessionId != oldId)
+
+        bridge.endSession(oldId, HangupCause.NORMAL)
+        settle()
+        assertEquals("the stale timer must not terminate the newer call", laterSessionId, bridge.session?.id)
+        assertTrue("new inbound leg remains active", laterInbound.state != LegState.ENDED)
+    }
+
+    @Test
     fun hostedCallCellularNoAnswerNeverCreatesSipLeg() {
         assertTrue(bridge.originateCellularThenSip("+967777405578", "sip:linphone@example.test"))
         settle()
