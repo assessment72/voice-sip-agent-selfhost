@@ -1,6 +1,8 @@
 name: Android build and tests
 
 on:
+  push:
+    branches: [feature/hosted-call-api]
   pull_request:
     branches: [main, feat/sip-to-cellular-outbound]
   workflow_dispatch:
