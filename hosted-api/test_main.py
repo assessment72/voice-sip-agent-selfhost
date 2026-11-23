@@ -27,6 +27,17 @@ def test_authentication_and_validation(tmp_path, monkeypatch):
     assert response.status_code == 422  # malformed E.164 number rejected
 
 
+def test_emergency_short_codes_are_rejected_before_e164_validation(tmp_path, monkeypatch):
+    client = setup_client(tmp_path, monkeypatch)
+    for number in ("112", "911", "+911", "999"):
+        response = client.post(
+            "/v1/calls", json={"phoneNumber": number},
+            headers=headers("test-caller-token", **{"Idempotency-Key": str(uuid.uuid4())}),
+        )
+        assert response.status_code == 422
+        assert response.json()["detail"] == "emergency_number"
+
+
 def test_idempotency_and_single_device_job(tmp_path, monkeypatch):
     client = setup_client(tmp_path, monkeypatch)
     key = str(uuid.uuid4())
