@@ -324,3 +324,44 @@ def test_branch_is_owned_by_organization_and_device_can_be_assigned(tmp_path, mo
     listed = client.get("/v1/admin/devices", headers=alpha_headers).json()["devices"]
     assert listed[0]["branch_name"] == "Main Branch"
     assert listed[0]["branch_id"] == branch.json()["branchId"]
+
+
+def test_multiple_devices_can_claim_parallel_calls_but_one_call_per_device(tmp_path, monkeypatch):
+    client = setup_client(tmp_path, monkeypatch)
+    org = create_org(client, "Alpha", "alpha", "owner-a")
+    admin = auth(org["apiToken"], org["organizationId"])
+
+    def enroll(device_name):
+        enrollment = client.post(
+            f"/v1/organizations/{org['organizationId']}/enrollment-tokens",
+            json={"label": device_name}, headers=admin,
+        ).json()
+        return client.post(
+            "/v1/device/enroll",
+            json={"enrollmentToken": enrollment["enrollmentToken"],
+                  "externalDeviceId": device_name, "displayName": device_name},
+        ).json()
+
+    first_device, second_device = enroll("phone-1"), enroll("phone-2")
+    calls = []
+    for _ in range(2):
+        response = client.post(
+            f"/v1/organizations/{org['organizationId']}/calls",
+            json={"phoneNumber": "777405578"},
+            headers=admin | {"Idempotency-Key": str(uuid.uuid4())},
+        )
+        assert response.status_code == 202
+        calls.append(response.json()["id"])
+
+    first_job = client.get(
+        "/v1/device/call-jobs/next?wait=0", headers=auth(first_device["deviceToken"])
+    ).json()["job"]
+    assert first_job["id"] == calls[0]
+    assert client.get(
+        "/v1/device/call-jobs/next?wait=0", headers=auth(first_device["deviceToken"])
+    ).json()["job"] is None
+
+    second_job = client.get(
+        "/v1/device/call-jobs/next?wait=0", headers=auth(second_device["deviceToken"])
+    ).json()["job"]
+    assert second_job["id"] == calls[1]
