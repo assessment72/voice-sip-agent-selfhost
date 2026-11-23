@@ -12,7 +12,7 @@ import uuid
 from contextlib import contextmanager
 from typing import Literal
 
-from fastapi import Depends, FastAPI, Header, HTTPException, Request, status
+from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, status
 from pydantic import BaseModel, Field
 
 DB = os.getenv("DATABASE_PATH", "./calls.sqlite3")
@@ -191,7 +191,16 @@ def get_call(call_id: str, principal=Depends(caller)):
 
 
 @app.get("/v1/device/jobs/next")
-def next_job(device_id=Depends(device)):
+def next_job(device_id=Depends(device), wait: int = Query(default=20, ge=0, le=25)):
+    deadline = time.monotonic() + wait
+    while True:
+        result = _claim_next_job(device_id)
+        if result["job"] is not None or time.monotonic() >= deadline:
+            return result
+        time.sleep(min(0.25, max(0.0, deadline - time.monotonic())))
+
+
+def _claim_next_job(device_id: str):
     now = int(time.time())
     with db() as c:
         c.execute("BEGIN IMMEDIATE")
