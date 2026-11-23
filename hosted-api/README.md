@@ -18,17 +18,29 @@ uvicorn main:app --host 127.0.0.1 --port 8080
 
 Do not expose this development server directly. Put it behind a TLS reverse proxy for a private test deployment. Set a persistent, backed-up database path and inject secrets through the hosting provider's secret manager.
 
-## Create a call
+## Bootstrap an organization and create a call
+
+First provision an organization using the separate bootstrap secret. This is an owner-only provisioning operation; do not expose the bootstrap token to Android devices.
 
 ```sh
-curl --fail-with-body https://YOUR_TEST_HOST/v1/calls \
-  -H "Authorization: Bearer $CALL_API_TOKEN" \
+curl --fail-with-body https://YOUR_TEST_HOST/v1/organizations/bootstrap \
+  -H "Authorization: Bearer $ORG_BOOTSTRAP_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"name":"Test organization","slug":"test-org","ownerUserId":"owner-1"}'
+```
+
+Store the one-time `apiToken` response securely and keep the returned `organizationId`. Submit calls with the organization credential:
+
+```sh
+curl --fail-with-body https://YOUR_TEST_HOST/v1/organizations/$ORG_ID/calls \
+  -H "Authorization: Bearer $ORG_API_TOKEN" \
+  -H "X-Organization-ID: $ORG_ID" \
   -H "Idempotency-Key: $(python -c 'import uuid; print(uuid.uuid4())')" \
   -H "Content-Type: application/json" \
   -d '{"phoneNumber":"+9677XXXXXXX"}'
 ```
 
-The API returns HTTP 202 and a call ID. Poll `GET /v1/calls/{id}` with the same API token.
+The API returns HTTP 202 and a call ID. Read it through `GET /v1/admin/calls/{id}` with the same organization credential. Enroll an authenticated device with a short-lived enrollment token; devices poll `GET /v1/device/call-jobs/next` using their individual device token.
 
 ## Containerized test deployment (not deployed by this change)
 
