@@ -566,3 +566,168 @@ def report_device_event(body: dict, device_ctx=Depends(authenticated_device)):
              event_type, severity, event_code, int(body.get("occurredAt", now)), now),
         )
     return {"accepted": True}
+
+
+class OrganizationMemberRequest(BaseModel):
+    userId: str = Field(min_length=1, max_length=128)
+    role: Literal["admin", "operator", "viewer"]
+
+
+class DeviceCommandRequest(BaseModel):
+    deviceId: str = Field(min_length=1, max_length=64)
+    commandType: Literal["refresh_status", "sync_config", "pause_calls", "resume_calls", "restart_agent"]
+    expiresInSeconds: int = Field(default=300, ge=30, le=3600)
+
+
+class DeviceCommandResult(BaseModel):
+    status: Literal["acknowledged", "completed", "failed"]
+    resultCode: str | None = Field(default=None, max_length=64)
+    resultSummary: str | None = Field(default=None, max_length=200)
+
+
+@app.post("/v1/organizations/{organization_id}/members", status_code=201)
+def add_organization_member(organization_id: str, body: OrganizationMemberRequest,
+                            principal=Depends(require_org_admin)):
+    if principal["organization_id"] != organization_id:
+        raise HTTPException(status_code=404, detail="organization_not_found")
+    if principal["role"] != "owner" and body.role == "admin":
+        raise HTTPException(status_code=403, detail="owner_role_required")
+    now = int(time.time())
+    with db() as c:
+        existing = c.execute(
+            "SELECT role,status FROM organization_memberships WHERE organization_id=? AND user_id=?",
+            (organization_id, body.userId),
+        ).fetchone()
+        if existing:
+            raise HTTPException(status_code=409, detail="membership_already_exists")
+        c.execute(
+            """INSERT INTO organization_memberships
+               (organization_id,user_id,role,status,created_at,updated_at)
+               VALUES(?,?,?,'active',?,?)""",
+            (organization_id, body.userId, body.role, now, now),
+        )
+    return {"organizationId": organization_id, "userId": body.userId, "role": body.role, "status": "active"}
+
+
+@app.post("/v1/admin/devices/{device_id}/revoke")
+def revoke_device(device_id: str, principal=Depends(require_org_admin)):
+    now = int(time.time())
+    with db() as c:
+        row = c.execute(
+            "SELECT id FROM devices WHERE id=? AND organization_id=?",
+            (device_id, principal["organization_id"]),
+        ).fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="device_not_found")
+        c.execute("UPDATE devices SET status='revoked',presence='offline',updated_at=? WHERE id=?",
+                  (now, device_id))
+        c.execute("UPDATE device_credentials SET revoked_at=? WHERE device_id=? AND revoked_at IS NULL",
+                  (now, device_id))
+        c.execute(
+            """UPDATE device_commands SET status='cancelled'
+               WHERE device_id=? AND status IN ('pending','delivered')""",
+            (device_id,),
+        )
+    return {"deviceId": device_id, "status": "revoked"}
+
+
+@app.post("/v1/admin/device-commands", status_code=201)
+def create_device_command(body: DeviceCommandRequest, principal=Depends(require_org_admin)):
+    now = int(time.time())
+    command_id = str(uuid.uuid4())
+    with db() as c:
+        target = c.execute(
+            "SELECT id,status FROM devices WHERE id=? AND organization_id=?",
+            (body.deviceId, principal["organization_id"]),
+        ).fetchone()
+        if not target or target["status"] != "active":
+            raise HTTPException(status_code=404, detail="active_device_not_found")
+        c.execute(
+            """INSERT INTO device_commands
+               (id,organization_id,device_id,command_type,payload_json,status,created_by,
+                created_at,expires_at)
+               VALUES(?,?,?,?, '{}','pending',?,?,?)""",
+            (command_id, principal["organization_id"], body.deviceId, body.commandType,
+             principal["user_id"], now, now + body.expiresInSeconds),
+        )
+    return {"commandId": command_id, "status": "pending", "expiresAt": now + body.expiresInSeconds}
+
+
+@app.get("/v1/device/commands/next")
+def next_device_command(wait: int = Query(default=20, ge=0, le=25),
+                        device_ctx=Depends(authenticated_device)):
+    deadline = time.monotonic() + wait
+    while True:
+        now = int(time.time())
+        with db() as c:
+            c.execute("BEGIN IMMEDIATE")
+            c.execute(
+                "UPDATE device_commands SET status='expired' WHERE device_id=? AND status='pending' AND expires_at<=?",
+                (device_ctx["device_id"], now),
+            )
+            row = c.execute(
+                """SELECT id,command_type,payload_json,expires_at FROM device_commands
+                   WHERE device_id=? AND organization_id=? AND status='pending' AND expires_at>?
+                   ORDER BY created_at LIMIT 1""",
+                (device_ctx["device_id"], device_ctx["organization_id"], now),
+            ).fetchone()
+            if row:
+                c.execute(
+                    "UPDATE device_commands SET status='delivered',delivered_at=? WHERE id=? AND status='pending'",
+                    (now, row["id"]),
+                )
+                c.commit()
+                return {"command": {"id": row["id"], "type": row["command_type"],
+                                    "payload": json.loads(row["payload_json"]), "expiresAt": row["expires_at"]}}
+            c.commit()
+        if time.monotonic() >= deadline:
+            return {"command": None}
+        time.sleep(min(0.25, max(0.0, deadline - time.monotonic())))
+
+
+@app.post("/v1/device/commands/{command_id}/result")
+def update_device_command(command_id: str, body: DeviceCommandResult,
+                          device_ctx=Depends(authenticated_device)):
+    now = int(time.time())
+    with db() as c:
+        c.execute("BEGIN IMMEDIATE")
+        row = c.execute(
+            """SELECT status FROM device_commands
+               WHERE id=? AND device_id=? AND organization_id=?""",
+            (command_id, device_ctx["device_id"], device_ctx["organization_id"]),
+        ).fetchone()
+        if not row:
+            c.rollback()
+            raise HTTPException(status_code=404, detail="command_not_found")
+        if row["status"] not in {"delivered", "acknowledged"}:
+            c.rollback()
+            raise HTTPException(status_code=409, detail="command_not_active")
+        if body.status == "acknowledged":
+            c.execute(
+                """UPDATE device_commands SET status='acknowledged',acknowledged_at=?
+                   WHERE id=?""",
+                (now, command_id),
+            )
+        else:
+            c.execute(
+                """UPDATE device_commands SET status=?,completed_at=?,result_code=?,result_summary=?
+                   WHERE id=?""",
+                (body.status, now, body.resultCode, body.resultSummary, command_id),
+            )
+        c.commit()
+    return {"commandId": command_id, "status": body.status}
+
+
+@app.get("/v1/admin/calls")
+def list_organization_calls(limit: int = Query(default=50, ge=1, le=200),
+                             principal=Depends(organization_principal)):
+    with db() as c:
+        rows = c.execute(
+            """SELECT calls.id,calls.state,calls.created_at,calls.updated_at,calls.reason_code,
+                      call_tenant_assignments.device_id
+               FROM calls JOIN call_tenant_assignments ON call_tenant_assignments.call_id=calls.id
+               WHERE call_tenant_assignments.organization_id=?
+               ORDER BY calls.created_at DESC LIMIT ?""",
+            (principal["organization_id"], limit),
+        ).fetchall()
+    return {"calls": [dict(row) for row in rows], "count": len(rows)}
