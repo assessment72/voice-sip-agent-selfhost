@@ -99,6 +99,12 @@ def init_db():
 
 @app.on_event("startup")
 def startup():
+    # Vercel's writable filesystem is ephemeral and per-instance. Do not start
+    # a customer-facing API on SQLite until all route repositories are migrated.
+    if os.getenv("VERCEL", "").lower() in {"1", "true", "yes"} and os.getenv(
+        "ALLOW_UNSAFE_SQLITE_ON_VERCEL", "false"
+    ).lower() not in {"1", "true", "yes"}:
+        raise RuntimeError("production_blocked_sqlite_not_durable_use_mongodb_repository")
     init_db()
     if os.getenv("MONGODB_URI", "").strip():
         # Establish the shared rate-limit unique index before accepting API traffic.
