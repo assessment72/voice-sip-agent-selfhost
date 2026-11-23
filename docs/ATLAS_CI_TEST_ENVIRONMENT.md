@@ -27,7 +27,7 @@ Using the Atlas administrative connector, a temporary collection `__ci_permissio
 
 ## CI integration status
 
-The current GitHub Actions workflow is `.github/workflows/hosted-api-ci.yml`. It runs pytest and Docker smoke tests but does not yet consume `MONGODB_TEST_URI` / `MONGODB_TEST_DATABASE`.
+The current GitHub Actions workflow is `.github/workflows/hosted-api-ci.yml`. It runs pytest and Docker smoke tests and is configured to run the live Atlas suite when both `MONGODB_TEST_URI` and `MONGODB_TEST_DATABASE` repository Actions secrets are present. Those repository secrets are not configured yet, so the live step is skipped.
 
 The GitHub integration available in this execution does not expose a repository Actions Secrets write operation. The Vercel Preview variables cannot be read by GitHub Actions automatically. Do not copy the secret into source code, workflow YAML, logs, or a commit.
 
