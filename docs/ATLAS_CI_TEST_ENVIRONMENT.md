@@ -37,8 +37,25 @@ An opt-in live Atlas integration test is now present at `hosted-api/tests/test_m
 
 An initial generated Atlas database user `voice_sip_agent_ci_runner` was also created during provisioning. Its generated password was not retained or stored. The Atlas tools available in this execution do not expose a delete-database-user operation, so this unused account could not be removed here. Both test users are restricted to `readWrite` on `voice_sip_agent_ci`; remove the unused `voice_sip_agent_ci_runner` from Atlas Database Access manually when convenient.
 
-## Application migration status
+## Application migration status — updated
 
-This resource setup does not complete the application migration. FastAPI request handlers still use SQLite for calls, organizations, memberships, devices, enrollment, commands, and events. MongoDB currently provides the shared rate limiter and a staged call repository, but the staged call repository is not yet wired into the routes.
+The branch now wires the tenant-facing FastAPI routes to MongoDB repositories when MongoDB is configured:
 
-Vercel startup must remain blocked while SQLite is the active route datastore. Do not set `ALLOW_UNSAFE_SQLITE_ON_VERCEL=true`. Do not enable Production, merge PR #10, or send real/paid calls as part of this step.
+- Organization bootstrap and authentication; member creation, ownership transfer, revocation, and credential rotation.
+- Enrollment-token creation and transactional device enrollment; device credential authentication and revocation.
+- Device heartbeat history, event ingestion, device/activity listing, branch CRUD, device commands, and audit listing.
+- Tenant call creation, idempotency, queue claim/lease, state transitions, call listing/detail, and tenant latency metrics.
+- Shared distributed rate-limit windows.
+
+MongoDB startup now creates the required indexes and does not initialize SQLite. Vercel startup fails closed unless MongoDB is configured. Legacy shared-token call/device routes are explicitly unavailable when MongoDB is active, preventing accidental fallback to ephemeral SQLite. Local development without MongoDB continues to use SQLite.
+
+The isolated Preview credentials `MONGODB_TEST_URI` and `MONGODB_TEST_DATABASE` can serve as the Preview runtime backend only when `VERCEL_ENV` is not `production`. Production requires separate explicit `MONGODB_URI` and `MONGODB_DATABASE` variables. No Production variables were changed.
+
+## Remaining validation
+
+- GitHub Actions live Atlas integration remains skipped until repository Actions secrets are added. The Atlas administrative probe did not validate the application user's credentials.
+- Transactional operations need a successful live Atlas test against the least-privilege test account and the selected Atlas topology.
+- Backup/restore, monitoring/alerting, physical Android/SIM testing, SIP/RTP/audio verification, and signed Release APK validation remain outside the current CI evidence.
+- PR #10 remains Draft and unmerged. No Production deployment, production database migration, SIP credential change, or paid call has been performed.
+
+Do not merge or declare commercial readiness solely from mocked repository tests or CI.
