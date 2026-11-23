@@ -81,4 +81,25 @@ class HostedStateUpdateQueueTest {
         assertTrue(f.queue.remove("not-present"))
         assertNull(f.queue.peek())
     }
+
+    @Test fun enforcesTheBoundedOutboxWithoutDroppingOlderTransitions() {
+        val f = fixture()
+        repeat(500) { index ->
+            assertTrue(f.queue.enqueue("call-$index", "ringing_cellular", null))
+        }
+        val firstId = f.queue.peek()!!.id
+        assertEquals(500, f.queue.size())
+        assertFalse(f.queue.enqueue("call-overflow", "ringing_cellular", null))
+        assertEquals(500, f.queue.size())
+        assertEquals(firstId, f.queue.peek()?.id)
+    }
+
+    @Test fun leavesCorruptStoredDataUntouchedAndRejectsNewUpdates() {
+        val f = fixture()
+        val corrupt = "not-json"
+        f.preferences.edit().putString("pending_updates", corrupt).commit()
+        assertNull(f.queue.peek())
+        assertFalse(f.queue.enqueue("call-1", "failed", null))
+        assertEquals(corrupt, f.preferences.getString("pending_updates", null))
+    }
 }
