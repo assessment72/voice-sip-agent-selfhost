@@ -406,8 +406,10 @@ def authenticated_device(authorization: str | None = Header(default=None)):
         row = c.execute(
             """SELECT d.id,d.organization_id,d.status
                FROM device_credentials k JOIN devices d ON d.id=k.device_id
+               JOIN organizations o ON o.id=d.organization_id
                WHERE k.token_hash=? AND k.revoked_at IS NULL
-                 AND (k.expires_at IS NULL OR k.expires_at>?)""",
+                 AND (k.expires_at IS NULL OR k.expires_at>?)
+                 AND o.status='active'""",
             (_hash_secret(token), int(time.time())),
         ).fetchone()
     if not row or row["status"] != "active":
@@ -731,7 +733,7 @@ def rotate_member_credential(organization_id: str, user_id: str,
         if not member or member["status"] != "active":
             c.rollback()
             raise HTTPException(status_code=404, detail="active_member_not_found")
-        if principal["role"] != "owner" and member["role"] == "owner":
+        if principal["role"] != "owner" and member["role"] in {"owner", "admin"}:
             c.rollback()
             raise HTTPException(status_code=403, detail="owner_role_required")
         c.execute(
