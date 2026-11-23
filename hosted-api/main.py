@@ -9,6 +9,7 @@ import secrets
 import sqlite3
 import time
 import uuid
+from pathlib import Path
 from contextlib import contextmanager
 from typing import Literal
 
@@ -18,6 +19,9 @@ from pydantic import BaseModel, Field
 DB = os.getenv("DATABASE_PATH", "./calls.sqlite3")
 CALL_TOKEN = os.getenv("CALL_API_TOKEN", "")
 DEVICE_TOKEN = os.getenv("DEVICE_API_TOKEN", "")
+BOOTSTRAP_TOKEN = os.getenv("ORG_BOOTSTRAP_TOKEN", "")
+PRESENCE_ONLINE_SECONDS = int(os.getenv("PRESENCE_ONLINE_SECONDS", "60"))
+PRESENCE_UNSTABLE_SECONDS = int(os.getenv("PRESENCE_UNSTABLE_SECONDS", "120"))
 MAX_CALL = int(os.getenv("MAX_CALL_SECONDS", "1800"))
 QUEUE_TTL = int(os.getenv("QUEUE_TTL_SECONDS", "120"))
 CELL_RING_TIMEOUT = int(os.getenv("CELLULAR_RING_TIMEOUT_SECONDS", "45"))
@@ -61,6 +65,9 @@ def init_db():
         columns = {row["name"] for row in c.execute("PRAGMA table_info(calls)")}
         if "claimed_at" not in columns:
             c.execute("ALTER TABLE calls ADD COLUMN claimed_at INTEGER")
+        migration = Path(__file__).parent / "migrations" / "001_tenant_device_foundation.sql"
+        if migration.exists():
+            c.executescript(migration.read_text(encoding="utf-8"))
 
 
 @app.on_event("startup")
@@ -275,3 +282,287 @@ def update_call(call_id: str, body: CallUpdate, device_id=Depends(device)):
 @app.get("/health")
 def health():
     return {"status": "ok"}
+
+
+# --- Multi-tenant organization and device control plane ---------------------
+
+class OrganizationBootstrap(BaseModel):
+    name: str = Field(min_length=2, max_length=120)
+    slug: str = Field(min_length=2, max_length=60, pattern=r"^[a-z0-9][a-z0-9-]+$")
+    ownerUserId: str = Field(min_length=1, max_length=128)
+
+
+class EnrollmentTokenRequest(BaseModel):
+    label: str = Field(min_length=1, max_length=100)
+    expiresInSeconds: int = Field(default=3600, ge=60, le=604800)
+    maxUses: int = Field(default=1, ge=1, le=100)
+
+
+class DeviceEnrollment(BaseModel):
+    enrollmentToken: str = Field(min_length=32, max_length=256)
+    externalDeviceId: str = Field(min_length=1, max_length=128)
+    displayName: str = Field(min_length=1, max_length=120)
+    branchName: str | None = Field(default=None, max_length=120)
+    appId: str | None = Field(default=None, max_length=160)
+    appVersion: str | None = Field(default=None, max_length=40)
+    androidVersion: str | None = Field(default=None, max_length=40)
+    manufacturer: str | None = Field(default=None, max_length=80)
+    model: str | None = Field(default=None, max_length=100)
+
+
+class DeviceHeartbeat(BaseModel):
+    batteryLevel: int | None = Field(default=None, ge=0, le=100)
+    networkType: Literal["wifi", "cellular", "ethernet", "none", "unknown"] = "unknown"
+    internetAvailable: bool = False
+    sipStatus: Literal["registered", "unregistered", "registering", "error", "unknown"] = "unknown"
+    simStatus: Literal["ready", "absent", "locked", "error", "unknown"] = "unknown"
+    agentStatus: Literal["idle", "busy", "paused", "error", "unknown"] = "unknown"
+    activeCall: bool = False
+
+
+def _hash_secret(value: str) -> str:
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()
+
+
+def organization_principal(authorization: str | None = Header(default=None),
+                           organization_id: str = Header(alias="X-Organization-ID")):
+    token = authorization[7:] if authorization and authorization.startswith("Bearer ") else None
+    if not token:
+        raise HTTPException(status_code=401, detail="unauthorized")
+    with db() as c:
+        row = c.execute(
+            """SELECT m.organization_id,m.user_id,m.role
+               FROM organization_api_credentials k
+               JOIN organization_memberships m ON m.organization_id=k.organization_id
+               WHERE k.token_hash=? AND k.revoked_at IS NULL
+                 AND (k.expires_at IS NULL OR k.expires_at>?)
+                 AND m.status='active' AND m.organization_id=?""",
+            (_hash_secret(token), int(time.time()), organization_id),
+        ).fetchone()
+    if not row:
+        raise HTTPException(status_code=403, detail="organization_access_denied")
+    return {"organization_id": row["organization_id"], "user_id": row["user_id"], "role": row["role"]}
+
+
+def require_org_admin(principal=Depends(organization_principal)):
+    if principal["role"] not in {"owner", "admin"}:
+        raise HTTPException(status_code=403, detail="insufficient_role")
+    return principal
+
+
+def authenticated_device(authorization: str | None = Header(default=None)):
+    token = authorization[7:] if authorization and authorization.startswith("Bearer ") else None
+    if not token:
+        raise HTTPException(status_code=401, detail="unauthorized")
+    with db() as c:
+        row = c.execute(
+            """SELECT d.id,d.organization_id,d.status
+               FROM device_credentials k JOIN devices d ON d.id=k.device_id
+               WHERE k.token_hash=? AND k.revoked_at IS NULL
+                 AND (k.expires_at IS NULL OR k.expires_at>?)""",
+            (_hash_secret(token), int(time.time())),
+        ).fetchone()
+    if not row or row["status"] != "active":
+        raise HTTPException(status_code=401, detail="device_unauthorized")
+    return {"device_id": row["id"], "organization_id": row["organization_id"]}
+
+
+@app.post("/v1/organizations/bootstrap", status_code=201)
+def bootstrap_organization(body: OrganizationBootstrap,
+                           authorization: str | None = Header(default=None)):
+    supplied = authorization[7:] if authorization and authorization.startswith("Bearer ") else None
+    if not token_ok(supplied, BOOTSTRAP_TOKEN):
+        raise HTTPException(status_code=401, detail="bootstrap_unauthorized")
+    now = int(time.time())
+    org_id = str(uuid.uuid4())
+    raw_token = secrets.token_urlsafe(40)
+    credential_id = str(uuid.uuid4())
+    with db() as c:
+        try:
+            c.execute("BEGIN IMMEDIATE")
+            c.execute(
+                "INSERT INTO organizations(id,slug,name,created_at,updated_at) VALUES(?,?,?,?,?)",
+                (org_id, body.slug, body.name, now, now),
+            )
+            c.execute(
+                """INSERT INTO organization_memberships
+                   (organization_id,user_id,role,status,created_at,updated_at)
+                   VALUES(?,?, 'owner','active',?,?)""",
+                (org_id, body.ownerUserId, now, now),
+            )
+            c.execute(
+                """INSERT INTO organization_api_credentials
+                   (id,organization_id,label,token_hash,token_prefix,scopes,created_at)
+                   VALUES(?,?,?,?,?,'["admin"]',?)""",
+                (credential_id, org_id, "Initial owner credential", _hash_secret(raw_token), raw_token[:8], now),
+            )
+            c.commit()
+        except sqlite3.IntegrityError:
+            c.rollback()
+            raise HTTPException(status_code=409, detail="organization_slug_unavailable")
+    return {"organizationId": org_id, "slug": body.slug, "apiToken": raw_token,
+            "tokenWarning": "Shown once. Store securely; only its hash is retained."}
+
+
+@app.post("/v1/organizations/{organization_id}/enrollment-tokens", status_code=201)
+def create_enrollment_token(organization_id: str, body: EnrollmentTokenRequest,
+                            principal=Depends(require_org_admin)):
+    if principal["organization_id"] != organization_id:
+        raise HTTPException(status_code=404, detail="organization_not_found")
+    now = int(time.time())
+    raw_token = secrets.token_urlsafe(40)
+    token_id = str(uuid.uuid4())
+    with db() as c:
+        c.execute(
+            """INSERT INTO device_enrollment_tokens
+               (id,organization_id,token_hash,label,expires_at,max_uses,created_by,created_at)
+               VALUES(?,?,?,?,?,?,?,?)""",
+            (token_id, organization_id, _hash_secret(raw_token), body.label,
+             now + body.expiresInSeconds, body.maxUses, principal["user_id"], now),
+        )
+    return {"tokenId": token_id, "enrollmentToken": raw_token,
+            "expiresAt": now + body.expiresInSeconds, "maxUses": body.maxUses,
+            "tokenWarning": "Shown once. Share only with intended devices."}
+
+
+@app.post("/v1/device/enroll", status_code=201)
+def enroll_device(body: DeviceEnrollment):
+    now = int(time.time())
+    raw_device_token = secrets.token_urlsafe(48)
+    device_id = str(uuid.uuid4())
+    credential_id = str(uuid.uuid4())
+    with db() as c:
+        c.execute("BEGIN IMMEDIATE")
+        enrollment = c.execute(
+            """SELECT * FROM device_enrollment_tokens
+               WHERE token_hash=? AND revoked_at IS NULL AND expires_at>?
+                 AND used_count<max_uses""",
+            (_hash_secret(body.enrollmentToken), now),
+        ).fetchone()
+        if not enrollment:
+            c.rollback()
+            raise HTTPException(status_code=401, detail="enrollment_token_invalid")
+        try:
+            c.execute(
+                """INSERT INTO devices
+                   (id,organization_id,external_device_id,display_name,branch_name,status,presence,
+                    app_id,app_version,android_version,manufacturer,model,created_at,updated_at)
+                   VALUES(?,?,?,?,?,'active','offline',?,?,?,?,?,?,?)""",
+                (device_id, enrollment["organization_id"], body.externalDeviceId, body.displayName,
+                 body.branchName, body.appId, body.appVersion, body.androidVersion,
+                 body.manufacturer, body.model, now, now),
+            )
+        except sqlite3.IntegrityError:
+            c.rollback()
+            raise HTTPException(status_code=409, detail="device_identity_already_enrolled")
+        c.execute(
+            """INSERT INTO device_credentials
+               (id,device_id,token_hash,token_prefix,created_at)
+               VALUES(?,?,?,?,?)""",
+            (credential_id, device_id, _hash_secret(raw_device_token), raw_device_token[:8], now),
+        )
+        c.execute("UPDATE device_enrollment_tokens SET used_count=used_count+1 WHERE id=?",
+                  (enrollment["id"],))
+        c.commit()
+    return {"deviceId": device_id, "organizationId": enrollment["organization_id"],
+            "deviceToken": raw_device_token,
+            "tokenWarning": "Shown once. Store in Android Keystore-backed storage."}
+
+
+@app.post("/v1/device/heartbeat")
+def device_heartbeat(body: DeviceHeartbeat, device_ctx=Depends(authenticated_device)):
+    now = int(time.time())
+    device_id = device_ctx["device_id"]
+    with db() as c:
+        c.execute("BEGIN IMMEDIATE")
+        c.execute(
+            """UPDATE devices SET last_seen_at=?,presence='online',battery_level=?,
+               network_type=?,internet_available=?,sip_status=?,sim_status=?,agent_status=?,
+               active_call_id=NULL,updated_at=? WHERE id=? AND organization_id=? AND status='active'""",
+            (now, body.batteryLevel, body.networkType, int(body.internetAvailable),
+             body.sipStatus, body.simStatus, body.agentStatus, now,
+             device_id, device_ctx["organization_id"]),
+        )
+        c.execute(
+            """INSERT INTO device_heartbeats
+               (device_id,received_at,battery_level,network_type,internet_available,
+                sip_status,sim_status,agent_status,active_call_id)
+               VALUES(?,?,?,?,?,?,?,?,NULL)""",
+            (device_id, now, body.batteryLevel, body.networkType, int(body.internetAvailable),
+             body.sipStatus, body.simStatus, body.agentStatus),
+        )
+        c.commit()
+    return {"accepted": True, "serverTime": now, "presence": "online"}
+
+
+@app.get("/v1/admin/devices")
+def list_organization_devices(principal=Depends(organization_principal)):
+    now = int(time.time())
+    with db() as c:
+        rows = c.execute(
+            """SELECT id,external_device_id,display_name,branch_name,status,last_seen_at,
+                      app_version,android_version,manufacturer,model,battery_level,network_type,
+                      internet_available,sip_status,sim_status,agent_status,active_call_id
+               FROM devices WHERE organization_id=? ORDER BY display_name""",
+            (principal["organization_id"],),
+        ).fetchall()
+    result = []
+    for row in rows:
+        item = dict(row)
+        last_seen = item["last_seen_at"]
+        age = now - last_seen if last_seen is not None else None
+        if item["status"] != "active" or age is None or age > PRESENCE_UNSTABLE_SECONDS:
+            presence = "offline"
+        elif age > PRESENCE_ONLINE_SECONDS:
+            presence = "unstable"
+        else:
+            presence = "online"
+        item["presence"] = presence
+        item["lastSeenAgeSeconds"] = age
+        result.append(item)
+    return {"devices": result, "count": len(result)}
+
+
+@app.get("/v1/admin/devices/{device_id}/activity")
+def device_activity(device_id: str, limit: int = Query(default=50, ge=1, le=200),
+                    principal=Depends(organization_principal)):
+    with db() as c:
+        device_row = c.execute(
+            "SELECT id FROM devices WHERE id=? AND organization_id=?",
+            (device_id, principal["organization_id"]),
+        ).fetchone()
+        if not device_row:
+            raise HTTPException(status_code=404, detail="device_not_found")
+        rows = c.execute(
+            """SELECT event_type,severity,event_code,occurred_at,received_at
+               FROM device_events WHERE device_id=? AND organization_id=?
+               ORDER BY received_at DESC LIMIT ?""",
+            (device_id, principal["organization_id"], limit),
+        ).fetchall()
+    return {"events": [dict(row) for row in rows]}
+
+
+@app.post("/v1/device/events", status_code=202)
+def report_device_event(body: dict, device_ctx=Depends(authenticated_device)):
+    allowed = {"eventType", "severity", "eventCode", "occurredAt"}
+    if set(body) - allowed or not {"eventType", "eventCode"}.issubset(body):
+        raise HTTPException(status_code=422, detail="invalid_event_payload")
+    event_type = body["eventType"]
+    event_code = body["eventCode"]
+    severity = body.get("severity", "info")
+    if not isinstance(event_type, str) or len(event_type) > 64:
+        raise HTTPException(status_code=422, detail="invalid_event_type")
+    if not isinstance(event_code, str) or len(event_code) > 80:
+        raise HTTPException(status_code=422, detail="invalid_event_code")
+    if severity not in {"debug", "info", "warning", "error", "critical"}:
+        raise HTTPException(status_code=422, detail="invalid_event_severity")
+    now = int(time.time())
+    with db() as c:
+        c.execute(
+            """INSERT INTO device_events
+               (id,organization_id,device_id,event_type,severity,event_code,details_json,occurred_at,received_at)
+               VALUES(?,?,?,?,?,?, '{}',?,?)""",
+            (str(uuid.uuid4()), device_ctx["organization_id"], device_ctx["device_id"],
+             event_type, severity, event_code, int(body.get("occurredAt", now)), now),
+        )
+    return {"accepted": True}
