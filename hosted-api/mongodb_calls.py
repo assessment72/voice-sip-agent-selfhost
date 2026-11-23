@@ -9,7 +9,7 @@ import time
 import uuid
 from typing import Any
 
-from pymongo import ASCENDING, ReturnDocument
+from pymongo import ASCENDING, IndexModel, ReturnDocument
 from pymongo.collection import Collection
 from pymongo.errors import DuplicateKeyError
 
@@ -53,7 +53,7 @@ class MongoCallRepository:
     def ensure_indexes(self) -> None:
         self.calls.create_indexes([
             # Same principal + key can only create one durable job.
-            __import__("pymongo").IndexModel(
+            IndexModel(
                 [("principal", ASCENDING), ("idempotency_key", ASCENDING)],
                 unique=True, name="uq_call_principal_idempotency",
             ),
