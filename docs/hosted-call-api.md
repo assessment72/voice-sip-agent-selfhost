@@ -12,7 +12,7 @@ CallGate's USSD and generic webhook-management features are not part of this cel
 
 ## Call flow
 
-1. The handset polls the hosted service every three seconds over an outbound HTTPS request. The handset opens no listener, and no local API port is exposed.
+1. The handset uses a bounded 20-second HTTPS long poll on a dedicated network worker. A separate serial network worker sends state updates, so a slow long poll or state POST cannot block the gateway/call-control executor. When a job arrives the server responds immediately; after each response the handset starts the next long poll. The handset opens no listener, and no local API port is exposed.
 2. A caller authenticates with a dedicated `CALL_API_TOKEN`. The phone authenticates with a different `DEVICE_API_TOKEN`. Neither credential is a SIP or legacy CallGate password.
 3. The server validates the phone number, requires an explicit allow-list, rejects malformed/emergency short codes, applies rate limits and idempotency, and queues one job.
 4. The handset validates the number again with Android's emergency-number API, then places the cellular leg through the app's configured cellular endpoint.
@@ -30,7 +30,7 @@ CallGate's USSD and generic webhook-management features are not part of this cel
 
 ### Handset endpoints
 
-- `GET /v1/device/jobs/next` — requires `Authorization: Bearer <DEVICE_API_TOKEN>`; returns one queued job under a short claim lease.
+- `GET /v1/device/jobs/next?wait=20` — requires `Authorization: Bearer <DEVICE_API_TOKEN>`; holds the request for up to 20 seconds, returns immediately when a queued job arrives, and returns `{\"job\":null}` when the wait expires. The wait is bounded to 25 seconds. Jobs use a short claim lease.
 - `POST /v1/device/calls/{call_id}/state` — reports the next permitted state and an optional non-sensitive reason code.
 
 ### State sequence
@@ -67,8 +67,18 @@ See [hosted-api/README.md](../hosted-api/README.md) for the Docker Compose + Cad
 
 ## Validation status
 
-Automated hosted API tests cover authentication, number validation/normalization, allow-list enforcement, idempotency, rate limiting, job claim recovery, state transitions, and ownership checks.
+Automated hosted API tests cover authentication, number validation/normalization, allow-list enforcement, idempotency, rate limiting, job claim recovery, state transitions, ownership checks, long-poll timeout, and prompt wakeup when a job is queued.
 
 Gateway unit tests cover cellular-first ordering, no SIP leg when the cellular call is unanswered, two-way media bridging, and teardown. Android CI runs JVM/Android unit tests and creates a debug APK artifact.
 
 A release is **not ready** until the current Android workflow succeeds, a signed APK is produced, and the complete live-device test matrix passes on the target HONOR Android 16 handset: cellular answer/no-answer, loss of network, SIP failure, call termination from either side, audio in both directions, and duration timeout. CI cannot substitute for those physical-device checks.
+
+
+## Responsiveness and telemetry
+
+- Long polling is performed on a dedicated Android network executor; call control, Telecom callbacks, SIP events, and gateway configuration remain on the gateway executor.
+- State writes are queued on a separate single-thread network executor so they cannot sit behind the outstanding long poll. Their order is preserved.
+- HTTP requests retain bounded connect/read timeouts. The long-poll read timeout is 28 seconds for a maximum 25-second server wait.
+- The server stores per-call state event timestamps against the opaque call ID. Destination numbers are not returned by status queries and credentials are never logged.
+- FCM is intentionally not required in this stage. It may be added later as a best-effort wake hint; HTTPS long polling remains the authoritative job delivery path.
+- The backend long-poll endpoint currently checks the queue at 250 ms intervals while waiting. The handset itself does not issue repeated short polling requests.
