@@ -203,9 +203,10 @@ private fun Screen(rt: GatewayRuntime, modifier: Modifier, requestDialer: () -> 
                 valueRange = 0f..200f,
                 steps = 19,
             )
-            Toggle(t("كتم الاستقبال من SIP", "Mute SIP → cellular"), cur.muteSipToCellular,
-                { rt.applySettings(cur.copy(muteSipToCellular = it)) }) {
-                t("يمنع صوت SIP من الوصول إلى SIM.", "Stops SIP audio from reaching cellular.")
+            Toggle(t("كتم ميكروفون SIM", "Mute SIM microphone"), cur.muteSipToCellular,
+                { rt.applySettings(cur.copy(muteSipToCellular = it)) }, info = "mute_sim_mic") {
+                t("يوقف إرسال صوت SIP إلى جهة SIM فقط؛ لا ينهي المكالمة ولا يمنع وصول صوت SIM إلى SIP.",
+                    "Mutes only SIP audio sent into the SIM call; it does not end the call or block SIM audio sent to SIP.")
             }
             Text(t("تُطبَّق إعدادات الميكسر من المكالمة التالية. 100% هو المستوى الطبيعي، و200% أقصى تضخيم مع منع التشبع.",
                 "Mixer settings apply from the next call. 100% is unity gain; 200% is the maximum with clipping protection."),

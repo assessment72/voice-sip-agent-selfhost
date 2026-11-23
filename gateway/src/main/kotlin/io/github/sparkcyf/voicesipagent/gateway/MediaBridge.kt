@@ -25,6 +25,9 @@ class MediaBridge(
         require(a.format == b.format) { "Media formats differ: ${a.format} / ${b.format}" }
     }
     private val master: MediaPort? = if (a.isClockSource) a else if (b.isClockSource) b else null
+    // Separate adaptive level controllers keep each call direction independent.
+    private val aToBProcessor = PcmSpeechProcessor()
+    private val bToAProcessor = PcmSpeechProcessor()
     private var ticker: ScheduledExecutorService? = null
 
     @Volatile var frames = 0L
@@ -56,8 +59,8 @@ class MediaBridge(
         try {
             val fa = a.readFrame()
             val fb = b.readFrame()
-            b.writeFrame(mix(fa, aToBGain, muteAToB))
-            a.writeFrame(mix(fb, bToAGain, muteBToA))
+            b.writeFrame(if (muteAToB) a.format.silence() else aToBProcessor.process(fa, aToBGain))
+            a.writeFrame(if (muteBToA) b.format.silence() else bToAProcessor.process(fb, bToAGain))
             windowPeakA = maxOf(windowPeakA, VoiceFormat.peak(fa))
             windowPeakB = maxOf(windowPeakB, VoiceFormat.peak(fb))
             if (++frames % 50 == 0L) {
@@ -66,17 +69,6 @@ class MediaBridge(
             }
         } catch (_: Throwable) {
             // A failing port must not kill the clock thread; leg teardown stops the bridge.
-        }
-    }
-
-    private fun mix(frame: ShortArray, gain: Float, muted: Boolean): ShortArray {
-        if (muted) return ShortArray(frame.size)
-        val safeGain = gain.coerceIn(0f, 2f)
-        if (safeGain == 1f) return frame
-        return ShortArray(frame.size) { index ->
-            (frame[index].toInt() * safeGain).toInt()
-                .coerceIn(Short.MIN_VALUE.toInt(), Short.MAX_VALUE.toInt())
-                .toShort()
         }
     }
 
