@@ -182,3 +182,82 @@ def test_device_event_is_visible_only_inside_owning_organization(tmp_path, monke
         headers=auth(beta["apiToken"], beta["organizationId"]),
     )
     assert hidden.status_code == 404
+
+
+def test_tenant_call_is_scoped_and_claimed_only_by_owning_org_device(tmp_path, monkeypatch):
+    client = setup_client(tmp_path, monkeypatch)
+    alpha = create_org(client, "Alpha", "alpha", "owner-a")
+    beta = create_org(client, "Beta", "beta", "owner-b")
+
+    def enroll(org, external_id):
+        headers = auth(org["apiToken"], org["organizationId"])
+        token = client.post(
+            f"/v1/organizations/{org['organizationId']}/enrollment-tokens",
+            json={"label": external_id}, headers=headers,
+        ).json()["enrollmentToken"]
+        return client.post(
+            "/v1/device/enroll",
+            json={"enrollmentToken": token, "externalDeviceId": external_id, "displayName": external_id},
+        ).json()
+
+    alpha_device = enroll(alpha, "alpha-phone")
+    beta_device = enroll(beta, "beta-phone")
+    created = client.post(
+        f"/v1/organizations/{alpha['organizationId']}/calls",
+        json={"phoneNumber": "777405578"},
+        headers=auth(alpha["apiToken"], alpha["organizationId"]) | {"Idempotency-Key": str(uuid.uuid4())},
+    )
+    assert created.status_code == 202, created.text
+    assert client.get(
+        "/v1/device/call-jobs/next?wait=0",
+        headers=auth(beta_device["deviceToken"]),
+    ).json()["job"] is None
+    job = client.get(
+        "/v1/device/call-jobs/next?wait=0",
+        headers=auth(alpha_device["deviceToken"]),
+    ).json()["job"]
+    assert job["id"] == created.json()["id"]
+    assert client.get(
+        f"/v1/admin/calls/{job['id']}",
+        headers=auth(beta["apiToken"], beta["organizationId"]),
+    ).status_code == 404
+    state = client.post(
+        f"/v1/device/tenant-calls/{job['id']}/state",
+        json={"state": "ringing_cellular"},
+        headers=auth(alpha_device["deviceToken"]),
+    )
+    assert state.status_code == 200
+    assert state.json()["state"] == "ringing_cellular"
+
+
+def test_device_command_delivery_and_completion_are_device_scoped(tmp_path, monkeypatch):
+    client = setup_client(tmp_path, monkeypatch)
+    org = create_org(client, "Alpha", "alpha", "owner-a")
+    admin = auth(org["apiToken"], org["organizationId"])
+    enrollment = client.post(
+        f"/v1/organizations/{org['organizationId']}/enrollment-tokens",
+        json={"label": "device"}, headers=admin,
+    ).json()
+    device = client.post(
+        "/v1/device/enroll",
+        json={"enrollmentToken": enrollment["enrollmentToken"],
+              "externalDeviceId": "cmd-device", "displayName": "Command device"},
+    ).json()
+    command = client.post(
+        "/v1/admin/device-commands",
+        json={"deviceId": device["deviceId"], "commandType": "refresh_status"},
+        headers=admin,
+    )
+    assert command.status_code == 201
+    delivered = client.get(
+        "/v1/device/commands/next?wait=0",
+        headers=auth(device["deviceToken"]),
+    )
+    assert delivered.json()["command"]["id"] == command.json()["commandId"]
+    result = client.post(
+        f"/v1/device/commands/{command.json()['commandId']}/result",
+        json={"status": "completed", "resultCode": "ok", "resultSummary": "Status refreshed"},
+        headers=auth(device["deviceToken"]),
+    )
+    assert result.status_code == 200
+    assert result.json()["status"] == "completed"
