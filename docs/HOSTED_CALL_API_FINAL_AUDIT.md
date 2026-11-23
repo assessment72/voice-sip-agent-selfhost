@@ -229,3 +229,23 @@ The client pool is intentionally conservative for Vercel serverless instances (m
 - Dedicated Hosted API CI now installs development test dependencies.
 - This is a repository-level increment only. FastAPI routes, metrics, tenant ownership, device enrollment, and admin/control-plane paths remain SQLite-backed. No backend cutover has been enabled.
 - Required before integration: run CI cleanly, verify claim/transition races against a real replica-set Atlas test database, add organization/device scoping to the call document and repository signatures, then migrate all dependent read/write paths together.
+
+
+## Organization/device isolation increment — 2026-11-23
+
+- Updated `hosted-api/mongodb_calls.py` so `organization_id` is mandatory for create, claim, and transition operations.
+- Idempotency uniqueness is now scoped by `(organization_id, principal, idempotency_key)`; the active-call uniqueness slot is scoped per organization.
+- Queue expiry, job claim, ownership lookup, and conditional state update all include the authenticated organization scope. Claim records the exact `device_id`; transitions require both organization and claiming device.
+- Added mongomock tests for cross-organization idempotency/active-slot isolation, claim isolation, and transition isolation.
+- Added optional real-MongoDB concurrency test `hosted-api/tests/test_mongodb_calls_atlas.py`. It is skipped unless both `MONGODB_TEST_URI` and `MONGODB_TEST_DATABASE` are explicitly supplied. It creates a uniquely suffixed database and drops only that database; it checks concurrent idempotent creation and competing claims. No Atlas URI was supplied to CI and no live Atlas integration result is claimed.
+- These repository methods still rely on the caller to derive `organization_id` from a verified device credential/membership, not from an untrusted request body. Route/auth integration remains intentionally deferred.
+
+### CI snapshot after the isolation increment
+
+- Previous commit `5bbbaa02681fe9e71377337eeb53dbb1cc52c669`: Hosted Call API tests run [45103629058](https://github.com/assessment72/voice-sip-agent-selfhost/actions/runs/45103629058) and general CI run [45103629064](https://github.com/assessment72/voice-sip-agent-selfhost/actions/runs/45103629064) completed successfully.
+- Android run [45103628992](https://github.com/assessment72/voice-sip-agent-selfhost/actions/runs/45103628992) failed in the combined JVM/Android unit-test step; APK assembly was skipped. The available job summary does not expose the failing test/log detail, so the root cause is not yet established.
+- After organization scoping and the optional Atlas test were committed, workflows were observed for head `b20ff1b8f478e426edcfa7580159a13eeb38f889`:
+  - Hosted Call API tests [45104528368](https://github.com/assessment72/voice-sip-agent-selfhost/actions/runs/45104528368): in progress at audit time.
+  - General CI [45104528416](https://github.com/assessment72/voice-sip-agent-selfhost/actions/runs/45104528416): in progress at audit time.
+  - Android build/tests [45104528390](https://github.com/assessment72/voice-sip-agent-selfhost/actions/runs/45104528390): pending at audit time.
+- No FastAPI route was switched to MongoDB. No Preview or Production deployment, merge, real call, SIP credential change, or production database mutation was performed.
