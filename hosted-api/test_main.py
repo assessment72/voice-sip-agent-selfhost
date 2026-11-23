@@ -287,3 +287,29 @@ def test_mongodb_health_is_separate_from_the_active_call_database(tmp_path, monk
     response = client.get("/health/mongodb")
     assert response.status_code == 200
     assert response.json() == {"status": "ok", "backend": "mongodb"}
+
+
+
+def test_vercel_uses_mongodb_without_initializing_sqlite(monkeypatch):
+    import mongodb_store
+
+    monkeypatch.setenv("VERCEL", "1")
+    monkeypatch.setenv("MONGODB_URI", "mongodb://test.invalid")
+    monkeypatch.setenv("MONGODB_DATABASE", "voice_sip_agent_ci")
+    monkeypatch.setattr(main, "init_db", lambda: (_ for _ in ()).throw(AssertionError("SQLite must not initialize")))
+    calls = []
+    monkeypatch.setattr(mongodb_store, "ensure_indexes", lambda: calls.append("indexes"))
+    main.startup()
+    assert calls == ["indexes"]
+
+
+def test_legacy_shared_tokens_are_blocked_when_mongodb_is_active(monkeypatch):
+    monkeypatch.setenv("MONGODB_URI", "mongodb://test.invalid")
+    monkeypatch.setattr(main, "LEGACY_CALL_API_ENABLED", True)
+    monkeypatch.setattr(main, "LEGACY_DEVICE_API_ENABLED", True)
+    with pytest.raises(HTTPException) as caller_error:
+        main.caller("Bearer legacy")
+    assert caller_error.value.status_code == 404
+    with pytest.raises(HTTPException) as device_error:
+        main.device("Bearer legacy")
+    assert device_error.value.status_code == 404
