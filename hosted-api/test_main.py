@@ -142,3 +142,62 @@ def test_device_cannot_update_unclaimed_call(tmp_path, monkeypatch):
     result = client.post(f"/v1/device/calls/{created['id']}/state",
                          json={"state": "ringing_cellular"}, headers=headers("test-device-token"))
     assert result.status_code == 403
+
+
+def test_latency_metrics_are_aggregated_without_call_identifiers_or_numbers(tmp_path, monkeypatch):
+    client = setup_client(tmp_path, monkeypatch)
+    key = str(uuid.uuid4())
+    created = client.post(
+        "/v1/calls", json={"phoneNumber": "777405578"},
+        headers=headers("test-caller-token", **{"Idempotency-Key": key}),
+    ).json()
+    call_id = created["id"]
+    device_headers = headers("test-device-token")
+    assert client.get("/v1/device/jobs/next?wait=0", headers=device_headers).json()["job"]["id"] == call_id
+
+    import time
+    base = time.time_ns() // 1_000_000
+    with main.db() as conn:
+        events = [
+            {"state": "queued", "at": base // 1000, "atMs": base},
+            {"state": "ringing_cellular", "at": (base + 120) // 1000, "atMs": base + 120},
+            {"state": "cellular_answered", "at": (base + 500) // 1000, "atMs": base + 500},
+            {"state": "calling_sip", "at": (base + 650) // 1000, "atMs": base + 650},
+            {"state": "bridged", "at": (base + 900) // 1000, "atMs": base + 900},
+        ]
+        conn.execute("UPDATE calls SET events=? WHERE id=?", (main.json.dumps(events), call_id))
+
+    response = client.get("/v1/metrics/latency", headers=headers("test-caller-token"))
+    assert response.status_code == 200
+    body = response.json()
+    assert body["queue_to_cellular_ringing"] == {"samples": 1, "averageMs": 120.0, "p95Ms": 120}
+    assert body["queue_to_bridged"] == {"samples": 1, "averageMs": 900.0, "p95Ms": 900}
+    assert body["cellular_answer_to_sip"] == {"samples": 1, "averageMs": 150.0, "p95Ms": 150}
+    assert call_id not in response.text
+    assert "777405578" not in response.text
+
+
+def test_parallel_pollers_cannot_claim_the_same_job(tmp_path, monkeypatch):
+    client = setup_client(tmp_path, monkeypatch)
+    created = client.post(
+        "/v1/calls", json={"phoneNumber": "777405578"},
+        headers=headers("test-caller-token", **{"Idempotency-Key": str(uuid.uuid4())}),
+    ).json()
+    import threading
+    results = []
+    lock = threading.Lock()
+
+    def poll():
+        response = client.get("/v1/device/jobs/next?wait=0", headers=headers("test-device-token"))
+        with lock:
+            results.append(response.json()["job"])
+
+    threads = [threading.Thread(target=poll) for _ in range(2)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=3)
+    assert all(not thread.is_alive() for thread in threads)
+    claimed = [job for job in results if job is not None]
+    assert len(claimed) == 1
+    assert claimed[0]["id"] == created["id"]
