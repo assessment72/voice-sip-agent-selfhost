@@ -98,7 +98,7 @@ def test_branches_and_append_only_audit_queries_are_organization_scoped(db):
         token_hash="owner-b-hash", token_prefix="owner-b",
     )
     branch_id = mongodb_control.create_branch(
-        organization_id=org_a, name="North", code="N",
+        organization_id=org_a, name="North", code="N", actor_user_id="owner-a",
     )
     assert mongodb_control.list_branches(org_a)[0]["_id"] == branch_id
     assert mongodb_control.list_branches(org_b) == []
@@ -106,7 +106,7 @@ def test_branches_and_append_only_audit_queries_are_organization_scoped(db):
         organization_id=org_a, actor_user_id="owner-a", action="branch.created",
         target_type="branch", target_id=branch_id, metadata={"code": "N"},
     )
-    assert len(mongodb_control.list_audit(org_a, 10)) == 1
+    assert len(mongodb_control.list_audit(org_a, 10)) == 3
     assert mongodb_control.list_audit(org_b, 10) == []
 
 
