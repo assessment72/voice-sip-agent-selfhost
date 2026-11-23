@@ -523,7 +523,7 @@ def list_organization_devices(principal=Depends(organization_principal)):
     now = int(time.time())
     with db() as c:
         rows = c.execute(
-            """SELECT id,external_device_id,display_name,branch_name,status,last_seen_at,
+            """SELECT id,external_device_id,display_name,branch_name,branch_id,status,last_seen_at,
                       app_version,android_version,manufacturer,model,battery_level,network_type,
                       internet_available,sip_status,sim_status,agent_status,active_call_id
                FROM devices WHERE organization_id=? ORDER BY display_name""",
