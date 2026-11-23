@@ -31,7 +31,7 @@ The current GitHub Actions workflow is `.github/workflows/hosted-api-ci.yml`. It
 
 The GitHub integration available in this execution does not expose a repository Actions Secrets write operation. The Vercel Preview variables cannot be read by GitHub Actions automatically. Do not copy the secret into source code, workflow YAML, logs, or a commit.
 
-To complete live Atlas integration testing, add GitHub repository Actions secrets named `MONGODB_TEST_URI` and `MONGODB_TEST_DATABASE` through GitHub's repository Settings > Secrets and variables > Actions, then wire a dedicated integration-test job to those secrets. Keep the job limited to `voice_sip_agent_ci`; never point it at `voice_sip_agent`.
+An opt-in live Atlas integration test is now present at `hosted-api/tests/test_mongodb_atlas_integration.py`. The Hosted API workflow invokes it only when both GitHub Actions secrets are available. Add repository Actions secrets named `MONGODB_TEST_URI` and `MONGODB_TEST_DATABASE` through GitHub's repository Settings > Secrets and variables > Actions. Until then the live integration test is skipped. Keep it limited to `voice_sip_agent_ci`; never point it at `voice_sip_agent`.
 
 ## Known cleanup item
 
