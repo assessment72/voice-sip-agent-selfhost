@@ -68,6 +68,9 @@ def init_db():
         migration = Path(__file__).parent / "migrations" / "001_tenant_device_foundation.sql"
         if migration.exists():
             c.executescript(migration.read_text(encoding="utf-8"))
+        credential_columns = {row["name"] for row in c.execute("PRAGMA table_info(organization_api_credentials)")}
+        if credential_columns and "user_id" not in credential_columns:
+            c.execute("ALTER TABLE organization_api_credentials ADD COLUMN user_id TEXT")
 
 
 @app.on_event("startup")
@@ -333,7 +336,7 @@ def organization_principal(authorization: str | None = Header(default=None),
         row = c.execute(
             """SELECT m.organization_id,m.user_id,m.role
                FROM organization_api_credentials k
-               JOIN organization_memberships m ON m.organization_id=k.organization_id
+               JOIN organization_memberships m ON m.organization_id=k.organization_id AND m.user_id=k.user_id
                WHERE k.token_hash=? AND k.revoked_at IS NULL
                  AND (k.expires_at IS NULL OR k.expires_at>?)
                  AND m.status='active' AND m.organization_id=?""",
@@ -392,9 +395,9 @@ def bootstrap_organization(body: OrganizationBootstrap,
             )
             c.execute(
                 """INSERT INTO organization_api_credentials
-                   (id,organization_id,label,token_hash,token_prefix,scopes,created_at)
-                   VALUES(?,?,?,?,?,'["admin"]',?)""",
-                (credential_id, org_id, "Initial owner credential", _hash_secret(raw_token), raw_token[:8], now),
+                   (id,organization_id,label,user_id,token_hash,token_prefix,scopes,created_at)
+                   VALUES(?,?,?,?,?,?,'["admin"]',?)""",
+                (credential_id, org_id, "Initial owner credential", body.ownerUserId, _hash_secret(raw_token), raw_token[:8], now),
             )
             c.commit()
         except sqlite3.IntegrityError:
@@ -478,7 +481,7 @@ def device_heartbeat(body: DeviceHeartbeat, device_ctx=Depends(authenticated_dev
         c.execute(
             """UPDATE devices SET last_seen_at=?,presence='online',battery_level=?,
                network_type=?,internet_available=?,sip_status=?,sim_status=?,agent_status=?,
-               active_call_id=NULL,updated_at=? WHERE id=? AND organization_id=? AND status='active'""",
+               active_call_id=?,updated_at=? WHERE id=? AND organization_id=? AND status='active'""",
             (now, body.batteryLevel, body.networkType, int(body.internetAvailable),
              body.sipStatus, body.simStatus, body.agentStatus, ("active" if body.activeCall else None), now,
              device_id, device_ctx["organization_id"]),
