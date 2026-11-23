@@ -278,7 +278,7 @@ class GatewayRuntime private constructor(context: Context) {
         // setup while idle if access is unavailable; a missing override alone does not trigger setup.
         healthCheck = worker.scheduleWithFixedDelay(::periodicCheck, 60, 60, TimeUnit.SECONDS)
         hostedPollingEnabled.set(true)
-        drainHostedStateQueue()
+        hostedStateWorker.execute { drainHostedStateQueue() }
         hostedPoll = hostedPollWorker.scheduleWithFixedDelay(::pollHostedCalls, 0, 1, TimeUnit.SECONDS)
         if (hostedHeartbeatTask == null) {
             hostedHeartbeatTask = hostedHeartbeatWorker.scheduleWithFixedDelay(
