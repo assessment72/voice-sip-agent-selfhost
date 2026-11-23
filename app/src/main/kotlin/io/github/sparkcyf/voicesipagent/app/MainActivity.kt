@@ -282,6 +282,9 @@ private fun SettingsSection(rt: GatewayRuntime) {
     var prefixes by remember(cur) { mutableStateOf(cur.allowedPrefixes) }
     var hostedApiUrl by remember(cur) { mutableStateOf(cur.hostedApiUrl) }
     var hostedDeviceToken by remember(cur) { mutableStateOf(cur.hostedDeviceToken) }
+    var enrollmentToken by remember(cur) { mutableStateOf("") }
+    var hostedDeviceName by remember(cur) { mutableStateOf("${Build.MANUFACTURER} ${Build.MODEL}".trim()) }
+    val hostedMessage by rt.hostedDeviceMessage.collectAsState()
     var domain by remember(cur) { mutableStateOf(cur.domain) }
     var stack by remember(cur) { mutableStateOf(cur.sipStack) }
     var transport by remember(cur) { mutableStateOf(SipTransport.of(cur.sipTransport) ?: SipTransport.UDP) }
@@ -343,6 +346,21 @@ private fun SettingsSection(rt: GatewayRuntime) {
         Field(t("Префиксы для исходящих (через запятую, пусто = любой)", "Allowed dial-out prefixes (comma separated, empty = any)"), prefixes, info = "prefixes") { prefixes = it }
         LabelWithInfo(t("Hosted Call API", "Hosted Call API"), "hosted_api")
         Field(t("عنوان API المستضاف (HTTPS)", "Hosted API base URL (HTTPS)"), hostedApiUrl) { hostedApiUrl = it }
+        Field(t("اسم هذا الجهاز", "This device name"), hostedDeviceName) { hostedDeviceName = it }
+        OutlinedTextField(
+            value = enrollmentToken, onValueChange = { enrollmentToken = it },
+            label = { Text(t("رمز تسجيل الجهاز من لوحة المؤسسة", "Organization device enrollment token")) },
+            visualTransformation = PasswordVisualTransformation(), singleLine = true, modifier = Modifier.fillMaxWidth(),
+        )
+        Button(
+            onClick = { rt.enrollHostedDevice(hostedApiUrl, enrollmentToken, hostedDeviceName) },
+            enabled = hostedApiUrl.startsWith("https://", ignoreCase = true) && enrollmentToken.isNotBlank(),
+        ) { Text(t("تسجيل هذا الجهاز بالمؤسسة", "Enroll this device with organization")) }
+        if (cur.hostedDeviceId.isNotBlank()) {
+            Text(t("معرّف الجهاز: ", "Device ID: ") + cur.hostedDeviceId, style = MaterialTheme.typography.bodySmall)
+            Text(t("معرّف المؤسسة: ", "Organization ID: ") + cur.hostedOrganizationId, style = MaterialTheme.typography.bodySmall)
+        }
+        if (hostedMessage.isNotBlank()) Text(hostedMessage, style = MaterialTheme.typography.bodySmall)
         OutlinedTextField(
             value = hostedDeviceToken, onValueChange = { hostedDeviceToken = it },
             label = { Text(t("رمز الجهاز API", "Device API token")) },
