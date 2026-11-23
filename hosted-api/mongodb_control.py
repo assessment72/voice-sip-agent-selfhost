@@ -95,6 +95,11 @@ def bootstrap_organization(*, slug: str, name: str, owner_user_id: str,
             "scopes": ["admin"], "last_used_at": None, "expires_at": None,
             "revoked_at": None, "created_at": now,
         }, session=session)
+        collection("admin_audit_events").insert_one({
+            "_id": _id(), "organization_id": org_id, "actor_user_id": owner_user_id,
+            "action": "organization.created", "target_type": "organization", "target_id": org_id,
+            "metadata": {"slug": slug}, "created_at": now,
+        }, session=session)
     try:
         with_transaction(write)
     except DuplicateKeyError as exc:
@@ -105,13 +110,22 @@ def bootstrap_organization(*, slug: str, name: str, owner_user_id: str,
 def create_enrollment_token(*, organization_id: str, token_hash: str, label: str,
                             expires_at: int, max_uses: int, created_by: str) -> str:
     token_id, now = _id(), _now()
-    collection("enrollment_tokens").insert_one({
-        "_id": token_id, "organization_id": organization_id, "token_hash": token_hash,
-        "label": label, "expires_at": expires_at, "max_uses": max_uses, "used_count": 0,
-        "revoked_at": None, "created_by": created_by, "created_at": now,
-    })
-    return token_id
 
+    def write(session):
+        collection("enrollment_tokens").insert_one({
+            "_id": token_id, "organization_id": organization_id, "token_hash": token_hash,
+            "label": label, "expires_at": expires_at, "max_uses": max_uses, "used_count": 0,
+            "revoked_at": None, "created_by": created_by, "created_at": now,
+        }, session=session)
+        collection("admin_audit_events").insert_one({
+            "_id": _id(), "organization_id": organization_id, "actor_user_id": created_by,
+            "action": "enrollment_token.created", "target_type": "enrollment_token",
+            "target_id": token_id, "metadata": {"label": label, "max_uses": max_uses},
+            "created_at": now,
+        }, session=session)
+
+    with_transaction(write)
+    return token_id
 
 def enroll_device(*, enrollment_token_hash: str, external_device_id: str, display_name: str,
                   branch_id: str | None, branch_name: str | None, app_id: str,
@@ -151,6 +165,12 @@ def enroll_device(*, enrollment_token_hash: str, external_device_id: str, displa
             "_id": credential_id, "device_id": device_id, "token_hash": device_token_hash,
             "token_prefix": device_token_prefix, "last_used_at": None, "expires_at": None,
             "revoked_at": None, "created_at": now,
+        }, session=session)
+        collection("admin_audit_events").insert_one({
+            "_id": _id(), "organization_id": enrollment["organization_id"],
+            "actor_user_id": enrollment["created_by"], "action": "device.enrolled",
+            "target_type": "device", "target_id": device_id,
+            "metadata": {"branch_id": branch_id}, "created_at": now,
         }, session=session)
         return device_id, enrollment["organization_id"]
 
@@ -196,17 +216,26 @@ def list_devices(organization_id: str) -> list[dict[str, Any]]:
     ).sort("display_name", ASCENDING))
 
 
-def create_branch(*, organization_id: str, name: str, code: str | None) -> str:
+def create_branch(*, organization_id: str, name: str, code: str | None,
+                  actor_user_id: str) -> str:
     now, branch_id = _now(), _id()
-    try:
-        collection("branches").insert_one({
-            "_id": branch_id, "organization_id": organization_id, "name": name,
-            "code": code, "status": "active", "created_at": now, "updated_at": now,
-        })
-    except DuplicateKeyError as exc:
-        raise ControlConflict("branch_code_already_exists") from exc
-    return branch_id
 
+    def write(session):
+        try:
+            collection("branches").insert_one({
+                "_id": branch_id, "organization_id": organization_id, "name": name,
+                "code": code, "status": "active", "created_at": now, "updated_at": now,
+            }, session=session)
+        except DuplicateKeyError as exc:
+            raise ControlConflict("branch_code_already_exists") from exc
+        collection("admin_audit_events").insert_one({
+            "_id": _id(), "organization_id": organization_id, "actor_user_id": actor_user_id,
+            "action": "branch.created", "target_type": "branch", "target_id": branch_id,
+            "metadata": {"name": name, "code": code}, "created_at": now,
+        }, session=session)
+
+    with_transaction(write)
+    return branch_id
 
 def list_branches(organization_id: str) -> list[dict[str, Any]]:
     return list(collection("branches").find(
