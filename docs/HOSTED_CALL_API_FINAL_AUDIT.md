@@ -471,3 +471,16 @@ Hosted API workflow [45190607304](https://github.com/assessment72/voice-sip-agen
 The correction in commit `fad17df` updates the tenant-isolation test to account for the expected organization-bootstrap audit record. Hosted API CI is running again on that latest commit. JVM CI and Android build/tests are also running; their results must be read from the latest PR runs before declaring them passed.
 
 Vercel's automatic Preview build for the newer branch commits was rejected by the team's build-rate limit. The earlier Preview deployment for code commit `ad7d344` remains the verified runtime checkpoint: it was READY and returned HTTP 200 with `backend=mongodb` from `/health/database`. No paid plan upgrade or additional deployment attempt was made. The newest audit-code changes have not yet been deployed to Preview.
+
+
+---
+
+## Consolidated control-panel and Android test repair — 2026-11-23
+
+- Branch head before this consolidated update: `71e5028f1f6ad08f7f9c389c3a650f6b37342952`.
+- Fixed the Android unit-test constructor call by passing the port factory as the named `createPort` argument. The production audio opener signature and runtime behavior are unchanged.
+- Expanded `hosted-api/admin/index.html` into an Arabic, mobile-responsive control panel for organization bootstrap, tenant login, one-time enrollment-token issuance, branches, device presence and commands, device revocation, queued outbound calls, call details, latency aggregates, device activity, and admin audit history.
+- Bootstrap and tenant/device tokens are only held in page memory and displayed once for copying; the page does not persist credentials in local storage. The outbound-call action requires explicit confirmation and does not run automatically.
+- The admin UI uses existing authenticated organization endpoints; no new privileged server route was added.
+- Validation to run on this commit: Hosted API tests + Docker smoke, JVM CI, Android unit tests + debug APK assembly. Vercel Preview build is expected to be attempted once by the linked Git integration; no manual deployment or paid plan action is requested.
+- Remaining external acceptance gates: configure/verify the Preview bootstrap secret, run live Atlas transaction tests with a dedicated CI-only credential, verify Atlas backup/restore and restrict the existing broad network allow-list, install on HONOR MTN-NX1 / Android 16, and verify real SIM/SIP two-way audio and interruption recovery. No real call, production change, PR merge, or signed release build is performed by this commit.

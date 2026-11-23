@@ -30,7 +30,7 @@ class PrivilegedAudioOpenerTest {
     @After fun teardown() { log.close() }
 
     private fun opener(factory: (ParcelFileDescriptor, PcmFormat, (String) -> Unit) -> PcmSocketPort = { _, _, _ -> port }) =
-        PrivilegedAudioOpener(connector, { AudioMethod.AUTO }, { false }, { PcmFormat.NARROWBAND }, factory)
+        PrivilegedAudioOpener(connector, { AudioMethod.AUTO }, { false }, { PcmFormat.NARROWBAND }, createPort = factory)
 
     @Test fun portConstructionFailureClosesDescriptorAndHelperTap() {
         val result = runCatching { opener { _, _, _ -> error("port construction failed") }.open {} }
