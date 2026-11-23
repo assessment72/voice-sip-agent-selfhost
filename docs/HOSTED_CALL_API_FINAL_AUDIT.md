@@ -269,3 +269,54 @@ The client pool is intentionally conservative for Vercel serverless instances (m
 
 
 - Atlas integration-test safety refinement: the test now uses the explicitly configured `MONGODB_TEST_DATABASE` and a random per-run collection name, then drops only that collection. This is compatible with the existing database-scoped test user and does not require broader database privileges or database-wide deletion. Commit: `4cf8ddeb82c585a71e203c4ef1d2d3fae5204529`.
+
+
+---
+
+## Security and lifecycle remediation pass (2026-11-23)
+
+Working branch head after this pass: `7348947dba9ed5f143be9bceca7a9a619c363d0b`.
+
+### Changes committed to `feature/hosted-call-api`
+
+- Organization credentials now require an active organization as well as an active membership and unrevoked/unexpired token.
+- Device credentials are rejected when their organization is suspended or closed.
+- Only `owner`, `admin`, and `operator` can create organization calls; `viewer` remains read-only.
+- Added organization-member revocation. Revocation suspends membership and revokes all active API credentials for that member. Owner membership cannot be revoked through this endpoint; ownership transfer is required.
+- Added member credential rotation. Prior active credentials for that member are revoked before the new one-time token is returned. Non-owner administrators cannot rotate owner/admin credentials.
+- Legacy shared-token call/device routes are now disabled by default through `ENABLE_LEGACY_CALL_API=false` and `ENABLE_LEGACY_DEVICE_API=false`. The compatibility queue also excludes tenant-assigned calls, and legacy call lookup/state-update cannot access tenant calls.
+- Emergency short codes are rejected before E.164 validation, closing the previous unreachable deny-list check.
+- SIP server-mode REGISTER now fails closed with 403 when no registrar password is configured. This prevents an unauthenticated remote Contact from taking over the hosted peer destination.
+- Docker image now includes the SQL migration, admin dashboard, and MongoDB modules; its default SQLite path is `/data/calls.sqlite3`, suitable for the named Compose volume.
+- `/health/database` now probes the active SQLite database. The optional Atlas connectivity probe moved to `/health/mongodb` and is explicitly not presented as the active persistence backend.
+- Hosted bridge now reserves its executor slot before queuing the cellular originate task. A queued inbound call cannot steal the bridge between the busy check and the hosted task.
+- The hosted-call duration guard now targets the exact bridge session ID, so a stale 30-minute timer cannot terminate a later unrelated call.
+- Added API and gateway regression tests for emergency numbers, viewer role denial, suspended organization/device rejection, member credential rotation/revocation, disabled legacy routes, hosted originate race, and stale session timeout.
+
+### CI evidence and limits
+
+The following runs completed successfully on checkpoint commit `2a7f7c6ec1bf8e7c90a86994a884a04ae76acba0`:
+- Hosted API pytest: [45173438012](https://github.com/assessment72/voice-sip-agent-selfhost/actions/runs/45173438012) — success.
+- General JVM tests: [45173438214](https://github.com/assessment72/voice-sip-agent-selfhost/actions/runs/45173438214) — success.
+- Android build: [45173438124](https://github.com/assessment72/voice-sip-agent-selfhost/actions/runs/45173438124) — cancelled before Android SDK setup/tests/APK assembly.
+
+These runs predate the later member-management and Kotlin bridge-race changes. The available workflow lookup returned no PR-triggered workflow runs for the latest branch head `7348947`; therefore **the latest changes are not CI-verified yet**. Do not infer test success from the earlier checkpoint.
+
+The latest commit's combined GitHub status reported Vercel Preview success. This was an automatic repository-integration status; no Production deployment was requested or initiated by this work. No Production environment variables or credentials were changed.
+
+### Remaining blockers — not fixed or not verifiable in this pass
+
+1. **MongoDB is still not the active API datastore.** FastAPI route handlers still use SQLite. `mongodb_store.py` and `mongodb_calls.py` remain staged modules. The health endpoints now report this accurately. Vercel/serverless SQLite is not a durable multi-instance production database.
+2. **Rate limiting is still incomplete.** Existing per-principal call limits do not provide a distributed IP + user + device limiter for enrollment, heartbeat, event, and command endpoints. An in-process limiter would not be sufficient for multiple serverless instances.
+3. **Membership/credential management still needs a full lifecycle audit.** Rotation/revocation endpoints were added, but owner transfer, invitations/acceptance, audit records for administrative actions, and scope-based authorization are not complete.
+4. **SIP brute-force state remains process-local.** It is not shared across multiple SIP instances and has not been tested under distributed load.
+5. **RTP/SRTP security and media compatibility are not certified.** No real PBX, codec negotiation, packet capture, G.711 interoperability, NAT traversal, or encrypted-media test was performed.
+6. **Android field validation remains outstanding.** No installation on the physical HONOR MTN-NX1, SIM 1/SIM 2 matrix, Shizuku/Doze/reboot test, process-kill recovery, or real carrier call was performed.
+7. **Backup/restore, disaster recovery, external monitoring, reverse-proxy body limits/rate limits, and firewall hardening are not demonstrated.**
+8. **Secret-history scanning was not completed.** No live secret values were added by this remediation, but that is not proof that Git history contains no secrets.
+
+### Release decision
+
+**NO-GO for commercial production and customer pilot.** The remediation closes several concrete authorization, legacy isolation, SIP registration, Docker packaging, health-reporting, and bridge race defects. It does not complete the MongoDB cutover or the field/security acceptance matrix. Keep PR #10 open and Draft. Do not merge or deploy Production until the remaining blockers are addressed and latest-head CI plus real-device validation pass.
+
+No Production deployment, merge, production secret change, SIP credential change, or paid call was performed.
