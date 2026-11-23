@@ -325,7 +325,7 @@ def _hash_secret(value: str) -> str:
 
 
 def organization_principal(authorization: str | None = Header(default=None),
-                           organization_id: str = Header(alias="X-Organization-ID")):
+                           x_organization_id: str = Header(alias="X-Organization-ID")):
     token = authorization[7:] if authorization and authorization.startswith("Bearer ") else None
     if not token:
         raise HTTPException(status_code=401, detail="unauthorized")
@@ -337,7 +337,7 @@ def organization_principal(authorization: str | None = Header(default=None),
                WHERE k.token_hash=? AND k.revoked_at IS NULL
                  AND (k.expires_at IS NULL OR k.expires_at>?)
                  AND m.status='active' AND m.organization_id=?""",
-            (_hash_secret(token), int(time.time()), organization_id),
+            (_hash_secret(token), int(time.time()), x_organization_id),
         ).fetchone()
     if not row:
         raise HTTPException(status_code=403, detail="organization_access_denied")
@@ -480,7 +480,7 @@ def device_heartbeat(body: DeviceHeartbeat, device_ctx=Depends(authenticated_dev
                network_type=?,internet_available=?,sip_status=?,sim_status=?,agent_status=?,
                active_call_id=NULL,updated_at=? WHERE id=? AND organization_id=? AND status='active'""",
             (now, body.batteryLevel, body.networkType, int(body.internetAvailable),
-             body.sipStatus, body.simStatus, body.agentStatus, now,
+             body.sipStatus, body.simStatus, body.agentStatus, ("active" if body.activeCall else None), now,
              device_id, device_ctx["organization_id"]),
         )
         c.execute(
