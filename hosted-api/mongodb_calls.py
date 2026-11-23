@@ -1,6 +1,6 @@
-"""Atomic MongoDB repository for the single-device hosted call lifecycle.
+"""Organization-scoped atomic MongoDB repository for hosted call lifecycle.
 
-This repository is intentionally not selected by the FastAPI routes yet. It
+This repository is intentionally not selected by FastAPI routes yet. It
 provides independently testable primitives for the staged SQLite migration.
 """
 from __future__ import annotations
@@ -45,32 +45,40 @@ class InvalidTransition(ValueError):
 
 
 class MongoCallRepository:
-    """Call lifecycle operations using atomic MongoDB document updates."""
+    """Call lifecycle operations with mandatory organization/device scope."""
 
     def __init__(self, calls: Collection):
         self.calls = calls
 
     def ensure_indexes(self) -> None:
         self.calls.create_indexes([
-            # Same principal + key can only create one durable job.
             IndexModel(
-                [("principal", ASCENDING), ("idempotency_key", ASCENDING)],
-                unique=True, name="uq_call_principal_idempotency",
+                [("organization_id", ASCENDING), ("principal", ASCENDING),
+                 ("idempotency_key", ASCENDING)],
+                unique=True, name="uq_org_principal_idempotency",
             ),
-            # This API currently supports one active cellular/SIP job at a time.
-            # Terminal transitions remove active_slot, allowing the next job.
-            __import__("pymongo").IndexModel(
-                [("active_slot", ASCENDING)], unique=True,
+            # One active call per organization. Terminal transitions remove
+            # this field, allowing the next call for that organization.
+            IndexModel(
+                [("organization_id", ASCENDING), ("active_slot", ASCENDING)],
+                unique=True,
                 partialFilterExpression={"active_slot": {"$exists": True}},
-                name="uq_single_active_call_slot",
+                name="uq_org_single_active_call_slot",
             ),
-            __import__("pymongo").IndexModel(
-                [("state", ASCENDING), ("created_at", ASCENDING)],
-                name="ix_call_queue",
+            IndexModel(
+                [("organization_id", ASCENDING), ("state", ASCENDING),
+                 ("created_at", ASCENDING)],
+                name="ix_org_call_queue",
             ),
-            __import__("pymongo").IndexModel(
-                [("claimed_by", ASCENDING), ("state", ASCENDING)],
-                name="ix_call_claim_owner",
+            IndexModel(
+                [("organization_id", ASCENDING), ("claimed_by", ASCENDING),
+                 ("state", ASCENDING)],
+                name="ix_org_call_claim_owner",
+            ),
+            IndexModel(
+                [("organization_id", ASCENDING), ("_id", ASCENDING),
+                 ("claimed_by", ASCENDING)],
+                name="ix_org_call_device_owner",
             ),
         ])
 
@@ -86,11 +94,13 @@ class MongoCallRepository:
         }
 
     def create_call(
-        self, *, principal: str, idempotency_key: str, phone_number: str,
-        now: int, queue_ttl: int,
+        self, *, organization_id: str, principal: str, idempotency_key: str,
+        phone_number: str, now: int, queue_ttl: int,
     ) -> dict[str, Any]:
         existing = self.calls.find_one({
-            "principal": principal, "idempotency_key": idempotency_key,
+            "organization_id": organization_id,
+            "principal": principal,
+            "idempotency_key": idempotency_key,
         })
         if existing:
             if existing["phone_number"] != phone_number:
@@ -100,6 +110,7 @@ class MongoCallRepository:
         call_id = str(uuid.uuid4())
         doc = {
             "_id": call_id,
+            "organization_id": organization_id,
             "principal": principal,
             "idempotency_key": idempotency_key,
             "phone_number": phone_number,
@@ -111,16 +122,17 @@ class MongoCallRepository:
             "claimed_by": None,
             "claimed_at": None,
             "reason_code": None,
-            "events": [{"state": "queued", "at": now, "atMs": int(time.time_ns() // 1_000_000)}],
+            "events": [{"state": "queued", "at": now,
+                        "atMs": int(time.time_ns() // 1_000_000)}],
         }
         try:
             self.calls.insert_one(doc)
             return self._safe(doc)
         except DuplicateKeyError:
-            # A competing request may have won the idempotency race, or another
-            # call may have occupied the single active slot.
             existing = self.calls.find_one({
-                "principal": principal, "idempotency_key": idempotency_key,
+                "organization_id": organization_id,
+                "principal": principal,
+                "idempotency_key": idempotency_key,
             })
             if existing:
                 if existing["phone_number"] != phone_number:
@@ -129,12 +141,10 @@ class MongoCallRepository:
             raise DeviceBusy("device_busy")
 
     def claim_next(
-        self, *, device_id: str, now: int, queue_ttl: int,
-        cellular_ring_timeout: int, sip_ring_timeout: int,
+        self, *, organization_id: str, device_id: str, now: int,
+        queue_ttl: int, cellular_ring_timeout: int, sip_ring_timeout: int,
         max_call_seconds: int, claim_lease_seconds: int = 30,
     ) -> dict[str, Any]:
-        # Expiration transitions and release of the single active slot happen
-        # together on each document; the unique slot index prevents overlap.
         expiry_rules = [
             ("queued", now - queue_ttl, "queue_expired", "expires_at"),
             ("ringing_cellular", now - cellular_ring_timeout,
@@ -143,15 +153,17 @@ class MongoCallRepository:
             ("bridged", now - max_call_seconds, "max_call_duration", "updated_at"),
         ]
         for state, cutoff, reason, field in expiry_rules:
-            terminal = "ended" if state == "bridged" else "failed"
             self.calls.update_many(
-                {"state": state, field: {"$lt": now if field == "expires_at" else cutoff}},
-                {"$set": {"state": terminal, "reason_code": reason, "updated_at": now},
+                {"organization_id": organization_id, "state": state,
+                 field: {"$lt": now if field == "expires_at" else cutoff}},
+                {"$set": {"state": "ended" if state == "bridged" else "failed",
+                          "reason_code": reason, "updated_at": now},
                  "$unset": {"active_slot": ""}},
             )
 
         claimed = self.calls.find_one_and_update(
             {
+                "organization_id": organization_id,
                 "state": "queued",
                 "expires_at": {"$gte": now},
                 "$or": [
@@ -177,11 +189,12 @@ class MongoCallRepository:
         }}
 
     def transition(
-        self, *, call_id: str, device_id: str, state: str,
-        reason_code: str | None = None, now: int | None = None,
+        self, *, organization_id: str, call_id: str, device_id: str,
+        state: str, reason_code: str | None = None, now: int | None = None,
     ) -> dict[str, Any]:
         now = int(time.time()) if now is None else now
-        current = self.calls.find_one({"_id": call_id})
+        scope = {"organization_id": organization_id, "_id": call_id}
+        current = self.calls.find_one(scope)
         if not current:
             raise CallNotFound("call_not_found")
         if current.get("claimed_by") != device_id:
@@ -191,21 +204,23 @@ class MongoCallRepository:
         if state not in ALLOWED.get(current["state"], set()):
             raise InvalidTransition("invalid_state_transition")
 
-        event = {"state": state, "at": now, "atMs": int(time.time_ns() // 1_000_000),
+        event = {"state": state, "at": now,
+                 "atMs": int(time.time_ns() // 1_000_000),
                  "reasonCode": reason_code}
         update: dict[str, Any] = {
-            "$set": {"state": state, "updated_at": now, "reason_code": reason_code},
+            "$set": {"state": state, "updated_at": now,
+                     "reason_code": reason_code},
             "$push": {"events": event},
         }
         if state in TERMINAL:
             update["$unset"] = {"active_slot": ""}
         result = self.calls.update_one(
-            {"_id": call_id, "state": current["state"], "claimed_by": device_id},
+            {**scope, "state": current["state"], "claimed_by": device_id},
             update,
         )
         if result.modified_count != 1:
-            latest = self.calls.find_one({"_id": call_id})
+            latest = self.calls.find_one(scope)
             if latest and (latest["state"] == state or latest["state"] in TERMINAL):
                 return self._safe(latest)
             raise InvalidTransition("invalid_state_transition")
-        return self._safe(self.calls.find_one({"_id": call_id}))
+        return self._safe(self.calls.find_one(scope))
