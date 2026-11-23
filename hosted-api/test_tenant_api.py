@@ -324,6 +324,41 @@ def test_suspended_organization_devices_cannot_poll_or_send_heartbeats(tmp_path,
     ).status_code == 401
 
 
+def test_owner_can_transfer_ownership_without_invalidating_new_owner_token(tmp_path, monkeypatch):
+    client = setup_client(tmp_path, monkeypatch)
+    org = create_org(client, "Alpha", "alpha", "owner-a")
+    owner_headers = auth(org["apiToken"], org["organizationId"])
+    added = client.post(
+        f"/v1/organizations/{org['organizationId']}/members",
+        json={"userId": "operator-1", "role": "operator"},
+        headers=owner_headers,
+    )
+    assert added.status_code == 201
+    transferred = client.post(
+        f"/v1/organizations/{org['organizationId']}/members/operator-1/transfer-ownership",
+        headers=owner_headers,
+    )
+    assert transferred.status_code == 200
+    assert transferred.json()["newOwnerUserId"] == "operator-1"
+
+    new_owner_headers = auth(added.json()["apiToken"], org["organizationId"])
+    assert client.get("/v1/admin/devices", headers=new_owner_headers).status_code == 200
+    # The previous owner remains an administrator, but cannot revoke the new owner.
+    assert client.post(
+        f"/v1/organizations/{org['organizationId']}/members/operator-1/revoke",
+        headers=owner_headers,
+    ).status_code == 403
+    # The new owner can revoke the previous owner, now an admin member.
+    assert client.post(
+        f"/v1/organizations/{org['organizationId']}/members/owner-a/revoke",
+        headers=new_owner_headers,
+    ).status_code == 200
+    audit = client.get("/v1/admin/audit", headers=new_owner_headers)
+    assert "organization.ownership_transferred" in [
+        event["action"] for event in audit.json()["events"]
+    ]
+
+
 def test_member_revocation_and_credential_rotation_revoke_old_tokens(tmp_path, monkeypatch):
     client = setup_client(tmp_path, monkeypatch)
     org = create_org(client, "Alpha", "alpha", "owner-a")
