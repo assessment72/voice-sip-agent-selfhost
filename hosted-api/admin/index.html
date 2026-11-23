@@ -91,11 +91,32 @@ input,select,button{font:inherit;border-radius:9px;padding:10px 12px;border:1px 
  const el=id=>document.getElementById(id);
  const msg=(text,kind="muted")=>{el("message").className=kind;el("message").textContent=text};
  const headers=()=>({"Authorization":"Bearer "+token,"X-Organization-ID":orgId,"Content-Type":"application/json"});
+ function describeApiError(value){
+  if(typeof value==="string") return value;
+  if(Array.isArray(value)) return value.map(item=>{
+   if(typeof item==="string") return item;
+   const loc=Array.isArray(item?.loc)?item.loc.filter(x=>x!=="body"&&x!=="query"&&x!=="header").join("."):"";
+   const message=item?.msg||item?.message||"خطأ في البيانات";
+   return loc?loc+": "+message:message;
+  }).join("؛ ");
+  if(value&&typeof value==="object"){
+   if(typeof value.message==="string") return value.message;
+   if(typeof value.error==="string") return value.error;
+   if(typeof value.detail==="string"||Array.isArray(value.detail)) return describeApiError(value.detail);
+   try{return JSON.stringify(value)}catch{return "استجابة خطأ غير معروفة"}
+  }
+  return value==null?"":String(value);
+ }
  async function request(path,options={},auth=true){
   const h=auth?headers():{"Content-Type":"application/json"};
   const response=await fetch(path,{...options,headers:{...h,...(options.headers||{})}});
-  const body=await response.json().catch(()=>({}));
-  if(!response.ok) throw new Error(body.detail||("HTTP "+response.status));
+  const raw=await response.text();
+  let body={};
+  if(raw){try{body=JSON.parse(raw)}catch{body={detail:raw.slice(0,500)}}}
+  if(!response.ok){
+   const detail=describeApiError(body.detail??body.error??body.message);
+   throw new Error(detail||("HTTP "+response.status));
+  }
   return body;
  }
  const age=value=>value==null?"لم يتصل":value<60?"منذ "+value+" ث":"منذ "+Math.floor(value/60)+" د";
