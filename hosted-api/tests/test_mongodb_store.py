@@ -133,3 +133,32 @@ def test_health_snapshot_fails_closed_when_unconfigured(monkeypatch):
         "backend": "mongodb",
     }
     mongodb_store.get_client.cache_clear()
+
+
+
+def test_preview_test_uri_and_database_are_selected_without_production_fallback(monkeypatch):
+    from types import SimpleNamespace
+
+    calls = []
+    fake_database = object()
+    fake_client = SimpleNamespace(__getitem__=lambda self, name: fake_database)
+
+    class FakeClient:
+        def __init__(self, uri, **kwargs):
+            calls.append((uri, kwargs))
+        def __getitem__(self, name):
+            assert name == "voice_sip_agent_ci"
+            return fake_database
+
+    monkeypatch.setattr(mongodb_store, "MongoClient", FakeClient)
+    monkeypatch.delenv("MONGODB_URI", raising=False)
+    monkeypatch.delenv("MONGODB_DATABASE", raising=False)
+    monkeypatch.setenv("MONGODB_TEST_URI", "mongodb://preview-test")
+    monkeypatch.setenv("MONGODB_TEST_DATABASE", "voice_sip_agent_ci")
+    monkeypatch.setenv("VERCEL_ENV", "preview")
+    mongodb_store.get_client.cache_clear()
+    try:
+        assert mongodb_store.get_database() is fake_database
+        assert calls[0][0] == "mongodb://preview-test"
+    finally:
+        mongodb_store.get_client.cache_clear()
