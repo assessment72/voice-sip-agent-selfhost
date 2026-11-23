@@ -293,6 +293,16 @@ def health():
     return {"status": "ok"}
 
 
+@app.get("/health/database")
+def database_health():
+    """Read-only MongoDB connectivity probe; does not change the active SQLite backend."""
+    from mongodb_store import health_snapshot
+    snapshot = health_snapshot()
+    if snapshot["status"] != "ok":
+        raise HTTPException(status_code=503, detail={"status": "unavailable", "backend": "mongodb"})
+    return snapshot
+
+
 # --- Multi-tenant organization and device control plane ---------------------
 
 class OrganizationBootstrap(BaseModel):
