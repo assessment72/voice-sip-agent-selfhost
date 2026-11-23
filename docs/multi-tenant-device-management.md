@@ -1,7 +1,6 @@
 # Multi-tenant device and call management architecture
 
-Status: approved design; implementation is staged on `feature/hosted-call-api`.
-No merge, deployment, production migration, or live call action is authorized.
+Status: implemented on `feature/hosted-call-api`; PR #10 remains Draft and unmerged. Tenant-facing runtime persistence is MongoDB when configured. Preview connectivity has been verified; live Atlas transaction CI and device/SIP validation remain outstanding.
 
 ## Product boundary
 
@@ -14,7 +13,7 @@ The existing SIP account settings remain device-local and unchanged. Hosted API 
 - Admin web UI: Arabic starter dashboard at `/admin` for organization device presence, call history and safe allow-listed device commands. Organization authentication is entered for the active page session; the token is not persisted in localStorage.
 - Control-plane API: authentication, organization membership, device enrollment, presence, configuration, commands, hosted calls, metrics and audit.
 - Device agent: outbound HTTPS only; enrollment, heartbeat, long-poll command/job retrieval, state/event reporting.
-- Persistence: relational database for durable identity, ownership and call records; queue/lease mechanism for commands and call jobs.
+- Persistence: MongoDB Atlas collections for durable identity, ownership, devices, commands, audit and call records; atomic document updates and transactions for multi-document operations. SQLite is local-development compatibility only.
 - Realtime delivery: begin with heartbeat + long polling; add SSE/WebSocket for the admin UI only when required. Devices never expose an inbound public listener.
 
 ## Tenant and role model
@@ -56,17 +55,17 @@ A call is owned by one organization and optionally assigned to one device. Devic
 
 Emergency-number rejection, destination allow-lists, per-organization and per-device rate limits, no-overlap rules, bounded call duration, and audit events remain mandatory. Phone numbers, credentials, authorization headers and SIP secrets must not appear in logs, event details, metrics labels or admin list views.
 
-## Relational model
+## MongoDB persistence model
 
-The additive SQLite foundation migration is in `hosted-api/migrations/001_tenant_device_foundation.sql`. It introduces:
-- organizations, first-class branches and organization memberships;
-- organization API credentials and limited-use device enrollment tokens;
-- devices and unique per-device credentials;
-- latest presence on devices plus heartbeat history;
-- typed device events, versioned device configuration and expiring commands;
-- call-to-tenant/device assignments without rewriting existing call rows.
+The active tenant backend uses MongoDB collections:
+- `organizations`, `memberships`, and `api_credentials`;
+- `branches`, `enrollment_tokens`, `devices`, and `device_credentials`;
+- `heartbeats`, `device_events`, `device_configs`, and `device_commands`;
+- `calls`, `rate_limit_windows`, and `admin_audit_events`.
 
-The migration is additive and intentionally does not delete or rewrite existing calls. It must be run only after a verified backup in any persistent environment. Production should move to a managed relational database with migrations and backups before multi-tenant launch.
+Unique and query indexes enforce organization-scoped identity, idempotency, branch codes, device credentials, enrollment tokens, and one active call slot per organization. Enrollment, membership lifecycle, ownership transfer, device revocation, and command-plus-audit creation use MongoDB transactions. Device job claims and state transitions use atomic MongoDB operations.
+
+The SQLite file `hosted-api/migrations/001_tenant_device_foundation.sql` remains for local-development compatibility and legacy test coverage. It is not initialized by Vercel. Vercel startup requires MongoDB and fails closed when the durable backend is not configured. No automatic SQLite data migration is performed; any existing persistent SQLite data requires a separate verified backup and an explicit, reviewed migration procedure before cutover.
 
 ## Admin web UI information architecture
 
@@ -107,7 +106,7 @@ All admin endpoints require organization membership and role checks. All device 
 
 ## Compatibility and release gates
 
-- Keep the current global device token only as a clearly marked development compatibility mode; disable it for multi-tenant production.
+- Legacy shared-token call/device routes remain only for local compatibility. They are disabled by default and explicitly blocked whenever MongoDB is active.
 - Do not alter SIP credentials or existing Linphone registration settings.
 - No public deployment, production database migration, paid resource provisioning, live call or release signing without separate approval.
 - Required tests: cross-tenant denial, role matrix, revoked/expired tokens, enrollment replay, heartbeat presence boundaries, command expiry/idempotency, concurrent device claims, call assignment isolation, and legacy API regression.
@@ -131,7 +130,7 @@ Required environment secret: `ORG_BOOTSTRAP_TOKEN` must be a long random secret 
 ## Remaining production blockers
 
 - The admin UI is an initial operational dashboard, not yet a full organization-management console; branch management, member management screens, charts, filters and realtime push updates remain to be built.
-- Android agent has not yet been updated to use enrollment, per-device tokens, heartbeat, tenant job polling or commands.
-- Existing legacy global-token call routes remain for compatibility and must be disabled or isolated before a multi-tenant production release.
+- Android integration code now supports enrollment, per-device tokens, heartbeat, tenant job polling, call-state outbox and commands; physical HONOR MTN-NX1 / Android 16 verification remains outstanding.
+- The legacy shared-token routes are disabled by default and cannot run against the MongoDB runtime.
 - Add bounded heartbeat/event retention, tenant metrics, API credential revocation/rotation, organization suspension behavior, and audit coverage.
-- Production database deployment and migrations require backup/restore validation and a separate approval.
+- Production MongoDB environment variables, backup/restore, monitoring/alerting, transaction integration test and cutover require separate approval. The current Preview uses only the isolated CI database.
