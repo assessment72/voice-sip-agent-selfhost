@@ -138,6 +138,8 @@ class GatewayRuntime private constructor(context: Context) {
         Thread(task, "hosted-call-state").apply { isDaemon = true }
     }.apply { removeOnCancelPolicy = true }
     private val hostedPollingEnabled = java.util.concurrent.atomic.AtomicBoolean(false)
+    // Closes the handoff race between the network poller and the gateway executor.
+    private val hostedJobInFlight = java.util.concurrent.atomic.AtomicBoolean(false)
     @Volatile private var hostedCallId: String? = null
     private var hostedLastState: String? = null
     private var hostedListener: BridgeListener? = null
@@ -272,6 +274,7 @@ class GatewayRuntime private constructor(context: Context) {
         healthCheck?.cancel(false)
         healthCheck = null
         hostedPollingEnabled.set(false)
+        hostedJobInFlight.set(false)
         hostedPoll?.cancel(true)
         hostedPoll = null
         cancelHostedTracking("agent_stopped")
@@ -293,7 +296,7 @@ class GatewayRuntime private constructor(context: Context) {
      * The hosted device token is stored encrypted by SettingsStore and is distinct from SIP auth.
      */
     private fun pollHostedCalls() {
-        if (!hostedPollingEnabled.get() || !gatewayEnabled || hostedCallId != null) return
+        if (!hostedPollingEnabled.get() || !gatewayEnabled || hostedCallId != null || hostedJobInFlight.get()) return
         val base = settings.hostedApiUrl.trim()
         val token = settings.hostedDeviceToken
         if (base.isBlank() || token.isBlank()) return
@@ -301,6 +304,7 @@ class GatewayRuntime private constructor(context: Context) {
             val client = HostedCallApiClient(base, token)
             // The 20-second wait runs only on hostedPollWorker, never on the gateway executor.
             val job = client.nextJob(waitSeconds = 20) ?: return
+            if (!hostedJobInFlight.compareAndSet(false, true)) return
             worker.execute { handleHostedJob(client, job) }
         } catch (e: Exception) {
             AppLog.w("hosted API long poll failed: ${e.javaClass.simpleName}")
@@ -308,17 +312,22 @@ class GatewayRuntime private constructor(context: Context) {
     }
 
     private fun handleHostedJob(client: HostedCallApiClient, job: HostedCallJob) {
-        if (!gatewayEnabled || hostedCallId != null) return
+        if (!gatewayEnabled || hostedCallId != null) {
+            hostedJobInFlight.set(false)
+            return
+        }
         hostedCallId = job.id
         hostedLastState = null
         if (job.expiresAt <= System.currentTimeMillis() / 1000L) {
             reportHostedState(client, job.id, "failed", "job_expired")
             hostedCallId = null
+            hostedJobInFlight.set(false)
             return
         }
         if (cellular.isEmergencyNumber(job.phoneNumber)) {
             reportHostedState(client, job.id, "failed", "emergency_number")
             hostedCallId = null
+            hostedJobInFlight.set(false)
             return
         }
         val sipAgent = sip as? SipUserAgent
@@ -328,6 +337,7 @@ class GatewayRuntime private constructor(context: Context) {
         if (sipTarget.isNullOrBlank() || activeBridge == null || activeBridge.session != null || !cellular.status.ready || sip?.status?.ready != true) {
             reportHostedState(client, job.id, "failed", "gateway_not_ready")
             hostedCallId = null
+            hostedJobInFlight.set(false)
             return
         }
         val listener = BridgeListener { session ->
@@ -342,6 +352,7 @@ class GatewayRuntime private constructor(context: Context) {
             hostedListener = null
             reportHostedState(client, job.id, "failed", "bridge_busy")
             hostedCallId = null
+            hostedJobInFlight.set(false)
             return
         }
         reportHostedState(client, job.id, "ringing_cellular")
@@ -370,6 +381,7 @@ class GatewayRuntime private constructor(context: Context) {
             hostedListener = null
             hostedCallId = null
             hostedLastState = null
+            hostedJobInFlight.set(false)
         }
     }
 
