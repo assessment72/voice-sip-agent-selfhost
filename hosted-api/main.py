@@ -104,17 +104,16 @@ def device(authorization: str | None = Header(default=None)):
 
 def normalize_number(raw: str) -> str:
     value = re.sub(r"[\s().-]", "", raw)
+    # Emergency short codes are not E.164 numbers. Reject them before parsing.
+    emergency_digits = value.lstrip("+")
+    if emergency_digits in {"112", "911", "999", "998", "997", "191", "194"}:
+        raise HTTPException(status_code=422, detail="emergency_number")
     if value.startswith("00"):
         value = "+" + value[2:]
     elif re.fullmatch(r"7[0-9]{8}", value):
         value = "+967" + value
     if not re.fullmatch(r"\+[1-9][0-9]{7,14}", value):
         raise HTTPException(status_code=422, detail="invalid_phone_number")
-    # Fail closed on common international emergency short codes and Yemen emergency
-    # service prefixes; handset performs Android's authoritative emergency check too.
-    digits = value[1:]
-    if digits in {"112", "911", "999", "998", "997", "191", "194"}:
-        raise HTTPException(status_code=422, detail="emergency_number")
     if not PREFIXES:
         raise HTTPException(status_code=503, detail="allowlist_not_configured")
     if not any(value.startswith(p) for p in PREFIXES):
@@ -201,7 +200,7 @@ def create_call(body: CreateCall, principal=Depends(caller),
 @app.get("/v1/calls/{call_id}")
 def get_call(call_id: str, principal=Depends(caller)):
     with db() as c:
-        row = c.execute("SELECT * FROM calls WHERE id=?", (call_id,)).fetchone()
+        row = c.execute("SELECT * FROM calls WHERE id=? AND id NOT IN (SELECT call_id FROM call_tenant_assignments)", (call_id,)).fetchone()
         if not row:
             raise HTTPException(status_code=404, detail="call_not_found")
         return safe_call(row)
@@ -261,12 +260,15 @@ def _claim_next_job(device_id: str):
     now = int(time.time())
     with db() as c:
         c.execute("BEGIN IMMEDIATE")
-        c.execute("UPDATE calls SET state='failed',reason_code='queue_expired',updated_at=? WHERE state='queued' AND expires_at<?", (now, now))
-        c.execute("UPDATE calls SET state='failed',reason_code='cellular_answer_timeout',updated_at=? WHERE state='ringing_cellular' AND updated_at<?", (now, now - CELL_RING_TIMEOUT))
-        c.execute("UPDATE calls SET state='failed',reason_code='sip_answer_timeout',updated_at=? WHERE state='calling_sip' AND updated_at<?", (now, now - SIP_RING_TIMEOUT))
-        c.execute("UPDATE calls SET state='ended',reason_code='max_call_duration',updated_at=? WHERE state='bridged' AND updated_at<?", (now, now - MAX_CALL))
-        c.execute("UPDATE calls SET claimed_by=NULL,claimed_at=NULL WHERE state='queued' AND claimed_at<?", (now - 30,))
-        row = c.execute("SELECT * FROM calls WHERE state='queued' AND claimed_by IS NULL AND expires_at>=? ORDER BY created_at LIMIT 1",
+        # The legacy device credential may only operate unassigned legacy calls.
+        # Tenant calls are exclusively handled by authenticated_device.
+        legacy_only = " AND id NOT IN (SELECT call_id FROM call_tenant_assignments)"
+        c.execute("UPDATE calls SET state='failed',reason_code='queue_expired',updated_at=? WHERE state='queued' AND expires_at<?" + legacy_only, (now, now))
+        c.execute("UPDATE calls SET state='failed',reason_code='cellular_answer_timeout',updated_at=? WHERE state='ringing_cellular' AND updated_at<?" + legacy_only, (now, now - CELL_RING_TIMEOUT))
+        c.execute("UPDATE calls SET state='failed',reason_code='sip_answer_timeout',updated_at=? WHERE state='calling_sip' AND updated_at<?" + legacy_only, (now, now - SIP_RING_TIMEOUT))
+        c.execute("UPDATE calls SET state='ended',reason_code='max_call_duration',updated_at=? WHERE state='bridged' AND updated_at<?" + legacy_only, (now, now - MAX_CALL))
+        c.execute("UPDATE calls SET claimed_by=NULL,claimed_at=NULL WHERE state='queued' AND claimed_at<?" + legacy_only, (now - 30,))
+        row = c.execute("SELECT * FROM calls WHERE state='queued' AND claimed_by IS NULL AND expires_at>=?" + legacy_only + " ORDER BY created_at LIMIT 1",
                         (now,)).fetchone()
         if not row:
             c.commit()
@@ -279,7 +281,7 @@ def _claim_next_job(device_id: str):
 @app.post("/v1/device/calls/{call_id}/state")
 def update_call(call_id: str, body: CallUpdate, device_id=Depends(device)):
     with db() as c:
-        row = c.execute("SELECT claimed_by FROM calls WHERE id=?", (call_id,)).fetchone()
+        row = c.execute("SELECT claimed_by FROM calls WHERE id=? AND id NOT IN (SELECT call_id FROM call_tenant_assignments)", (call_id,)).fetchone()
         if not row:
             raise HTTPException(status_code=404, detail="call_not_found")
         if row["claimed_by"] != device_id:
@@ -359,9 +361,10 @@ def organization_principal(authorization: str | None = Header(default=None),
             """SELECT m.organization_id,m.user_id,m.role
                FROM organization_api_credentials k
                JOIN organization_memberships m ON m.organization_id=k.organization_id AND m.user_id=k.user_id
+               JOIN organizations o ON o.id=m.organization_id
                WHERE k.token_hash=? AND k.revoked_at IS NULL
                  AND (k.expires_at IS NULL OR k.expires_at>?)
-                 AND m.status='active' AND m.organization_id=?""",
+                 AND m.status='active' AND o.status='active' AND m.organization_id=?""",
             (_hash_secret(token), int(time.time()), x_organization_id),
         ).fetchone()
     if not row:
@@ -787,6 +790,8 @@ def create_organization_call(organization_id: str, body: CreateCall,
                              principal=Depends(organization_principal)):
     if principal["organization_id"] != organization_id:
         raise HTTPException(status_code=404, detail="organization_not_found")
+    if principal["role"] not in {"owner", "admin", "operator"}:
+        raise HTTPException(status_code=403, detail="insufficient_role")
     number = normalize_number(body.phoneNumber)
     tenant_principal = f"org:{organization_id}"
     now = int(time.time())
