@@ -39,12 +39,25 @@ CREATE TABLE IF NOT EXISTS organization_api_credentials (
 );
 CREATE INDEX IF NOT EXISTS idx_org_credentials_org ON organization_api_credentials(organization_id, revoked_at);
 
+CREATE TABLE IF NOT EXISTS branches (
+  id TEXT PRIMARY KEY,
+  organization_id TEXT NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+  name TEXT NOT NULL,
+  code TEXT,
+  status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active','disabled')),
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL,
+  UNIQUE (organization_id, code)
+);
+CREATE INDEX IF NOT EXISTS idx_branches_org_status ON branches(organization_id, status);
+
 CREATE TABLE IF NOT EXISTS devices (
   id TEXT PRIMARY KEY,
   organization_id TEXT NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
   external_device_id TEXT NOT NULL,
   display_name TEXT NOT NULL,
   branch_name TEXT,
+  branch_id TEXT REFERENCES branches(id) ON DELETE SET NULL,
   status TEXT NOT NULL DEFAULT 'pending'
     CHECK (status IN ('pending','active','disabled','revoked')),
   presence TEXT NOT NULL DEFAULT 'offline'
