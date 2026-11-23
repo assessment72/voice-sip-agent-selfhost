@@ -198,10 +198,13 @@ def list_devices(organization_id: str) -> list[dict[str, Any]]:
 
 def create_branch(*, organization_id: str, name: str, code: str | None) -> str:
     now, branch_id = _now(), _id()
-    collection("branches").insert_one({
-        "_id": branch_id, "organization_id": organization_id, "name": name,
-        "code": code, "status": "active", "created_at": now, "updated_at": now,
-    })
+    try:
+        collection("branches").insert_one({
+            "_id": branch_id, "organization_id": organization_id, "name": name,
+            "code": code, "status": "active", "created_at": now, "updated_at": now,
+        })
+    except DuplicateKeyError as exc:
+        raise ControlConflict("branch_code_already_exists") from exc
     return branch_id
 
 
