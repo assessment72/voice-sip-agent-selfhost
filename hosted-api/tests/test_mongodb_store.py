@@ -103,6 +103,8 @@ def test_shared_rate_limiter_atomically_increments_window(monkeypatch):
         key_hash="hashed-client-key", window_start=120, limit=2, expires_at=300
     ) == (False, 3)
     assert len(fake.rows) == 1
+    from datetime import datetime
+    assert isinstance(fake.rows[("hashed-client-key", 120)]["expires_at"], datetime)
 
 
 def test_client_requires_uri(monkeypatch):
