@@ -76,9 +76,9 @@ A release is **not ready** until the current Android workflow succeeds, a signed
 
 ## Responsiveness and telemetry
 
-- Long polling is performed on a dedicated Android network executor; call control, Telecom callbacks, SIP events, and gateway configuration remain on the gateway executor.
-- State writes are queued on a separate single-thread network executor so they cannot sit behind the outstanding long poll. Their order is preserved.
+- Long polling is performed on a dedicated Android network executor; call control, Telecom callbacks, SIP events, and gateway configuration remain on the gateway executor. An atomic handoff guard prevents the poller from claiming another job while a claimed job is being dispatched or handled.
+- State writes are queued on a separate single-thread network executor so they cannot sit behind the outstanding long poll. Their order is preserved, with bounded retry delays of 0.5, 1, 2, 4, and 8 seconds after transient failures (six attempts total). This queue is in-memory only; pending updates can be lost if Android kills the process.
 - HTTP requests retain bounded connect/read timeouts. The long-poll read timeout is 28 seconds for a maximum 25-second server wait.
-- The server stores per-call state event timestamps against the opaque call ID. Destination numbers are not returned by status queries and credentials are never logged.
+- The server stores per-call state-event timestamps against the opaque call ID. These raw timestamps are available for later latency analysis, but aggregate average/p95 metrics are not yet calculated or exposed. Destination numbers are not returned by status queries and credentials are never logged.
 - FCM is intentionally not required in this stage. It may be added later as a best-effort wake hint; HTTPS long polling remains the authoritative job delivery path.
 - The backend long-poll endpoint currently checks the queue at 250 ms intervals while waiting. The handset itself does not issue repeated short polling requests.
