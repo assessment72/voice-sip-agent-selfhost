@@ -297,11 +297,25 @@ def health():
 
 @app.get("/health/database")
 def database_health():
-    """Read-only MongoDB connectivity probe; does not change the active SQLite backend."""
+    """Probe the database actually used by FastAPI routes."""
+    try:
+        with db() as connection:
+            connection.execute("SELECT 1").fetchone()
+        return {"status": "ok", "backend": "sqlite"}
+    except sqlite3.Error:
+        raise HTTPException(
+            status_code=503,
+            detail={"status": "unavailable", "backend": "sqlite"},
+        )
+
+
+@app.get("/health/mongodb")
+def mongodb_health():
+    """Separate optional Atlas probe; Atlas is not yet the active call repository."""
     from mongodb_store import health_snapshot
     snapshot = health_snapshot()
     if snapshot["status"] != "ok":
-        raise HTTPException(status_code=503, detail={"status": "unavailable", "backend": "mongodb"})
+        raise HTTPException(status_code=503, detail=snapshot)
     return snapshot
 
 
