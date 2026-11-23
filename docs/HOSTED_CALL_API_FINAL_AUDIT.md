@@ -200,3 +200,13 @@ Commits on `feature/hosted-call-api`:
 The client pool is intentionally conservative for Vercel serverless instances (maxPoolSize 5, minPoolSize 0, 20-second idle timeout); this is a starting assumption, not a measured capacity claim.
 
 **Still not cut over:** `main.py` request handlers and startup continue to use SQLite. The new MongoDB module is not wired into routes; no MongoDB-backed API behavior or transaction semantics have been claimed or verified. CI and deployment checks must be run on this increment before considering it validated. The next implementation slice is the call lifecycle/idempotency/queue claim path, including competing-worker tests, followed by tenant/device endpoints.
+
+
+## MongoDB foundation unit tests (2026-11-23)
+
+- Added `hosted-api/tests/test_mongodb_store.py` covering repeatable index initialization, unique call idempotency index, partial unique branch-code index, required connection configuration, and fail-closed health status.
+- Tests use fake database/collection objects; they do **not** connect to Atlas and do not validate live transactions, credentials, network access, or persistence.
+- Reused the repository's existing `.github/workflows/hosted-api-ci.yml` test workflow. A temporary duplicate workflow file was removed.
+- The Hosted API CI workflow was observed running for the branch after the test addition; its final result must be checked before treating the tests as passing.
+
+**Migration status remains blocked:** all request handlers and startup in `hosted-api/main.py` still use SQLite. No route has been switched to MongoDB. Do not use the Preview deployment for device enrollment or live call control until the full migration and security gates are complete.
