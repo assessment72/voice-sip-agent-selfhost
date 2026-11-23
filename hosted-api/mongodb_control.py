@@ -118,49 +118,46 @@ def enroll_device(*, enrollment_token_hash: str, external_device_id: str, displa
                   app_version: str, android_version: str, manufacturer: str, model: str,
                   device_token_hash: str, device_token_prefix: str) -> tuple[str, str]:
     now, device_id, credential_id = _now(), _id(), _id()
-    enrollment = collection("enrollment_tokens").find_one_and_update(
-        {"token_hash": enrollment_token_hash, "revoked_at": None,
-         "expires_at": {"$gt": now}, "$expr": {"$lt": ["$used_count", "$max_uses"]}},
-        {"$inc": {"used_count": 1}}, return_document=ReturnDocument.BEFORE,
-    )
-    if not enrollment:
-        raise ControlNotFound("enrollment_token_invalid")
-    if branch_id:
-        branch = collection("branches").find_one({
-            "_id": branch_id, "organization_id": enrollment["organization_id"], "status": "active"
-        })
-        if not branch:
-            collection("enrollment_tokens").update_one(
-                {"_id": enrollment["_id"]}, {"$inc": {"used_count": -1}}
-            )
-            raise ControlNotFound("branch_not_found")
-        branch_name = branch["name"]
-    device = {
-        "_id": device_id, "organization_id": enrollment["organization_id"],
-        "external_device_id": external_device_id, "display_name": display_name,
-        "branch_name": branch_name, "branch_id": branch_id, "status": "active",
-        "presence": "offline", "app_id": app_id, "app_version": app_version,
-        "android_version": android_version, "manufacturer": manufacturer, "model": model,
-        "last_seen_at": None, "last_ip": None, "battery_level": None, "network_type": None,
-        "internet_available": None, "sip_status": "unknown", "sim_status": "unknown",
-        "agent_status": "unknown", "active_call_id": None, "config_version": 1,
-        "created_at": now, "updated_at": now,
-    }
-    try:
-        collection("devices").insert_one(device)
+
+    def write(session):
+        enrollment = collection("enrollment_tokens").find_one_and_update(
+            {"token_hash": enrollment_token_hash, "revoked_at": None,
+             "expires_at": {"$gt": now}, "$expr": {"$lt": ["$used_count", "$max_uses"]}},
+            {"$inc": {"used_count": 1}}, return_document=ReturnDocument.BEFORE,
+            session=session,
+        )
+        if not enrollment:
+            raise ControlNotFound("enrollment_token_invalid")
+        selected_branch_name = branch_name
+        if branch_id:
+            branch = collection("branches").find_one({
+                "_id": branch_id, "organization_id": enrollment["organization_id"], "status": "active"
+            }, session=session)
+            if not branch:
+                raise ControlNotFound("branch_not_found")
+            selected_branch_name = branch["name"]
+        collection("devices").insert_one({
+            "_id": device_id, "organization_id": enrollment["organization_id"],
+            "external_device_id": external_device_id, "display_name": display_name,
+            "branch_name": selected_branch_name, "branch_id": branch_id, "status": "active",
+            "presence": "offline", "app_id": app_id, "app_version": app_version,
+            "android_version": android_version, "manufacturer": manufacturer, "model": model,
+            "last_seen_at": None, "last_ip": None, "battery_level": None, "network_type": None,
+            "internet_available": None, "sip_status": "unknown", "sim_status": "unknown",
+            "agent_status": "unknown", "active_call_id": None, "config_version": 1,
+            "created_at": now, "updated_at": now,
+        }, session=session)
         collection("device_credentials").insert_one({
             "_id": credential_id, "device_id": device_id, "token_hash": device_token_hash,
             "token_prefix": device_token_prefix, "last_used_at": None, "expires_at": None,
             "revoked_at": None, "created_at": now,
-        })
-    except DuplicateKeyError as exc:
-        collection("devices").delete_one({"_id": device_id})
-        collection("enrollment_tokens").update_one(
-            {"_id": enrollment["_id"]}, {"$inc": {"used_count": -1}}
-        )
-        raise ControlConflict("device_identity_already_enrolled") from exc
-    return device_id, enrollment["organization_id"]
+        }, session=session)
+        return device_id, enrollment["organization_id"]
 
+    try:
+        return with_transaction(write)
+    except DuplicateKeyError as exc:
+        raise ControlConflict("device_identity_already_enrolled") from exc
 
 def heartbeat(*, device_id: str, organization_id: str, payload: dict[str, Any]) -> int:
     now = _now()
