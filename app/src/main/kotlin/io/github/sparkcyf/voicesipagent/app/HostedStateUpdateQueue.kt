@@ -63,6 +63,10 @@ internal class HostedStateUpdateQueue(context: Context) {
     @Synchronized
     fun size(): Int = readItems()?.size ?: 0
 
+    /** Corrupt/unreadable storage is not considered empty. */
+    @Synchronized
+    fun isEmpty(): Boolean = readItems()?.isEmpty() ?: false
+
     private fun readItems(): List<HostedStateUpdate>? = try {
         val raw = preferences.getString(KEY_ITEMS, null) ?: return emptyList()
         val json = JSONArray(raw)
