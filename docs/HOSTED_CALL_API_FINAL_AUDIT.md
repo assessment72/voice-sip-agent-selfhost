@@ -187,3 +187,16 @@ A direct SQL-to-Mongo rewrite or adding a driver without a complete repository a
 7. Keep PR #10 Draft and unmerged; do not deploy Production, send real calls, or alter SIP credentials as part of this work.
 
 **Status:** Atlas database/user and Preview environment variables are provisioned. Application-level MongoDB migration, CI validation on migrated code, and runtime persistence verification remain incomplete. This service is not production-ready.
+
+
+## MongoDB persistence foundation increment (2026-11-23)
+
+Commits on `feature/hosted-call-api`:
+- `898f996c32c242eeaa949521f71f35eaa9c60be6` — added `hosted-api/mongodb_store.py` with cached PyMongo client, database selection, health ping, transaction wrapper, and idempotent indexes for the API's principal data domains.
+- `3f1d79787ca78c88bd2d3175e43784420512e930` — added `pymongo[srv]>=4.9,<5` dependency.
+- `9164bfbe47171d9cde4f045c490228b793a53808` — corrected the PyMongo `IndexModel` import.
+- `78ac230b22ca379fb789027db4b559252f33b274` — documented the migration boundary in the API README.
+
+The client pool is intentionally conservative for Vercel serverless instances (maxPoolSize 5, minPoolSize 0, 20-second idle timeout); this is a starting assumption, not a measured capacity claim.
+
+**Still not cut over:** `main.py` request handlers and startup continue to use SQLite. The new MongoDB module is not wired into routes; no MongoDB-backed API behavior or transaction semantics have been claimed or verified. CI and deployment checks must be run on this increment before considering it validated. The next implementation slice is the call lifecycle/idempotency/queue claim path, including competing-worker tests, followed by tenant/device endpoints.
