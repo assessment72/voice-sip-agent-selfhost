@@ -34,7 +34,7 @@ class SipShutdownTest {
                 assertFalse(ua.status.ready)
                 assertEquals("stopped", ua.status.detail)
                 assertEquals(0, lateTask.get())
-                DatagramSocket(port).use { assertEquals(port, it.localPort) }
+                assertTrue("SIP UDP socket must be closed before stop returns", ua.transport.isClosed)
             } finally {
                 if (thread.get()?.isAlive == true) ua.stop(timeoutMs = 50)
             }
