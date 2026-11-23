@@ -178,6 +178,9 @@ def test_device_event_is_visible_only_inside_owning_organization(tmp_path, monke
         headers=auth(alpha["apiToken"], alpha["organizationId"]),
     )
     assert activity.status_code == 200
+    org_feed = client.get("/v1/admin/activity", headers=auth(alpha["apiToken"], alpha["organizationId"]))
+    assert org_feed.status_code == 200
+    assert org_feed.json()["count"] == 1
     hidden = client.get(
         f"/v1/admin/devices/{device['deviceId']}/activity",
         headers=auth(beta["apiToken"], beta["organizationId"]),
