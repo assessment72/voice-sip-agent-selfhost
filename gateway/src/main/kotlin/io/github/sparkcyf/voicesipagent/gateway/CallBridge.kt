@@ -11,6 +11,7 @@ import java.util.concurrent.ScheduledThreadPoolExecutor
 import java.util.concurrent.ScheduledExecutorService
 import java.util.concurrent.ScheduledFuture
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
 
 /** One inbound leg tied to the outbound leg we created for it. */
 class BridgeSession internal constructor(
@@ -70,6 +71,7 @@ class CallBridge(
             continueExistingPeriodicTasksAfterShutdownPolicy = false
         }
     private val listeners = CopyOnWriteArrayList<BridgeListener>()
+    private val hostedOriginatePending = AtomicBoolean(false)
     private var nextId = 1
 
     @Volatile var session: BridgeSession? = null
@@ -92,30 +94,55 @@ class CallBridge(
      * This is the hosted-call path; it deliberately does not use the ordinary inbound auto-dial
      * sequence, which would create the SIP leg while the cellular phone is still ringing.
      */
-    fun originateCellularThenSip(cellularNumber: String, sipTarget: String): Boolean {
+    fun originateCellularThenSip(
+        cellularNumber: String,
+        sipTarget: String,
+        onStarted: ((Int) -> Unit)? = null,
+    ): Boolean {
         if (cellularNumber.isBlank() || sipTarget.isBlank() || executor.isShutdown || session != null) return false
+        // Reserve the bridge before posting. An inbound callback already queued on this executor
+        // must see the reservation and cannot steal the slot before the hosted task runs.
+        if (!hostedOriginatePending.compareAndSet(false, true)) return false
+        if (session != null || executor.isShutdown) {
+            hostedOriginatePending.set(false)
+            return false
+        }
         post {
-            if (session != null) {
-                log("hosted originate refused: bridge busy")
-                return@post
-            }
-            val cellularLeg = sideA.dial(cellularNumber, io.github.sparkcyf.voicesipagent.voice.Party(null))
-            val s = BridgeSession(nextId++, "hosted-outbound", cellularLeg).apply {
-                deferredOutboundTarget = sipTarget
-            }
-            session = s
-            cellularLeg.addListener(LegWatcher(s, inbound = true))
-            s.answerTimer = executor.schedule({
-                if (session === s && s.connectedAtMs == null) {
-                    log("$s: cellular answer timeout")
-                    endSession(s, HangupCause.NO_ANSWER)
+            try {
+                if (session != null) {
+                    log("hosted originate refused: bridge busy")
+                    return@post
                 }
-            }, config.answerTimeoutMs, TimeUnit.MILLISECONDS)
-            log("$s: dialing cellular leg first")
-            reevaluate(s)
-            notifyChanged(s)
+                val cellularLeg = sideA.dial(cellularNumber, io.github.sparkcyf.voicesipagent.voice.Party(null))
+                val s = BridgeSession(nextId++, "hosted-outbound", cellularLeg).apply {
+                    deferredOutboundTarget = sipTarget
+                }
+                session = s
+                hostedOriginatePending.set(false)
+                onStarted?.invoke(s.id)
+                cellularLeg.addListener(LegWatcher(s, inbound = true))
+                s.answerTimer = executor.schedule({
+                    if (session === s && s.connectedAtMs == null) {
+                        log("$s: cellular answer timeout")
+                        endSession(s, HangupCause.NO_ANSWER)
+                    }
+                }, config.answerTimeoutMs, TimeUnit.MILLISECONDS)
+                log("$s: dialing cellular leg first")
+                reevaluate(s)
+                notifyChanged(s)
+            } catch (t: Throwable) {
+                hostedOriginatePending.set(false)
+                throw t
+            } finally {
+                hostedOriginatePending.set(false)
+            }
         }
         return true
+    }
+
+    /** End only the session that owns a scheduled duration guard; never a later call. */
+    fun endSession(sessionId: Int, cause: HangupCause = HangupCause.NORMAL) = post {
+        session?.takeIf { it.id == sessionId }?.let { endSession(it, cause) }
     }
 
     fun addListener(l: BridgeListener) = listeners.addIfAbsent(l)
@@ -144,8 +171,8 @@ class CallBridge(
 
     private fun onInbound(leg: CallLeg, from: CallEndpoint, to: CallEndpoint, route: RouteTarget) {
         val busy = session
-        if (busy != null) {
-            log("busy with $busy; ${config.busyPolicy} new ${from.name} call")
+        if (busy != null || hostedOriginatePending.get()) {
+            log("busy with ${busy ?: "pending hosted originate"}; ${config.busyPolicy} new ${from.name} call")
             if (config.busyPolicy == BusyPolicy.REJECT || from === sideB) leg.hangup(HangupCause.BUSY)
             return
         }
