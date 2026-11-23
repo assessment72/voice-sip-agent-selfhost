@@ -124,3 +124,10 @@ Commit `730fb79167ebe5576d95e64cb97a17df46a32805` adds `HostedStateUpdateQueueTe
 - Rejection of blank call/state values and safe handling of an already-removed/unknown acknowledgement.
 
 These are JVM unit tests using mocked Android preferences. They validate serialization/persistence behavior at the queue abstraction level, not an actual Android OS process kill or device storage failure. The new tests still require a completed Android CI run on this commit before being called passed.
+
+
+Additional outbox boundary tests on commit `54a9ab8645b8c7887896598257b8a5ecfaf280ac`:
+- Verify the 500-entry capacity limit rejects overflow without deleting or reordering earlier transitions.
+- Verify malformed persisted JSON is retained unchanged and causes new enqueue attempts to fail closed rather than silently replacing potentially important updates.
+
+The test suite remains pending CI validation on the latest branch head.
