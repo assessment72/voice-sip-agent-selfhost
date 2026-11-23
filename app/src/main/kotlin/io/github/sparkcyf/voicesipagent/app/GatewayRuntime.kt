@@ -2,9 +2,11 @@ package io.github.sparkcyf.voicesipagent.app
 
 import android.content.Context
 import android.net.ConnectivityManager
+import android.net.NetworkCapabilities
 import android.net.LinkProperties
 import android.net.Network
 import android.os.Bundle
+import android.os.BatteryManager
 import android.os.Build
 import android.telecom.TelecomManager
 import android.content.ComponentName
@@ -137,6 +139,12 @@ class GatewayRuntime private constructor(context: Context) {
     private val hostedStateWorker = ScheduledThreadPoolExecutor(1) { task ->
         Thread(task, "hosted-call-state").apply { isDaemon = true }
     }.apply { removeOnCancelPolicy = true }
+    private val hostedHeartbeatWorker = ScheduledThreadPoolExecutor(1) { task ->
+        Thread(task, "hosted-device-heartbeat").apply { isDaemon = true }
+    }.apply { removeOnCancelPolicy = true }
+    private var hostedHeartbeatTask: ScheduledFuture<*>? = null
+    private val _hostedDeviceMessage = MutableStateFlow("")
+    val hostedDeviceMessage: StateFlow<String> = _hostedDeviceMessage
     private val hostedPollingEnabled = java.util.concurrent.atomic.AtomicBoolean(false)
     // Closes the handoff race between the network poller and the gateway executor.
     private val hostedJobInFlight = java.util.concurrent.atomic.AtomicBoolean(false)
@@ -268,6 +276,11 @@ class GatewayRuntime private constructor(context: Context) {
         healthCheck = worker.scheduleWithFixedDelay(::periodicCheck, 60, 60, TimeUnit.SECONDS)
         hostedPollingEnabled.set(true)
         hostedPoll = hostedPollWorker.scheduleWithFixedDelay(::pollHostedCalls, 0, 1, TimeUnit.SECONDS)
+        if (hostedHeartbeatTask == null) {
+            hostedHeartbeatTask = hostedHeartbeatWorker.scheduleWithFixedDelay(
+                ::sendHostedHeartbeat, 0, 30, TimeUnit.SECONDS,
+            )
+        }
     }
 
     private fun stopBackgroundTasks() {
@@ -277,6 +290,8 @@ class GatewayRuntime private constructor(context: Context) {
         hostedJobInFlight.set(false)
         hostedPoll?.cancel(true)
         hostedPoll = null
+        hostedHeartbeatTask?.cancel(false)
+        hostedHeartbeatTask = null
         cancelHostedTracking("agent_stopped")
         dialerRetry?.cancel(false)
         dialerRetry = null
@@ -289,12 +304,89 @@ class GatewayRuntime private constructor(context: Context) {
         worker.allowCoreThreadTimeOut(true)
     }
 
+
+    /**
+     * Exchange a one-time organization enrollment token for this installation's own device
+     * credential. The credential is persisted only through SettingsStore's Android Keystore seal.
+     * Existing SIP account settings are not modified or restarted.
+     */
+    fun enrollHostedDevice(baseUrl: String, enrollmentToken: String, displayName: String) = worker.execute {
+        val cleanUrl = baseUrl.trim()
+        val cleanEnrollment = enrollmentToken.trim()
+        if (!cleanUrl.startsWith("https://", ignoreCase = true) || cleanEnrollment.isBlank()) {
+            _hostedDeviceMessage.value = "أدخل رابط HTTPS ورمز تسجيل صالحاً"
+            return@execute
+        }
+        _hostedDeviceMessage.value = "جارٍ تسجيل الجهاز..."
+        try {
+            val externalId = settingsStore.getOrCreateHostedExternalDeviceId()
+            val packageInfo = app.packageManager.getPackageInfo(app.packageName, 0)
+            val version = packageInfo.versionName ?: "unknown"
+            val registration = HostedCallApiClient(cleanUrl).enroll(
+                enrollmentToken = cleanEnrollment,
+                externalDeviceId = externalId,
+                displayName = displayName.trim().ifBlank { Build.MODEL.ifBlank { "Android device" } },
+                appId = app.packageName,
+                appVersion = version,
+                androidVersion = Build.VERSION.RELEASE ?: "unknown",
+                manufacturer = Build.MANUFACTURER ?: "unknown",
+                model = Build.MODEL ?: "unknown",
+            )
+            val updated = settings.copy(
+                hostedApiUrl = cleanUrl,
+                hostedDeviceToken = registration.deviceToken,
+                hostedDeviceId = registration.deviceId,
+                hostedOrganizationId = registration.organizationId,
+            )
+            settingsStore.save(updated)
+            _settings.value = updated
+            _hostedDeviceMessage.value = "تم تسجيل الجهاز بنجاح · \${registration.deviceId}"
+            AppLog.i("hosted device enrolled")
+        } catch (e: Exception) {
+            _hostedDeviceMessage.value = "تعذر تسجيل الجهاز: \${e.javaClass.simpleName}"
+            AppLog.w("hosted device enrollment failed: \${e.javaClass.simpleName}")
+        }
+    }
+
     // ------------------------------------------------------------ hosted outbound call control
 
     /**
      * Polls only over an outbound HTTPS connection. The handset never opens a listening socket.
      * The hosted device token is stored encrypted by SettingsStore and is distinct from SIP auth.
      */
+
+    private fun sendHostedHeartbeat() {
+        val base = settings.hostedApiUrl.trim()
+        val token = settings.hostedDeviceToken
+        if (base.isBlank() || token.isBlank() || !hostedPollingEnabled.get()) return
+        try {
+            val batteryManager = app.getSystemService(Context.BATTERY_SERVICE) as BatteryManager
+            val battery = batteryManager.getIntProperty(BatteryManager.BATTERY_PROPERTY_CAPACITY)
+                .takeIf { it in 0..100 }
+            val connectivity = app.getSystemService(ConnectivityManager::class.java)
+            val capabilities = connectivity.getNetworkCapabilities(connectivity.activeNetwork)
+            val networkType = when {
+                capabilities == null -> "none"
+                capabilities.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) -> "wifi"
+                capabilities.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) -> "cellular"
+                capabilities.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET) -> "ethernet"
+                else -> "unknown"
+            }
+            val internet = capabilities?.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) == true
+            HostedCallApiClient(base, token).heartbeat(
+                batteryLevel = battery,
+                networkType = networkType,
+                internetAvailable = internet,
+                sipStatus = if (sip?.status?.ready == true) "registered" else "unregistered",
+                simStatus = if (cellular.status.ready) "ready" else "unknown",
+                agentStatus = if (hostedCallId != null) "busy" else "idle",
+                activeCall = hostedCallId != null,
+            )
+        } catch (e: Exception) {
+            AppLog.w("hosted heartbeat failed: \${e.javaClass.simpleName}")
+        }
+    }
+
     private fun pollHostedCalls() {
         if (!hostedPollingEnabled.get() || !gatewayEnabled || hostedCallId != null || hostedJobInFlight.get()) return
         val base = settings.hostedApiUrl.trim()
