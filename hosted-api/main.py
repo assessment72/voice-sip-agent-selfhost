@@ -75,7 +75,8 @@ def init_db():
           count INTEGER NOT NULL, PRIMARY KEY(key_hash, window_start)
         );
         CREATE TABLE IF NOT EXISTS admin_audit_events (
-          id TEXT PRIMARY KEY, organization_id TEXT NOT NULL,
+          id TEXT PRIMARY KEY,
+          organization_id TEXT NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
           actor_user_id TEXT NOT NULL, action TEXT NOT NULL,
           target_type TEXT NOT NULL, target_id TEXT NOT NULL,
           metadata_json TEXT NOT NULL DEFAULT '{}', created_at INTEGER NOT NULL
