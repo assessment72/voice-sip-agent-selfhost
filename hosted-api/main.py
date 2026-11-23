@@ -33,7 +33,8 @@ RATE_LIMIT = int(os.getenv("RATE_LIMIT_PER_MINUTE", "5"))
 IP_RATE_LIMIT_PER_MINUTE = int(os.getenv("IP_RATE_LIMIT_PER_MINUTE", "120"))
 GENERAL_RATE_LIMIT_PER_MINUTE = int(os.getenv("GENERAL_RATE_LIMIT_PER_MINUTE", "60"))
 REQUIRE_DISTRIBUTED_RATE_LIMIT = os.getenv(
-    "REQUIRE_DISTRIBUTED_RATE_LIMIT", "false"
+    "REQUIRE_DISTRIBUTED_RATE_LIMIT",
+    "true" if os.getenv("VERCEL", "").lower() in {"1", "true", "yes"} else "false",
 ).lower() in {"1", "true", "yes"}
 PREFIXES = tuple(p.strip() for p in os.getenv("ALLOWED_PREFIXES", "").split(",") if p.strip())
 STATES = {"queued", "ringing_cellular", "cellular_answered", "calling_sip", "bridged", "failed", "ended"}
@@ -99,6 +100,10 @@ def init_db():
 @app.on_event("startup")
 def startup():
     init_db()
+    if os.getenv("MONGODB_URI", "").strip():
+        # Establish the shared rate-limit unique index before accepting API traffic.
+        from mongodb_store import ensure_indexes
+        ensure_indexes()
 
 
 def _consume_local_rate_limit(key_hash: str, window_start: int, limit: int) -> tuple[bool, int]:
@@ -869,6 +874,7 @@ def rotate_member_credential(organization_id: str, user_id: str,
 def revoke_device(device_id: str, principal=Depends(require_org_admin)):
     now = int(time.time())
     with db() as c:
+        c.execute("BEGIN IMMEDIATE")
         row = c.execute(
             "SELECT id FROM devices WHERE id=? AND organization_id=?",
             (device_id, principal["organization_id"]),
@@ -887,6 +893,7 @@ def revoke_device(device_id: str, principal=Depends(require_org_admin)):
         write_audit_event(c, organization_id=principal["organization_id"],
                           actor_user_id=principal["user_id"], action="device.revoked",
                           target_type="device", target_id=device_id, created_at=now)
+        c.commit()
     return {"deviceId": device_id, "status": "revoked"}
 
 
@@ -895,6 +902,7 @@ def create_device_command(body: DeviceCommandRequest, principal=Depends(require_
     now = int(time.time())
     command_id = str(uuid.uuid4())
     with db() as c:
+        c.execute("BEGIN IMMEDIATE")
         target = c.execute(
             "SELECT id,status FROM devices WHERE id=? AND organization_id=?",
             (body.deviceId, principal["organization_id"]),
@@ -914,6 +922,7 @@ def create_device_command(body: DeviceCommandRequest, principal=Depends(require_
                           target_type="device_command", target_id=command_id,
                           metadata={"command_type": body.commandType, "device_id": body.deviceId},
                           created_at=now)
+        c.commit()
     return {"commandId": command_id, "status": "pending", "expiresAt": now + body.expiresInSeconds}
 
 
