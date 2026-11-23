@@ -97,17 +97,19 @@ def init_db():
 
 
 def startup():
-    # Vercel's writable filesystem is ephemeral and per-instance. Do not start
-    # a customer-facing API on SQLite until all route repositories are migrated.
-    if os.getenv("VERCEL", "").lower() in {"1", "true", "yes"} and os.getenv(
-        "ALLOW_UNSAFE_SQLITE_ON_VERCEL", "false"
-    ).lower() not in {"1", "true", "yes"}:
-        raise RuntimeError("production_blocked_sqlite_not_durable_use_mongodb_repository")
-    init_db()
-    if os.getenv("MONGODB_URI", "").strip():
-        # Establish the shared rate-limit unique index before accepting API traffic.
+    is_vercel = os.getenv("VERCEL", "").lower() in {"1", "true", "yes"}
+    mongo_configured = bool(os.getenv("MONGODB_URI", "").strip())
+    if is_vercel and not mongo_configured:
+        raise RuntimeError("production_blocked_mongodb_required")
+    if is_vercel and os.getenv("ALLOW_UNSAFE_SQLITE_ON_VERCEL", "false").lower() in {"1", "true", "yes"}:
+        raise RuntimeError("unsafe_sqlite_override_is_not_supported")
+    if mongo_configured:
+        # MongoDB is the only persistent backend on serverless. Never initialize
+        # or write the ephemeral SQLite database on Vercel.
         from mongodb_store import ensure_indexes
         ensure_indexes()
+        return
+    init_db()
 
 
 @asynccontextmanager
@@ -198,6 +200,8 @@ def token_ok(provided: str | None, expected: str) -> bool:
 
 
 def caller(authorization: str | None = Header(default=None)):
+    if os.getenv("MONGODB_URI", "").strip():
+        raise HTTPException(status_code=404, detail="legacy_shared_token_api_disabled_on_mongodb")
     if not LEGACY_CALL_API_ENABLED:
         raise HTTPException(status_code=404, detail="legacy_call_api_disabled")
     token = authorization[7:] if authorization and authorization.startswith("Bearer ") else None
@@ -207,6 +211,8 @@ def caller(authorization: str | None = Header(default=None)):
 
 
 def device(authorization: str | None = Header(default=None)):
+    if os.getenv("MONGODB_URI", "").strip():
+        raise HTTPException(status_code=404, detail="legacy_shared_token_api_disabled_on_mongodb")
     if not LEGACY_DEVICE_API_ENABLED:
         raise HTTPException(status_code=404, detail="legacy_device_api_disabled")
     token = authorization[7:] if authorization and authorization.startswith("Bearer ") else None
@@ -413,6 +419,12 @@ def health():
 @app.get("/health/database")
 def database_health():
     """Probe the database actually used by FastAPI routes."""
+    if os.getenv("MONGODB_URI", "").strip():
+        from mongodb_store import health_snapshot
+        snapshot = health_snapshot()
+        if snapshot["status"] != "ok":
+            raise HTTPException(status_code=503, detail=snapshot)
+        return snapshot
     try:
         with db() as connection:
             connection.execute("SELECT 1").fetchone()
@@ -1497,6 +1509,9 @@ def list_organization_branches(principal=Depends(organization_principal)):
 
 @app.get("/v1/admin/metrics/latency")
 def organization_latency_metrics(principal=Depends(organization_principal)):
+    if os.getenv("MONGODB_URI", "").strip():
+        from mongodb_control import latency_metrics
+        return latency_metrics(organization_id=principal["organization_id"])
     with db() as c:
         rows = c.execute(
             """SELECT calls.events FROM calls
