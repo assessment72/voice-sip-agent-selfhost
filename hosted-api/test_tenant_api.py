@@ -212,6 +212,11 @@ def test_tenant_call_is_scoped_and_claimed_only_by_owning_org_device(tmp_path, m
         headers=auth(alpha["apiToken"], alpha["organizationId"]) | {"Idempotency-Key": str(uuid.uuid4())},
     )
     assert created.status_code == 202, created.text
+    # The compatibility device token must never claim a tenant-owned call.
+    assert client.get(
+        "/v1/device/jobs/next?wait=0",
+        headers=auth("legacy-device-token"),
+    ).json()["job"] is None
     assert client.get(
         "/v1/device/call-jobs/next?wait=0",
         headers=auth(beta_device["deviceToken"]),
@@ -249,6 +254,46 @@ def test_tenant_call_is_scoped_and_claimed_only_by_owning_org_device(tmp_path, m
         "/v1/admin/metrics/latency",
         headers=auth(beta["apiToken"], beta["organizationId"]),
     ).json()["queue_to_bridged"]["samples"] == 0
+
+
+def test_viewer_cannot_create_billable_organization_call(tmp_path, monkeypatch):
+    client = setup_client(tmp_path, monkeypatch)
+    org = create_org(client, "Alpha", "alpha", "owner-a")
+    now = 1
+    raw = "viewer-call-token"
+    with main.db() as connection:
+        connection.execute(
+            """INSERT INTO organization_memberships
+               (organization_id,user_id,role,status,created_at,updated_at)
+               VALUES(?,?,'viewer','active',?,?)""",
+            (org["organizationId"], "viewer-a", now, now),
+        )
+        connection.execute(
+            """INSERT INTO organization_api_credentials
+               (id,organization_id,label,user_id,token_hash,token_prefix,scopes,created_at)
+               VALUES(?,?,?,?,?,?,'[]',?)""",
+            (str(uuid.uuid4()), org["organizationId"], "Viewer", "viewer-a",
+             main._hash_secret(raw), raw[:8], now),
+        )
+    response = client.post(
+        f"/v1/organizations/{org['organizationId']}/calls",
+        json={"phoneNumber": "777405578"},
+        headers=auth(raw, org["organizationId"]) | {"Idempotency-Key": str(uuid.uuid4())},
+    )
+    assert response.status_code == 403
+    assert response.json()["detail"] == "insufficient_role"
+
+
+def test_suspended_organization_credentials_are_rejected(tmp_path, monkeypatch):
+    client = setup_client(tmp_path, monkeypatch)
+    org = create_org(client, "Alpha", "alpha", "owner-a")
+    with main.db() as connection:
+        connection.execute("UPDATE organizations SET status='suspended' WHERE id=?",
+                           (org["organizationId"],))
+    response = client.get("/v1/admin/devices",
+                          headers=auth(org["apiToken"], org["organizationId"]))
+    assert response.status_code == 403
+    assert response.json()["detail"] == "organization_access_denied"
 
 
 def test_device_command_delivery_and_completion_are_device_scoped(tmp_path, monkeypatch):
