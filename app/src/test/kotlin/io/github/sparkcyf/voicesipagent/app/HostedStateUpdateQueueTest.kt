@@ -80,6 +80,7 @@ class HostedStateUpdateQueueTest {
         assertFalse(f.queue.enqueue("call-1", " ", null))
         assertTrue(f.queue.remove("not-present"))
         assertNull(f.queue.peek())
+        assertTrue(f.queue.isEmpty())
     }
 
     @Test fun enforcesTheBoundedOutboxWithoutDroppingOlderTransitions() {
@@ -101,5 +102,6 @@ class HostedStateUpdateQueueTest {
         assertNull(f.queue.peek())
         assertFalse(f.queue.enqueue("call-1", "failed", null))
         assertEquals(corrupt, f.preferences.getString("pending_updates", null))
+        assertFalse(f.queue.isEmpty())
     }
 }
