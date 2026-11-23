@@ -141,9 +141,9 @@ def test_non_admin_cannot_issue_enrollment_token(tmp_path, monkeypatch):
         raw = "viewer-credential-secret"
         connection.execute(
             """INSERT INTO organization_api_credentials
-               (id,organization_id,label,token_hash,token_prefix,scopes,created_at)
-               VALUES(?,?,?,?,?,'[]',?)""",
-            (str(uuid.uuid4()), org["organizationId"], "Viewer", main._hash_secret(raw), raw[:8], now),
+               (id,organization_id,label,user_id,token_hash,token_prefix,scopes,created_at)
+               VALUES(?,?,?,?,?,?,'[]',?)""",
+            (str(uuid.uuid4()), org["organizationId"], "Viewer", "viewer-a", main._hash_secret(raw), raw[:8], now),
         )
     result = client.post(
         f"/v1/organizations/{org['organizationId']}/enrollment-tokens",
