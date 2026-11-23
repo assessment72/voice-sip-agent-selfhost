@@ -199,3 +199,14 @@ CREATE TABLE IF NOT EXISTS admin_audit_events (
 );
 CREATE INDEX IF NOT EXISTS idx_audit_org_created
   ON admin_audit_events(organization_id, created_at DESC);
+
+CREATE TRIGGER IF NOT EXISTS trg_admin_audit_no_update
+BEFORE UPDATE ON admin_audit_events
+BEGIN
+  SELECT RAISE(ABORT, 'audit_log_immutable');
+END;
+CREATE TRIGGER IF NOT EXISTS trg_admin_audit_no_delete
+BEFORE DELETE ON admin_audit_events
+BEGIN
+  SELECT RAISE(ABORT, 'audit_log_immutable');
+END;
