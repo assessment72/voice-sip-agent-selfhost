@@ -395,7 +395,13 @@ class SipUserAgent(
      * through, false when it was handled here (401 sent, or silently dropped as banned/over-limit).
      */
     private fun registrarAuthPassed(req: SipRequest, from: InetSocketAddress): Boolean {
-        if (config.registrarPassword.isEmpty()) return true
+        // Server mode must never accept an unauthenticated REGISTER: the Contact
+        // controls where hosted inbound SIP legs are delivered.
+        if (config.registrarPassword.isEmpty()) {
+            transport.send(buildResponse(req, 403, toTag = newTag()), from)
+            log.warn("REGISTER from ${from.address?.hostAddress ?: "unknown"} refused: registrar password is not configured")
+            return false
+        }
         val ip = from.address?.hostAddress ?: ""
         return when (val o = digestCheck(req, ip, "REGISTER")) {
             AuthOutcome.PASS -> true
