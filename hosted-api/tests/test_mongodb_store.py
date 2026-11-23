@@ -38,15 +38,27 @@ def test_ensure_indexes_creates_expected_collections_and_is_repeatable():
     assert all(len(col.index_batches) == 2 for col in db.collections.values())
 
 
-def test_call_idempotency_index_is_unique():
+def test_call_idempotency_and_active_slot_indexes_are_organization_scoped():
     db = FakeDatabase()
     mongodb_store.ensure_indexes(db)
 
     indexes = db["calls"].index_batches[0]
     idem = next(index for index in indexes
-                if index.document["name"] == "uq_call_principal_idempotency")
+                if index.document["name"] == "uq_org_principal_idempotency")
     assert idem.document["unique"] is True
-    assert list(idem.document["key"].items()) == [("principal", 1), ("idempotency_key", 1)]
+    assert list(idem.document["key"].items()) == [
+        ("organization_id", 1), ("principal", 1), ("idempotency_key", 1)
+    ]
+
+    active = next(index for index in indexes
+                   if index.document["name"] == "uq_org_single_active_call_slot")
+    assert active.document["unique"] is True
+    assert list(active.document["key"].items()) == [
+        ("organization_id", 1), ("active_slot", 1)
+    ]
+    assert active.document["partialFilterExpression"] == {
+        "active_slot": {"$exists": True}
+    }
 
 
 def test_branch_code_uniqueness_only_applies_to_string_codes():
