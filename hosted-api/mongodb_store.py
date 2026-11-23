@@ -137,6 +137,10 @@ def ensure_indexes(database: Database | None = None) -> None:
             IndexModel([("device_id", ASCENDING), ("status", ASCENDING), ("created_at", ASCENDING)],
                        name="ix_command_delivery_queue"),
         ],
+        "admin_audit_events": [
+            IndexModel([("organization_id", ASCENDING), ("created_at", DESCENDING)],
+                       name="ix_audit_org_created"),
+        ],
     }
     for name, indexes in definitions.items():
         db[name].create_indexes(indexes)
