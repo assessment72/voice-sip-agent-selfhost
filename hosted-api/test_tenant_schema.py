@@ -37,6 +37,8 @@ def test_tenant_foundation_creates_expected_tables():
         "device_configs",
         "device_commands",
         "call_tenant_assignments",
+        "request_limits",
+        "admin_audit_events",
     }.issubset(names)
 
 
@@ -92,3 +94,20 @@ def test_membership_role_and_call_assignment_foreign_keys():
             "INSERT INTO call_tenant_assignments(call_id,organization_id,created_at) "
             "VALUES ('missing-call','org-a',1)"
         )
+
+
+def test_admin_audit_events_are_immutable():
+    connection = migrated_db()
+    connection.execute(
+        "INSERT INTO organizations(id,slug,name,created_at,updated_at) "
+        "VALUES ('org-a','alpha','Alpha',1,1)"
+    )
+    connection.execute(
+        """INSERT INTO admin_audit_events
+           (id,organization_id,actor_user_id,action,target_type,target_id,created_at)
+           VALUES ('event-1','org-a','owner','device.revoked','device','device-1',1)"""
+    )
+    with pytest.raises(sqlite3.IntegrityError, match="audit_log_immutable"):
+        connection.execute("UPDATE admin_audit_events SET action='rewritten' WHERE id='event-1'")
+    with pytest.raises(sqlite3.IntegrityError, match="audit_log_immutable"):
+        connection.execute("DELETE FROM admin_audit_events WHERE id='event-1'")
