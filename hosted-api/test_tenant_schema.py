@@ -28,6 +28,7 @@ def test_tenant_foundation_creates_expected_tables():
         "organizations",
         "organization_memberships",
         "organization_api_credentials",
+        "branches",
         "devices",
         "device_enrollment_tokens",
         "device_credentials",
