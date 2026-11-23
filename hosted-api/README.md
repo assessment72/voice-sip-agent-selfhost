@@ -52,7 +52,10 @@ The Android agent authenticates separately with `DEVICE_API_TOKEN` and polls `GE
 
 ## Safety notes
 
-- Set `ALLOWED_PREFIXES` to the exact destinations approved for testing. Empty means unrestricted at the API layer; do not use that in a deployed environment.
+- Set `ALLOWED_PREFIXES` to the exact destinations approved for testing. Empty means all calls are rejected with `allowlist_not_configured`.
+- The shared-token compatibility routes (`/v1/calls`, `/v1/device/jobs/next`, and `/v1/device/calls/*`) are disabled by default. Keep `ENABLE_LEGACY_CALL_API=false` and `ENABLE_LEGACY_DEVICE_API=false`; only enable them temporarily in an isolated migration environment.
+- Bootstrap organizations only with a separate high-entropy `ORG_BOOTSTRAP_TOKEN`. Store returned organization/device tokens in a secret manager or Android Keystore; they are shown once.
+- `GET /health/database` checks the active SQLite database. `GET /health/mongodb` checks optional Atlas connectivity only; it does not mean API calls are stored in MongoDB.
 - Android must independently reject emergency numbers using `TelephonyManager.isEmergencyNumber` before dialing.
 - Keep queue/call timeouts bounded; add a reverse-proxy request-size limit and IP allow-list where practical.
 - Rotate both API tokens independently. Do not put secrets in Git, APK resources, query strings, or logs.
