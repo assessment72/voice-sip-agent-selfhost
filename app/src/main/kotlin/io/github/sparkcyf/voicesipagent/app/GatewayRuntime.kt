@@ -142,6 +142,8 @@ class GatewayRuntime private constructor(context: Context) {
     private val hostedHeartbeatWorker = ScheduledThreadPoolExecutor(1) { task ->
         Thread(task, "hosted-device-heartbeat").apply { isDaemon = true }
     }.apply { removeOnCancelPolicy = true }
+    // Persist state transitions before network delivery so process death cannot discard them.
+    private val hostedStateQueue = HostedStateUpdateQueue(app)
     private var hostedHeartbeatTask: ScheduledFuture<*>? = null
     @Volatile private var lastHostedNetworkType: String? = null
     private val _hostedDeviceMessage = MutableStateFlow("")
@@ -276,6 +278,7 @@ class GatewayRuntime private constructor(context: Context) {
         // setup while idle if access is unavailable; a missing override alone does not trigger setup.
         healthCheck = worker.scheduleWithFixedDelay(::periodicCheck, 60, 60, TimeUnit.SECONDS)
         hostedPollingEnabled.set(true)
+        drainHostedStateQueue()
         hostedPoll = hostedPollWorker.scheduleWithFixedDelay(::pollHostedCalls, 0, 1, TimeUnit.SECONDS)
         if (hostedHeartbeatTask == null) {
             hostedHeartbeatTask = hostedHeartbeatWorker.scheduleWithFixedDelay(
@@ -502,8 +505,8 @@ class GatewayRuntime private constructor(context: Context) {
     }
 
     /**
-     * Preserve state-event order and retry transient network failures with bounded backoff.
-     * This is an in-process best-effort queue: events are not durable across process death.
+     * Persist every state transition before scheduling delivery. Delivery is at-least-once:
+     * a process can die after server acceptance but before the local acknowledgement is committed.
      */
     private fun enqueueHostedState(
         client: HostedCallApiClient,
@@ -511,31 +514,47 @@ class GatewayRuntime private constructor(context: Context) {
         state: String,
         reason: String? = null,
     ) {
-        hostedStateWorker.execute {
-            val delaysMs = longArrayOf(500, 1_000, 2_000, 4_000, 8_000)
-            var attempt = 0
-            while (true) {
+        if (!hostedStateQueue.enqueue(callId, state, reason)) {
+            AppLog.w("hosted call state queue is full; update was not accepted locally")
+            return
+        }
+        hostedStateWorker.execute { drainHostedStateQueue(client) }
+    }
+
+    private fun drainHostedStateQueue(
+        client: HostedCallApiClient = HostedCallApiClient(settings.hostedApiUrl, settings.hostedDeviceToken),
+    ) {
+        if (settings.hostedApiUrl.isBlank() || settings.hostedDeviceToken.isBlank()) return
+        val delaysMs = longArrayOf(500, 1_000, 2_000, 4_000, 8_000)
+        while (true) {
+            val item = hostedStateQueue.peek() ?: return
+            var delivered = false
+            for (attempt in 0..delaysMs.size) {
                 try {
-                    client.updateState(callId, state, reason)
-                    runCatching {
-                        client.reportEvent("call", if (state == "failed") "warning" else "info", "state_$state")
-                    }.onFailure { AppLog.w("hosted activity event failed: ${it.javaClass.simpleName}") }
+                    client.updateState(item.callId, item.state, item.reason)
+                    delivered = true
                     break
                 } catch (e: Exception) {
-                    if (attempt >= delaysMs.size) {
-                        AppLog.w("hosted call state update exhausted retries: ${e.javaClass.simpleName}")
-                        break
-                    }
-                    val delay = delaysMs[attempt++]
-                    AppLog.w("hosted call state update retry ${attempt}/${delaysMs.size}")
-                    try {
-                        Thread.sleep(delay)
-                    } catch (_: InterruptedException) {
-                        Thread.currentThread().interrupt()
-                        AppLog.w("hosted call state retry interrupted")
-                        break
+                    if (attempt == delaysMs.size) {
+                        AppLog.w("hosted state remains queued after retries: ${e.javaClass.simpleName}")
+                    } else {
+                        try {
+                            Thread.sleep(delaysMs[attempt])
+                        } catch (_: InterruptedException) {
+                            Thread.currentThread().interrupt()
+                            return
+                        }
                     }
                 }
+            }
+            if (!delivered) {
+                // Keep the head item and preserve order; a later attempt resumes from disk.
+                hostedStateWorker.schedule({ drainHostedStateQueue() }, 30, TimeUnit.SECONDS)
+                return
+            }
+            if (!hostedStateQueue.remove(item.id)) {
+                AppLog.w("hosted state acknowledgement could not be committed; update may replay")
+                return
             }
         }
     }
