@@ -305,7 +305,12 @@ class GatewayRuntime private constructor(context: Context) {
             // The 20-second wait runs only on hostedPollWorker, never on the gateway executor.
             val job = client.nextJob(waitSeconds = 20) ?: return
             if (!hostedJobInFlight.compareAndSet(false, true)) return
-            worker.execute { handleHostedJob(client, job) }
+            try {
+                worker.execute { handleHostedJob(client, job) }
+            } catch (e: Exception) {
+                hostedJobInFlight.set(false)
+                throw e
+            }
         } catch (e: Exception) {
             AppLog.w("hosted API long poll failed: ${e.javaClass.simpleName}")
         }
@@ -446,6 +451,7 @@ class GatewayRuntime private constructor(context: Context) {
         hostedListener = null
         hostedCallId = null
         hostedLastState = null
+        hostedJobInFlight.set(false)
     }
 
     // ------------------------------------------------------------ privileged setup / health
