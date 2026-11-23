@@ -210,3 +210,13 @@ The client pool is intentionally conservative for Vercel serverless instances (m
 - The Hosted API CI workflow was observed running for the branch after the test addition; its final result must be checked before treating the tests as passing.
 
 **Migration status remains blocked:** all request handlers and startup in `hosted-api/main.py` still use SQLite. No route has been switched to MongoDB. Do not use the Preview deployment for device enrollment or live call control until the full migration and security gates are complete.
+
+
+## MongoDB foundation verification update — 2026-11-23
+
+- Added focused unit coverage for MongoDB index definitions, uniqueness constraints, configuration validation, and fail-closed health reporting.
+- Added read-only `GET /health/database` probe. It performs a MongoDB ping when configured and returns only backend/status; it does not expose credentials or switch the active data backend.
+- Added tests for healthy and unavailable probe responses.
+- Declared `dnspython` explicitly for MongoDB SRV URI resolution; removed the obsolete `pymongo[srv]` extra.
+- First CI execution exposed an incorrect test expectation in the repeatable-index test (the fake recorded one batch per invocation). The assertion was corrected; the rerun is pending.
+- **Important:** this remains a connectivity/collection-index foundation. Main API persistence is still SQLite. The health probe passing would prove connectivity only, not MongoDB CRUD, transaction semantics, tenant isolation, or production readiness.
