@@ -73,6 +73,14 @@ def init_db():
           key_hash TEXT NOT NULL, window_start INTEGER NOT NULL,
           count INTEGER NOT NULL, PRIMARY KEY(key_hash, window_start)
         );
+        CREATE TABLE IF NOT EXISTS admin_audit_events (
+          id TEXT PRIMARY KEY, organization_id TEXT NOT NULL,
+          actor_user_id TEXT NOT NULL, action TEXT NOT NULL,
+          target_type TEXT NOT NULL, target_id TEXT NOT NULL,
+          metadata_json TEXT NOT NULL DEFAULT '{}', created_at INTEGER NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_audit_org_created
+          ON admin_audit_events(organization_id, created_at DESC);
         """)
         columns = {row["name"] for row in c.execute("PRAGMA table_info(calls)")}
         if "claimed_at" not in columns:
@@ -452,6 +460,21 @@ def _hash_secret(value: str) -> str:
     return hashlib.sha256(value.encode("utf-8")).hexdigest()
 
 
+def write_audit_event(c: sqlite3.Connection, *, organization_id: str,
+                      actor_user_id: str, action: str, target_type: str,
+                      target_id: str, metadata: dict | None = None,
+                      created_at: int | None = None) -> None:
+    """Append a non-secret administrative audit event in the caller's transaction."""
+    c.execute(
+        """INSERT INTO admin_audit_events
+           (id,organization_id,actor_user_id,action,target_type,target_id,metadata_json,created_at)
+           VALUES(?,?,?,?,?,?,?,?)""",
+        (str(uuid.uuid4()), organization_id, actor_user_id, action, target_type,
+         target_id, json.dumps(metadata or {}, separators=(",", ":"), sort_keys=True),
+         int(created_at if created_at is not None else time.time())),
+    )
+
+
 def organization_principal(authorization: str | None = Header(default=None),
                            x_organization_id: str = Header(alias="X-Organization-ID")):
     token = authorization[7:] if authorization and authorization.startswith("Bearer ") else None
@@ -757,6 +780,9 @@ def add_organization_member(organization_id: str, body: OrganizationMemberReques
             (str(uuid.uuid4()), organization_id, f"{body.role} member credential",
              body.userId, _hash_secret(raw_token), raw_token[:8], now),
         )
+        write_audit_event(c, organization_id=organization_id, actor_user_id=principal["user_id"],
+                          action="member.created", target_type="membership", target_id=body.userId,
+                          metadata={"role": body.role}, created_at=now)
         c.commit()
     return {"organizationId": organization_id, "userId": body.userId, "role": body.role,
             "status": "active", "apiToken": raw_token,
@@ -792,6 +818,9 @@ def revoke_organization_member(organization_id: str, user_id: str,
             "UPDATE organization_api_credentials SET revoked_at=? WHERE organization_id=? AND user_id=? AND revoked_at IS NULL",
             (now, organization_id, user_id),
         )
+        write_audit_event(c, organization_id=organization_id, actor_user_id=principal["user_id"],
+                          action="member.revoked", target_type="membership", target_id=user_id,
+                          metadata={"role": member["role"]}, created_at=now)
         c.commit()
     return {"organizationId": organization_id, "userId": user_id, "status": "revoked"}
 
@@ -828,6 +857,9 @@ def rotate_member_credential(organization_id: str, user_id: str,
             (str(uuid.uuid4()), organization_id, "Rotated member credential",
              user_id, _hash_secret(raw_token), raw_token[:8], now),
         )
+        write_audit_event(c, organization_id=organization_id, actor_user_id=principal["user_id"],
+                          action="member.credential_rotated", target_type="credential_set", target_id=user_id,
+                          created_at=now)
         c.commit()
     return {"organizationId": organization_id, "userId": user_id,
             "apiToken": raw_token, "tokenWarning": "Shown once. Previous credentials were revoked."}
@@ -852,6 +884,9 @@ def revoke_device(device_id: str, principal=Depends(require_org_admin)):
                WHERE device_id=? AND status IN ('pending','delivered')""",
             (device_id,),
         )
+        write_audit_event(c, organization_id=principal["organization_id"],
+                          actor_user_id=principal["user_id"], action="device.revoked",
+                          target_type="device", target_id=device_id, created_at=now)
     return {"deviceId": device_id, "status": "revoked"}
 
 
@@ -874,6 +909,11 @@ def create_device_command(body: DeviceCommandRequest, principal=Depends(require_
             (command_id, principal["organization_id"], body.deviceId, body.commandType,
              principal["user_id"], now, now + body.expiresInSeconds),
         )
+        write_audit_event(c, organization_id=principal["organization_id"],
+                          actor_user_id=principal["user_id"], action="device.command_created",
+                          target_type="device_command", target_id=command_id,
+                          metadata={"command_type": body.commandType, "device_id": body.deviceId},
+                          created_at=now)
     return {"commandId": command_id, "status": "pending", "expiresAt": now + body.expiresInSeconds}
 
 
@@ -1164,6 +1204,25 @@ def organization_latency_metrics(principal=Depends(organization_principal)):
         return {"samples": len(ordered), "averageMs": round(sum(ordered) / len(ordered), 2),
                 "p95Ms": ordered[min(rank, len(ordered) - 1)]}
     return {name: summarize(values) for name, values in samples.items()}
+
+
+@app.get("/v1/admin/audit")
+def organization_audit_log(limit: int = Query(default=50, ge=1, le=200),
+                            principal=Depends(require_org_admin)):
+    with db() as c:
+        rows = c.execute(
+            """SELECT id,actor_user_id,action,target_type,target_id,metadata_json,created_at
+               FROM admin_audit_events WHERE organization_id=?
+               ORDER BY created_at DESC LIMIT ?""",
+            (principal["organization_id"], limit),
+        ).fetchall()
+    return {
+        "events": [
+            {**dict(row), "metadata": json.loads(row["metadata_json"])}
+            for row in rows
+        ],
+        "count": len(rows),
+    }
 
 
 @app.get("/v1/admin/activity")
