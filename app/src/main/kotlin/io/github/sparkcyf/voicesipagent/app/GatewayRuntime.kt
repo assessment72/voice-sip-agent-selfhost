@@ -138,7 +138,7 @@ class GatewayRuntime private constructor(context: Context) {
         Thread(task, "hosted-call-state").apply { isDaemon = true }
     }.apply { removeOnCancelPolicy = true }
     private val hostedPollingEnabled = java.util.concurrent.atomic.AtomicBoolean(false)
-    private var hostedCallId: String? = null
+    @Volatile private var hostedCallId: String? = null
     private var hostedLastState: String? = null
     private var hostedListener: BridgeListener? = null
     private var hostedCallTimer: ScheduledFuture<*>? = null
