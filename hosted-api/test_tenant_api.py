@@ -359,6 +359,12 @@ def test_member_revocation_and_credential_rotation_revoke_old_tokens(tmp_path, m
         "/v1/admin/devices",
         headers=auth(new_token, org["organizationId"]),
     ).status_code == 403
+    audit = client.get("/v1/admin/audit", headers=owner_headers)
+    assert audit.status_code == 200
+    actions = [event["action"] for event in audit.json()["events"]]
+    assert "member.created" in actions
+    assert "member.credential_rotated" in actions
+    assert "member.revoked" in actions
 
 
 def test_owner_membership_cannot_be_revoked_without_transfer(tmp_path, monkeypatch):
