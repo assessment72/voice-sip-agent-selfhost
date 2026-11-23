@@ -14,6 +14,7 @@ from contextlib import contextmanager
 from typing import Literal
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, status
+from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field
 
 DB = os.getenv("DATABASE_PATH", "./calls.sqlite3")
@@ -881,3 +882,11 @@ def get_organization_call(call_id: str, principal=Depends(organization_principal
     if not row:
         raise HTTPException(status_code=404, detail="call_not_found")
     return dict(row)
+
+
+@app.get("/admin", response_class=HTMLResponse, include_in_schema=False)
+def admin_dashboard():
+    page = Path(__file__).parent / "admin" / "index.html"
+    if not page.exists():
+        raise HTTPException(status_code=404, detail="admin_dashboard_not_found")
+    return HTMLResponse(page.read_text(encoding="utf-8"))
