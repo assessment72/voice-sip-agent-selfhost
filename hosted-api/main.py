@@ -36,6 +36,15 @@ REQUIRE_DISTRIBUTED_RATE_LIMIT = os.getenv(
     "REQUIRE_DISTRIBUTED_RATE_LIMIT",
     "true" if os.getenv("VERCEL", "").lower() in {"1", "true", "yes"} else "false",
 ).lower() in {"1", "true", "yes"}
+
+
+def mongodb_enabled() -> bool:
+    if mongodb_enabled():
+        return True
+    # The isolated Atlas test credentials are a runtime fallback for Vercel
+    # Preview only. Production must have its own explicit MONGODB_URI.
+    return (os.getenv("VERCEL_ENV", "").lower() != "production"
+            and bool(os.getenv("MONGODB_TEST_URI", "").strip()))
 PREFIXES = tuple(p.strip() for p in os.getenv("ALLOWED_PREFIXES", "").split(",") if p.strip())
 STATES = {"queued", "ringing_cellular", "cellular_answered", "calling_sip", "bridged", "failed", "ended"}
 TERMINAL = {"failed", "ended"}
@@ -98,7 +107,7 @@ def init_db():
 
 def startup():
     is_vercel = os.getenv("VERCEL", "").lower() in {"1", "true", "yes"}
-    mongo_configured = bool(os.getenv("MONGODB_URI", "").strip())
+    mongo_configured = mongodb_enabled()
     if is_vercel and not mongo_configured:
         raise RuntimeError("production_blocked_sqlite_not_durable_use_mongodb_repository")
     if is_vercel and os.getenv("ALLOW_UNSAFE_SQLITE_ON_VERCEL", "false").lower() in {"1", "true", "yes"}:
