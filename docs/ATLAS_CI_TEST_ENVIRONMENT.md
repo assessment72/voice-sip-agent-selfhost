@@ -59,3 +59,10 @@ The isolated Preview credentials `MONGODB_TEST_URI` and `MONGODB_TEST_DATABASE` 
 - PR #10 remains Draft and unmerged. No Production deployment, production database migration, SIP credential change, or paid call has been performed.
 
 Do not merge or declare commercial readiness solely from mocked repository tests or CI.
+
+
+### Expanded live Atlas coverage
+
+The opt-in file `hosted-api/tests/test_mongodb_atlas_integration.py` now includes a second live test for the control plane. When the two Actions secrets are present, it exercises organization bootstrap/authentication, transactional enrollment-token consumption and device creation, heartbeat/history writes, branch/event reads, member creation, credential rotation, ownership transfer, member revocation, device-command creation/claim/result, audit/activity reads, and device revocation.
+
+The test uses a unique organization slug and generated IDs. Its cleanup deletes only documents matching that unique organization and its device IDs; it does not drop or clear shared application collections. The test remains opt-in and has not yet been run against Atlas through GitHub Actions because the repository secrets are still absent.
