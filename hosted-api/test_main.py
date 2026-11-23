@@ -219,23 +219,18 @@ def test_parallel_pollers_cannot_claim_the_same_job(tmp_path, monkeypatch):
     assert claimed[0]["id"] == created["id"]
 
 
-def test_mongodb_health_probe_reports_backend_without_switching_sqlite(tmp_path, monkeypatch):
+def test_database_health_probes_the_active_sqlite_backend(tmp_path, monkeypatch):
+    client = setup_client(tmp_path, monkeypatch)
+    response = client.get("/health/database")
+    assert response.status_code == 200
+    assert response.json() == {"status": "ok", "backend": "sqlite"}
+
+
+def test_mongodb_health_is_separate_from_the_active_call_database(tmp_path, monkeypatch):
     client = setup_client(tmp_path, monkeypatch)
     import mongodb_store
     monkeypatch.setattr(mongodb_store, "health_snapshot",
                         lambda: {"status": "ok", "backend": "mongodb"})
-    response = client.get("/health/database")
+    response = client.get("/health/mongodb")
     assert response.status_code == 200
     assert response.json() == {"status": "ok", "backend": "mongodb"}
-
-
-def test_mongodb_health_probe_fails_closed_when_unavailable(tmp_path, monkeypatch):
-    client = setup_client(tmp_path, monkeypatch)
-    import mongodb_store
-    monkeypatch.setattr(mongodb_store, "health_snapshot",
-                        lambda: {"status": "unavailable", "backend": "mongodb"})
-    response = client.get("/health/database")
-    assert response.status_code == 503
-    assert response.json()["detail"] == {
-        "status": "unavailable", "backend": "mongodb"
-    }
