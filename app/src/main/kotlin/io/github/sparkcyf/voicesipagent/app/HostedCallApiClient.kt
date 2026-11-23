@@ -5,25 +5,57 @@ import java.net.HttpURLConnection
 import java.net.URL
 
 data class HostedCallJob(val id: String, val phoneNumber: String, val expiresAt: Long)
+data class HostedDeviceRegistration(val deviceId: String, val organizationId: String, val deviceToken: String)
 
 /**
- * Minimal HTTPS-only device client. Redirects are disabled so the bearer token can never be
- * forwarded to a different origin. Response bodies and credentials are intentionally not logged.
+ * HTTPS-only client for one-time enrollment and per-device control-plane traffic.
+ * The enrollment token is sent only in the enrollment body; after enrollment, all device routes
+ * use the unique server-issued bearer token. Redirects are disabled to prevent credential leakage.
  */
 class HostedCallApiClient(
     baseUrl: String,
-    private val deviceToken: String,
+    private val deviceToken: String = "",
 ) {
     private val base = baseUrl.trim().trimEnd('/')
 
     init {
         require(base.startsWith("https://", ignoreCase = true)) { "Hosted API requires HTTPS" }
-        require(deviceToken.isNotBlank()) { "Device token is required" }
+    }
+
+    fun enroll(
+        enrollmentToken: String,
+        externalDeviceId: String,
+        displayName: String,
+        appId: String,
+        appVersion: String,
+        androidVersion: String,
+        manufacturer: String,
+        model: String,
+    ): HostedDeviceRegistration {
+        require(enrollmentToken.isNotBlank())
+        val body = JSONObject()
+            .put("enrollmentToken", enrollmentToken)
+            .put("externalDeviceId", externalDeviceId)
+            .put("displayName", displayName)
+            .put("appId", appId)
+            .put("appVersion", appVersion)
+            .put("androidVersion", androidVersion)
+            .put("manufacturer", manufacturer)
+            .put("model", model)
+        val json = request("POST", "/v1/device/enroll", body)
+        val id = json.optString("deviceId")
+        val organizationId = json.optString("organizationId")
+        val token = json.optString("deviceToken")
+        require(id.isNotBlank() && organizationId.isNotBlank() && token.isNotBlank()) {
+            "Enrollment response was incomplete"
+        }
+        return HostedDeviceRegistration(id, organizationId, token)
     }
 
     fun nextJob(waitSeconds: Int = 20): HostedCallJob? {
+        requireDeviceToken()
         require(waitSeconds in 0..25)
-        val json = request("GET", "/v1/device/jobs/next?wait=$waitSeconds", null)
+        val json = request("GET", "/v1/device/call-jobs/next?wait=$waitSeconds", null)
         val job = json.optJSONObject("job") ?: return null
         val id = job.optString("id")
         val number = job.optString("phoneNumber")
@@ -33,11 +65,37 @@ class HostedCallApiClient(
     }
 
     fun updateState(callId: String, state: String, reasonCode: String? = null) {
+        requireDeviceToken()
         require(state in setOf("ringing_cellular", "cellular_answered", "calling_sip", "bridged", "failed", "ended"))
         val body = JSONObject().put("state", state).apply {
             if (!reasonCode.isNullOrBlank()) put("reasonCode", reasonCode.take(64))
         }
-        request("POST", "/v1/device/calls/$callId/state", body)
+        request("POST", "/v1/device/tenant-calls/$callId/state", body)
+    }
+
+    fun heartbeat(
+        batteryLevel: Int?,
+        networkType: String,
+        internetAvailable: Boolean,
+        sipStatus: String,
+        simStatus: String,
+        agentStatus: String,
+        activeCall: Boolean,
+    ) {
+        requireDeviceToken()
+        val body = JSONObject()
+            .put("networkType", networkType)
+            .put("internetAvailable", internetAvailable)
+            .put("sipStatus", sipStatus)
+            .put("simStatus", simStatus)
+            .put("agentStatus", agentStatus)
+            .put("activeCall", activeCall)
+        if (batteryLevel != null) body.put("batteryLevel", batteryLevel)
+        request("POST", "/v1/device/heartbeat", body)
+    }
+
+    private fun requireDeviceToken() {
+        require(deviceToken.isNotBlank()) { "Device is not enrolled" }
     }
 
     private fun request(method: String, path: String, body: JSONObject?): JSONObject {
@@ -48,7 +106,7 @@ class HostedCallApiClient(
             connectTimeout = CONNECT_TIMEOUT_MS
             readTimeout = READ_TIMEOUT_MS
             instanceFollowRedirects = false
-            setRequestProperty("Authorization", "Bearer $deviceToken")
+            if (deviceToken.isNotBlank()) setRequestProperty("Authorization", "Bearer $deviceToken")
             setRequestProperty("Accept", "application/json")
             if (body != null) {
                 doOutput = true
