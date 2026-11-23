@@ -29,3 +29,19 @@ jobs:
       - run: pytest -q
       - name: Build production container image
         run: docker build --pull -t hosted-call-api:ci .
+      - name: Smoke-test container startup and health endpoints
+        shell: bash
+        run: |
+          docker run -d --rm --name hosted-api-smoke \
+            -p 127.0.0.1:18080:8080 \
+            -e DATABASE_PATH=/tmp/hosted-api-smoke.sqlite3 \
+            hosted-call-api:ci
+          trap 'docker stop hosted-api-smoke >/dev/null 2>&1 || true' EXIT
+          for attempt in {1..30}; do
+            if curl --fail --silent http://127.0.0.1:18080/health >/dev/null; then
+              break
+            fi
+            sleep 2
+          done
+          curl --fail --show-error http://127.0.0.1:18080/health
+          curl --fail --show-error http://127.0.0.1:18080/health/database
