@@ -1,7 +1,15 @@
 services:
   hosted-api:
     build: .
+    init: true
     restart: unless-stopped
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
     env_file: .env
     environment:
       DATABASE_PATH: /data/calls.sqlite3
@@ -24,7 +32,8 @@ services:
       - caddy-data:/data
       - caddy-config:/config
     depends_on:
-      - hosted-api
+      hosted-api:
+        condition: service_healthy
     networks:
       - call-control
 
