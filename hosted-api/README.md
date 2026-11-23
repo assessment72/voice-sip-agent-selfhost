@@ -57,3 +57,16 @@ The Android agent authenticates separately with `DEVICE_API_TOKEN` and polls `GE
 - Keep queue/call timeouts bounded; add a reverse-proxy request-size limit and IP allow-list where practical.
 - Rotate both API tokens independently. Do not put secrets in Git, APK resources, query strings, or logs.
 - This API is an initial test control plane, not a production-hardened multi-tenant service. Use a managed database, durable job leases, audit retention, monitoring, and per-principal credentials before production.
+
+
+## MongoDB Atlas persistence foundation (Preview preparation)
+
+The branch now includes `mongodb_store.py` and the PyMongo SRV driver dependency. The module provides:
+- a cached PyMongo client suitable for warm Vercel function instances, with a conservative per-instance pool;
+- explicit database selection through `MONGODB_DATABASE`;
+- idempotent index definitions for calls, idempotency, tenant identities, devices, commands, events, heartbeats, and rate-limit windows;
+- a ping helper and transaction wrapper.
+
+**Important:** this is a persistence foundation only. The current API routes in `main.py` still use SQLite (`DATABASE_PATH`), and startup still executes SQLite DDL and the SQL migration. The MongoDB module is not yet wired into request handlers. Setting `MONGODB_URI` does not change the active storage backend.
+
+Do not deploy this revision as a MongoDB-backed production service. The next migration increment must port the call lifecycle and atomic job-claim path first, with race-condition tests, before migrating organization/device control-plane endpoints. The final cutover must remove SQLite startup and verify transaction behavior on the selected Atlas topology.
