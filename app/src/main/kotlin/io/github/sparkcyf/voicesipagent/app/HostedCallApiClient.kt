@@ -21,8 +21,9 @@ class HostedCallApiClient(
         require(deviceToken.isNotBlank()) { "Device token is required" }
     }
 
-    fun nextJob(): HostedCallJob? {
-        val json = request("GET", "/v1/device/jobs/next", null)
+    fun nextJob(waitSeconds: Int = 20): HostedCallJob? {
+        require(waitSeconds in 0..25)
+        val json = request("GET", "/v1/device/jobs/next?wait=$waitSeconds", null)
         val job = json.optJSONObject("job") ?: return null
         val id = job.optString("id")
         val number = job.optString("phoneNumber")
@@ -69,6 +70,6 @@ class HostedCallApiClient(
 
     companion object {
         private const val CONNECT_TIMEOUT_MS = 8_000
-        private const val READ_TIMEOUT_MS = 8_000
+        private const val READ_TIMEOUT_MS = 28_000
     }
 }
