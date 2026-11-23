@@ -10,11 +10,10 @@ import os
 from functools import lru_cache
 from typing import Any, Iterator
 
-from pymongo import ASCENDING, DESCENDING, MongoClient
+from pymongo import ASCENDING, DESCENDING, IndexModel, MongoClient
 from pymongo.collection import Collection
 from pymongo.database import Database
 from pymongo.errors import PyMongoError
-from pymongo.operations import IndexModel
 
 
 class MongoConfigurationError(RuntimeError):
