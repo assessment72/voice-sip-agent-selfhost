@@ -822,6 +822,9 @@ def transfer_organization_ownership(organization_id: str, user_id: str,
         if not target or target["status"] != "active":
             c.rollback()
             raise HTTPException(status_code=404, detail="active_member_not_found")
+        if target["role"] == "owner":
+            c.rollback()
+            raise HTTPException(status_code=409, detail="target_already_owner")
         c.execute(
             """UPDATE organization_memberships SET role='admin',updated_at=?
                WHERE organization_id=? AND user_id=? AND role='owner' AND status='active'""",
