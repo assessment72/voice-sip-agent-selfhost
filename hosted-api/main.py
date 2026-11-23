@@ -802,6 +802,50 @@ def add_organization_member(organization_id: str, body: OrganizationMemberReques
             "tokenWarning": "Shown once. Store securely; only its hash is retained."}
 
 
+@app.post("/v1/organizations/{organization_id}/members/{user_id}/transfer-ownership")
+def transfer_organization_ownership(organization_id: str, user_id: str,
+                                    principal=Depends(require_org_admin)):
+    if principal["organization_id"] != organization_id:
+        raise HTTPException(status_code=404, detail="organization_not_found")
+    if principal["role"] != "owner":
+        raise HTTPException(status_code=403, detail="owner_role_required")
+    if user_id == principal["user_id"]:
+        raise HTTPException(status_code=409, detail="already_owner")
+    now = int(time.time())
+    with db() as c:
+        c.execute("BEGIN IMMEDIATE")
+        target = c.execute(
+            """SELECT role,status FROM organization_memberships
+               WHERE organization_id=? AND user_id=?""",
+            (organization_id, user_id),
+        ).fetchone()
+        if not target or target["status"] != "active":
+            c.rollback()
+            raise HTTPException(status_code=404, detail="active_member_not_found")
+        c.execute(
+            """UPDATE organization_memberships SET role='admin',updated_at=?
+               WHERE organization_id=? AND user_id=? AND role='owner' AND status='active'""",
+            (now, organization_id, principal["user_id"]),
+        )
+        if c.execute("SELECT changes()").fetchone()[0] != 1:
+            c.rollback()
+            raise HTTPException(status_code=409, detail="owner_membership_changed")
+        c.execute(
+            """UPDATE organization_memberships SET role='owner',updated_at=?
+               WHERE organization_id=? AND user_id=?""",
+            (now, organization_id, user_id),
+        )
+        write_audit_event(
+            c, organization_id=organization_id, actor_user_id=principal["user_id"],
+            action="organization.ownership_transferred", target_type="membership",
+            target_id=user_id, metadata={"previous_owner_user_id": principal["user_id"]},
+            created_at=now,
+        )
+        c.commit()
+    return {"organizationId": organization_id, "previousOwnerUserId": principal["user_id"],
+            "newOwnerUserId": user_id, "status": "transferred"}
+
+
 @app.post("/v1/organizations/{organization_id}/members/{user_id}/revoke")
 def revoke_organization_member(organization_id: str, user_id: str,
                                principal=Depends(require_org_admin)):
