@@ -61,3 +61,24 @@ The feature is not release-ready until the physical-device matrix passes, the ha
 - No purchase or paid hosting/SIP change.
 - No SIP credential modification.
 - No physical-device installation or real call.
+
+
+## Follow-up implementation — durable Android state outbox (2026-11-23)
+
+Commits after the initial audit:
+
+- `56acba0b8180e0e82584b833654e1f9b1a760da9`: persist hosted call-state updates before network delivery.
+- `2d8f14abffa13b720253d9e395758d07885a6885`: add `HostedStateUpdateQueue`, a SharedPreferences-backed ordered outbox.
+- `fde3fccaa0a2db16be231469bc6482446c332936`: drain the outbox on its dedicated state worker, not the call-control executor.
+
+Behavior:
+- State transitions are synchronously committed to local storage before attempting HTTPS delivery.
+- Pending transitions are retried in order with bounded backoff; after retry exhaustion the head item remains persisted and a later retry is scheduled.
+- The queue is capped at 500 entries, deduplicates identical pending transitions, and does not silently overwrite a corrupt queue.
+- No bearer token, destination phone number, or SIP credential is stored in the outbox.
+- Delivery is **at-least-once**: a process death after server acceptance but before local acknowledgement may replay the same state. The server state endpoint must tolerate replay.
+
+Validation status for these follow-up commits:
+- GitHub Actions execution for commit `fde3fcc` has not yet been independently confirmed through the available workflow-run lookup (that lookup exposes pull-request-triggered runs only).
+- The new code is not yet certified by a successful CI run on this commit.
+- Process-death/restart behavior and queue ordering still require device/instrumented tests.
