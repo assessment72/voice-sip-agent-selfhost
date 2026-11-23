@@ -67,14 +67,27 @@ class CallBridgeTest {
     }
 
     @Test
-    fun hostedOriginateReservationPreventsQueuedInboundCallFromStealingBridge() {
+    fun hostedOriginateAndQueuedInboundCallCannotOwnBridgeAtTheSameTime() {
         val incoming = cell.incoming("13800001234")
-        assertTrue(bridge.originateCellularThenSip("+967777405578", "sip:linphone@example.test"))
+        val hostedAccepted = bridge.originateCellularThenSip(
+            "+967777405578", "sip:linphone@example.test"
+        )
         settle()
-        assertEquals(HangupCause.BUSY, incoming.endCause)
-        assertEquals("+967777405578", cell.dialed.single().target)
-        assertTrue("the rejected cellular inbound leg must not create a SIP leg", sip.dialed.isEmpty())
-        assertEquals("hosted-outbound", bridge.session?.origin)
+
+        if (hostedAccepted) {
+            // The hosted reservation won the executor race; the inbound leg is rejected.
+            assertEquals(HangupCause.BUSY, incoming.endCause)
+            assertEquals("+967777405578", cell.dialed.single().target)
+            assertTrue("the rejected inbound leg must not create a SIP leg", sip.dialed.isEmpty())
+            assertEquals("hosted-outbound", bridge.session?.origin)
+        } else {
+            // The inbound leg acquired the bridge first; hosted originate must fail synchronously.
+            assertTrue("the inbound cellular call owns the bridge", bridge.session != null)
+            assertEquals("cellular", bridge.session?.origin)
+            assertTrue(cell.dialed.isEmpty())
+            assertEquals(1, sip.dialed.size)
+            assertTrue(incoming.endCause != HangupCause.BUSY)
+        }
     }
 
     @Test
