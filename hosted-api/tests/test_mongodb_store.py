@@ -14,6 +14,21 @@ class FakeCollection:
         return [index.document["name"] for index in indexes]
 
 
+class FakeRateCollection:
+    def __init__(self):
+        self.rows = {}
+
+    def find_one_and_update(self, identity, update, upsert=False, return_document=None):
+        key = (identity["principal"], identity["window_start"])
+        if key not in self.rows:
+            if not upsert:
+                return None
+            self.rows[key] = {"principal": key[0], "window_start": key[1],
+                              "count": 0, **update.get("$setOnInsert", {})}
+        self.rows[key]["count"] += update["$inc"]["count"]
+        return dict(self.rows[key])
+
+
 class FakeDatabase:
     def __init__(self):
         self.collections = {}
@@ -72,6 +87,22 @@ def test_branch_code_uniqueness_only_applies_to_string_codes():
     assert branch_code.document["partialFilterExpression"] == {
         "code": {"$type": "string"}
     }
+
+
+def test_shared_rate_limiter_atomically_increments_window(monkeypatch):
+    fake = FakeRateCollection()
+    monkeypatch.setattr(mongodb_store, "collection", lambda name: fake)
+    allowed, count = mongodb_store.consume_rate_limit(
+        key_hash="hashed-client-key", window_start=120, limit=2, expires_at=300
+    )
+    assert (allowed, count) == (True, 1)
+    assert mongodb_store.consume_rate_limit(
+        key_hash="hashed-client-key", window_start=120, limit=2, expires_at=300
+    ) == (True, 2)
+    assert mongodb_store.consume_rate_limit(
+        key_hash="hashed-client-key", window_start=120, limit=2, expires_at=300
+    ) == (False, 3)
+    assert len(fake.rows) == 1
 
 
 def test_client_requires_uri(monkeypatch):
