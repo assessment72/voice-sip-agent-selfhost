@@ -47,8 +47,8 @@ The API returns HTTP 202 and a call ID. Read it through `GET /v1/admin/calls/{id
 1. Copy `.env.example` to `.env` on the server. Generate two independent random tokens (one caller token and one handset token), then replace both placeholders. Set `ALLOWED_PREFIXES` to only the numbers permitted for this test.
 2. Copy `Caddyfile.example` to `Caddyfile` and replace `calls.example.com` with a DNS name whose A/AAAA records point to the server.
 3. Run `docker compose up -d --build` from `hosted-api/`. Caddy terminates HTTPS; the API container is reachable only on the private Compose network. Port 8080 is not published.
-4. Check `https://YOUR_DOMAIN/health`. Configure the Android app with that HTTPS base URL and the device token only. Use the separate caller token for clients that submit `POST /v1/calls`.
-5. Back up the `hosted-call-data` volume and rotate tokens through the host's secret-management process.
+4. Check `https://YOUR_DOMAIN/health`. Bootstrap the organization, issue a one-use enrollment token, enroll each Android device, and configure the app with its individual device token. Do not put the bootstrap or owner credential in the handset.
+5. Back up the `hosted-call-data` volume and rotate tokens through the host's secret-management process. This single-node SQLite Compose setup is not a Vercel or multi-instance deployment.
 
 Generate independent tokens, for example:
 ```sh
@@ -60,20 +60,21 @@ Do not commit `.env`, TLS private keys, or database files. The Compose template 
 
 ## Device protocol
 
-The Android agent authenticates separately with `DEVICE_API_TOKEN` and polls `GET /v1/device/jobs/next` over HTTPS. Jobs are claimed with a short lease so an offline handset does not permanently strand a queued job. It reports only the documented state transitions through `POST /v1/device/calls/{id}/state`. Device token and caller token must never be the same.
+The Android agent authenticates with the individual device token returned by `POST /v1/device/enroll` and polls `GET /v1/device/call-jobs/next` over HTTPS. Jobs are claimed for the owning organization/device and reported through `POST /v1/device/tenant-calls/{id}/state`. Never use the legacy shared `DEVICE_API_TOKEN` for a tenant device.
 
 ## Safety notes
 
 - Set `ALLOWED_PREFIXES` to the exact destinations approved for testing. Empty means all calls are rejected with `allowlist_not_configured`.
 - The shared-token compatibility routes (`/v1/calls`, `/v1/device/jobs/next`, and `/v1/device/calls/*`) are disabled by default. Keep `ENABLE_LEGACY_CALL_API=false` and `ENABLE_LEGACY_DEVICE_API=false`; only enable them temporarily in an isolated migration environment.
 - Bootstrap organizations only with a separate high-entropy `ORG_BOOTSTRAP_TOKEN`. Store returned organization/device tokens in a secret manager or Android Keystore; they are shown once.
+- Owners can transfer ownership through `POST /v1/organizations/{organization_id}/members/{user_id}/transfer-ownership`. Member credentials can be rotated or revoked through the corresponding `/rotate-credential` and `/revoke` endpoints. The former owner is downgraded to admin; the new owner can revoke the former owner later if required.
 - `GET /health/database` checks the active SQLite database. `GET /health/mongodb` checks optional Atlas connectivity only; it does not mean API calls are stored in MongoDB.
 - API rate limits use atomic MongoDB fixed-window counters when `MONGODB_URI` is configured (IP + credential + sensitive-route dimensions). Set `REQUIRE_DISTRIBUTED_RATE_LIMIT=true` for multi-instance deployments; requests fail closed with 503 if the shared limiter is unavailable. Without Atlas, local development uses a SQLite fallback that is not distributed.
 - Vercel startup is deliberately blocked while call/device repositories still use SQLite. Do not set `ALLOW_UNSAFE_SQLITE_ON_VERCEL=true` to bypass this protection. MongoDB currently backs shared rate-limit counters only; **it is not yet the call, organization, device, or command datastore**.
 - The Vercel storage guard is intentional: serverless local SQLite is ephemeral and cannot provide durable shared call state. Complete the MongoDB route-repository migration and its integration tests before enabling a Vercel deployment.
 - Administrative member and device changes are recorded in `admin_audit_events` and can be read by organization owners/admins at `GET /v1/admin/audit`. The audit feed never includes raw API tokens.
 - Android must independently reject emergency numbers using `TelephonyManager.isEmergencyNumber` before dialing.
-- Keep queue/call timeouts bounded; add a reverse-proxy request-size limit and IP allow-list where practical.
+- Keep queue/call timeouts bounded. The included Caddy example caps request bodies at 64 KB; add network-level firewall and source allow-lists appropriate to your SIP topology.
 - Rotate both API tokens independently. Do not put secrets in Git, APK resources, query strings, or logs.
 - This API is an initial test control plane, not a production-hardened multi-tenant service. Use a managed database, durable job leases, audit retention, monitoring, and per-principal credentials before production.
 
