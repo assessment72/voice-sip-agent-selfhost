@@ -108,3 +108,73 @@ def test_branches_and_append_only_audit_queries_are_organization_scoped(db):
     )
     assert len(mongodb_control.list_audit(org_a, 10)) == 1
     assert mongodb_control.list_audit(org_b, 10) == []
+
+
+
+def test_member_lifecycle_and_ownership_transfer_are_atomic(db):
+    org_id = mongodb_control.bootstrap_organization(
+        slug="alpha", name="Alpha", owner_user_id="owner-a",
+        token_hash="owner-a-hash", token_prefix="owner-a",
+    )
+    mongodb_control.add_member(
+        organization_id=org_id, user_id="operator-1", role="operator",
+        token_hash="operator-hash", token_prefix="operator",
+        actor_user_id="owner-a",
+    )
+    assert mongodb_control.authenticate_organization("operator-hash", org_id)["role"] == "operator"
+    mongodb_control.transfer_ownership(
+        organization_id=org_id, previous_owner="owner-a", new_owner="operator-1",
+        actor_user_id="owner-a",
+    )
+    assert mongodb_control.authenticate_organization("owner-a-hash", org_id)["role"] == "admin"
+    assert mongodb_control.authenticate_organization("operator-hash", org_id)["role"] == "owner"
+    mongodb_control.revoke_member(
+        organization_id=org_id, user_id="owner-a", actor_user_id="operator-1",
+        actor_role="owner",
+    )
+    assert mongodb_control.authenticate_organization("owner-a-hash", org_id) is None
+
+
+def test_credential_rotation_and_device_command_lifecycle(db):
+    org_id = mongodb_control.bootstrap_organization(
+        slug="alpha", name="Alpha", owner_user_id="owner-a",
+        token_hash="owner-a-hash", token_prefix="owner-a",
+    )
+    mongodb_control.add_member(
+        organization_id=org_id, user_id="operator-1", role="operator",
+        token_hash="operator-old", token_prefix="operator",
+        actor_user_id="owner-a",
+    )
+    mongodb_control.rotate_member_credential(
+        organization_id=org_id, user_id="operator-1", actor_user_id="owner-a",
+        actor_role="owner", token_hash="operator-new", token_prefix="new-token",
+    )
+    assert mongodb_control.authenticate_organization("operator-old", org_id) is None
+    assert mongodb_control.authenticate_organization("operator-new", org_id)["role"] == "operator"
+
+    mongodb_control.create_enrollment_token(
+        organization_id=org_id, token_hash="enroll", label="test",
+        expires_at=9999999999, max_uses=1, created_by="owner-a",
+    )
+    device_id, _ = mongodb_control.enroll_device(
+        enrollment_token_hash="enroll", external_device_id="phone",
+        display_name="Phone", branch_id=None, branch_name=None, app_id="app",
+        app_version="1", android_version="16", manufacturer="HONOR", model="MTN-NX1",
+        device_token_hash="device", device_token_prefix="device",
+    )
+    command_id, expiry = mongodb_control.create_command(
+        organization_id=org_id, device_id=device_id, command_type="refresh_status",
+        expires_in_seconds=300, actor_user_id="owner-a",
+    )
+    command = mongodb_control.claim_command(device_id=device_id, organization_id=org_id)
+    assert command["id"] == command_id
+    assert command["expiresAt"] == expiry
+    mongodb_control.update_command_result(
+        command_id=command_id, device_id=device_id, organization_id=org_id,
+        status="completed", result_code="ok", result_summary="done",
+    )
+    with pytest.raises(mongodb_control.ControlConflict):
+        mongodb_control.update_command_result(
+            command_id=command_id, device_id=device_id, organization_id=org_id,
+            status="failed", result_code="again", result_summary="duplicate",
+        )
