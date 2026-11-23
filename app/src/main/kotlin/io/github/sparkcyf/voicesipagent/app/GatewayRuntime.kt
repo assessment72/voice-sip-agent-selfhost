@@ -381,23 +381,53 @@ class GatewayRuntime private constructor(context: Context) {
     ) {
         if (hostedLastState == state) return
         hostedLastState = state
+        enqueueHostedState(client, callId, state, reason)
+    }
+
+    /**
+     * Preserve state-event order and retry transient network failures with bounded backoff.
+     * This is an in-process best-effort queue: events are not durable across process death.
+     */
+    private fun enqueueHostedState(
+        client: HostedCallApiClient,
+        callId: String,
+        state: String,
+        reason: String? = null,
+    ) {
         hostedStateWorker.execute {
-            try {
-                client.updateState(callId, state, reason)
-            } catch (e: Exception) {
-                AppLog.w("hosted call state update failed: ${e.javaClass.simpleName}")
+            val delaysMs = longArrayOf(500, 1_000, 2_000, 4_000, 8_000)
+            var attempt = 0
+            while (true) {
+                try {
+                    client.updateState(callId, state, reason)
+                    break
+                } catch (e: Exception) {
+                    if (attempt >= delaysMs.size) {
+                        AppLog.w("hosted call state update exhausted retries: ${e.javaClass.simpleName}")
+                        break
+                    }
+                    val delay = delaysMs[attempt++]
+                    AppLog.w("hosted call state update retry ${attempt}/${delaysMs.size}")
+                    try {
+                        Thread.sleep(delay)
+                    } catch (_: InterruptedException) {
+                        Thread.currentThread().interrupt()
+                        AppLog.w("hosted call state retry interrupted")
+                        break
+                    }
+                }
             }
         }
     }
 
     private fun cancelHostedTracking(reason: String) {
         val callId = hostedCallId ?: return
-        hostedStateWorker.execute {
-            runCatching {
-                HostedCallApiClient(settings.hostedApiUrl, settings.hostedDeviceToken)
-                    .updateState(callId, "failed", reason)
-            }
-        }
+        enqueueHostedState(
+            HostedCallApiClient(settings.hostedApiUrl, settings.hostedDeviceToken),
+            callId,
+            "failed",
+            reason,
+        )
         hostedListener?.let { listener -> bridge?.removeListener(listener) }
         hostedCallTimer?.cancel(false)
         hostedCallTimer = null
