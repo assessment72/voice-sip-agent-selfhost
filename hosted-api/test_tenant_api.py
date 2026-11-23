@@ -298,6 +298,32 @@ def test_suspended_organization_credentials_are_rejected(tmp_path, monkeypatch):
     assert response.json()["detail"] == "organization_access_denied"
 
 
+def test_suspended_organization_devices_cannot_poll_or_send_heartbeats(tmp_path, monkeypatch):
+    client = setup_client(tmp_path, monkeypatch)
+    org = create_org(client, "Alpha", "alpha", "owner-a")
+    admin = auth(org["apiToken"], org["organizationId"])
+    enrollment = client.post(
+        f"/v1/organizations/{org['organizationId']}/enrollment-tokens",
+        json={"label": "device"}, headers=admin,
+    ).json()
+    device = client.post(
+        "/v1/device/enroll",
+        json={"enrollmentToken": enrollment["enrollmentToken"],
+              "externalDeviceId": "suspended-phone", "displayName": "Suspended phone"},
+    ).json()
+    with main.db() as connection:
+        connection.execute("UPDATE organizations SET status='suspended' WHERE id=?",
+                           (org["organizationId"],))
+    device_headers = auth(device["deviceToken"])
+    assert client.get("/v1/device/call-jobs/next?wait=0",
+                      headers=device_headers).status_code == 401
+    assert client.post(
+        "/v1/device/heartbeat",
+        json={"networkType": "wifi", "internetAvailable": True},
+        headers=device_headers,
+    ).status_code == 401
+
+
 def test_member_revocation_and_credential_rotation_revoke_old_tokens(tmp_path, monkeypatch):
     client = setup_client(tmp_path, monkeypatch)
     org = create_org(client, "Alpha", "alpha", "owner-a")
