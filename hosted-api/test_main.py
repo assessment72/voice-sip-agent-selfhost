@@ -1,6 +1,7 @@
 import pytest
 import uuid
 
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
 import main
 
