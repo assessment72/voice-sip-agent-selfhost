@@ -29,17 +29,17 @@ pytestmark = pytest.mark.skipif(
 def atlas_repo():
     if not DATABASE or DATABASE.lower() in {"admin", "local", "config"}:
         pytest.skip("MONGODB_TEST_DATABASE must name a dedicated test database")
-    database_name = f"{DATABASE}_test_{uuid.uuid4().hex}"
+    collection_name = f"calls_test_{uuid.uuid4().hex}"
     client = MongoClient(URI, serverSelectionTimeoutMS=5000,
                          connectTimeoutMS=5000, retryWrites=True)
-    database = client[database_name]
+    database = client[DATABASE]
     try:
         client.admin.command("ping")
-        repo = MongoCallRepository(database["calls"])
+        repo = MongoCallRepository(database[collection_name])
         repo.ensure_indexes()
         yield repo
     finally:
-        client.drop_database(database_name)
+        database.drop_collection(collection_name)
         client.close()
 
 
