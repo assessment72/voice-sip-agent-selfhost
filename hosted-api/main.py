@@ -674,6 +674,76 @@ def add_organization_member(organization_id: str, body: OrganizationMemberReques
             "tokenWarning": "Shown once. Store securely; only its hash is retained."}
 
 
+@app.post("/v1/organizations/{organization_id}/members/{user_id}/revoke")
+def revoke_organization_member(organization_id: str, user_id: str,
+                               principal=Depends(require_org_admin)):
+    if principal["organization_id"] != organization_id:
+        raise HTTPException(status_code=404, detail="organization_not_found")
+    now = int(time.time())
+    with db() as c:
+        c.execute("BEGIN IMMEDIATE")
+        member = c.execute(
+            "SELECT role,status FROM organization_memberships WHERE organization_id=? AND user_id=?",
+            (organization_id, user_id),
+        ).fetchone()
+        if not member:
+            c.rollback()
+            raise HTTPException(status_code=404, detail="member_not_found")
+        if member["role"] == "owner":
+            c.rollback()
+            raise HTTPException(status_code=409, detail="owner_transfer_required")
+        if principal["role"] != "owner" and member["role"] == "admin":
+            c.rollback()
+            raise HTTPException(status_code=403, detail="owner_role_required")
+        c.execute(
+            "UPDATE organization_memberships SET status='suspended',updated_at=? WHERE organization_id=? AND user_id=?",
+            (now, organization_id, user_id),
+        )
+        c.execute(
+            "UPDATE organization_api_credentials SET revoked_at=? WHERE organization_id=? AND user_id=? AND revoked_at IS NULL",
+            (now, organization_id, user_id),
+        )
+        c.commit()
+    return {"organizationId": organization_id, "userId": user_id, "status": "revoked"}
+
+
+@app.post("/v1/organizations/{organization_id}/members/{user_id}/rotate-credential")
+def rotate_member_credential(organization_id: str, user_id: str,
+                             principal=Depends(organization_principal)):
+    if principal["organization_id"] != organization_id:
+        raise HTTPException(status_code=404, detail="organization_not_found")
+    if principal["user_id"] != user_id and principal["role"] not in {"owner", "admin"}:
+        raise HTTPException(status_code=403, detail="insufficient_role")
+    raw_token = secrets.token_urlsafe(40)
+    now = int(time.time())
+    with db() as c:
+        c.execute("BEGIN IMMEDIATE")
+        member = c.execute(
+            "SELECT role,status FROM organization_memberships WHERE organization_id=? AND user_id=?",
+            (organization_id, user_id),
+        ).fetchone()
+        if not member or member["status"] != "active":
+            c.rollback()
+            raise HTTPException(status_code=404, detail="active_member_not_found")
+        if principal["role"] != "owner" and member["role"] == "owner":
+            c.rollback()
+            raise HTTPException(status_code=403, detail="owner_role_required")
+        c.execute(
+            "UPDATE organization_api_credentials SET revoked_at=? WHERE organization_id=? AND user_id=? AND revoked_at IS NULL",
+            (now, organization_id, user_id),
+        )
+        c.execute(
+            """INSERT INTO organization_api_credentials
+               (id,organization_id,label,user_id,token_hash,token_prefix,scopes,created_at)
+               VALUES(?,?,?,?,?,?, '[]',?)""",
+            (str(uuid.uuid4()), organization_id, "Rotated member credential",
+             user_id, _hash_secret(raw_token), raw_token[:8], now),
+        )
+        c.commit()
+    return {"organizationId": organization_id, "userId": user_id,
+            "apiToken": raw_token, "tokenWarning": "Shown once. Previous credentials were revoked."}
+
+
 @app.post("/v1/admin/devices/{device_id}/revoke")
 def revoke_device(device_id: str, principal=Depends(require_org_admin)):
     now = int(time.time())
