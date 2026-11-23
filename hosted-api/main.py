@@ -566,7 +566,7 @@ def bootstrap_organization(body: OrganizationBootstrap,
     if os.getenv("MONGODB_URI", "").strip():
         from mongodb_control import ControlConflict, bootstrap_organization as mongo_bootstrap
         try:
-            mongo_bootstrap(slug=body.slug, name=body.name, owner_user_id=body.ownerUserId,
+            org_id = mongo_bootstrap(slug=body.slug, name=body.name, owner_user_id=body.ownerUserId,
                             token_hash=_hash_secret(raw_token), token_prefix=raw_token[:8])
         except ControlConflict:
             raise HTTPException(status_code=409, detail="organization_slug_unavailable")
@@ -1311,11 +1311,11 @@ def create_organization_branch(organization_id: str, body: CreateBranch,
     now = int(time.time())
     branch_id = str(uuid.uuid4())
     if os.getenv("MONGODB_URI", "").strip():
-        from mongodb_control import create_branch as mongo_create_branch
+        from mongodb_control import ControlConflict, create_branch as mongo_create_branch
         try:
             branch_id = mongo_create_branch(organization_id=organization_id,
                                             name=body.name, code=body.code)
-        except DuplicateKeyError:
+        except ControlConflict:
             raise HTTPException(status_code=409, detail="branch_code_already_exists")
         return {"branchId": branch_id, "name": body.name, "code": body.code, "status": "active"}
     try:
@@ -1335,7 +1335,7 @@ def list_organization_branches(principal=Depends(organization_principal)):
     if os.getenv("MONGODB_URI", "").strip():
         from mongodb_control import list_branches as mongo_list_branches
         rows = mongo_list_branches(principal["organization_id"])
-        branches = [{**row, "id": row.pop("_id")} for row in rows]
+        branches = [{key: value for key, value in row.items() if key != "_id"} | {"id": row["_id"]} for row in rows]
         return {"branches": branches, "count": len(branches)}
     with db() as c:
         rows = c.execute(
@@ -1390,7 +1390,7 @@ def organization_audit_log(limit: int = Query(default=50, ge=1, le=200),
     if os.getenv("MONGODB_URI", "").strip():
         from mongodb_control import list_audit
         rows = list_audit(principal["organization_id"], limit)
-        events = [{**row, "id": row.pop("_id")} for row in rows]
+        events = [{key: value for key, value in row.items() if key != "_id"} | {"id": row["_id"]} for row in rows]
         return {"events": events, "count": len(events)}
     with db() as c:
         rows = c.execute(
