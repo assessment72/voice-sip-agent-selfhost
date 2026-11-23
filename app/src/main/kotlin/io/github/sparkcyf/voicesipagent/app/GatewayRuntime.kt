@@ -500,25 +500,34 @@ class GatewayRuntime private constructor(context: Context) {
         reason: String? = null,
     ) {
         if (hostedLastState == state) return
-        hostedLastState = state
-        enqueueHostedState(client, callId, state, reason)
+        if (enqueueHostedState(client, callId, state, reason)) {
+            hostedLastState = state
+        }
     }
 
     /**
      * Persist every state transition before scheduling delivery. Delivery is at-least-once:
      * a process can die after server acceptance but before the local acknowledgement is committed.
+     * A full/corrupt outbox must not advance the in-memory state; retry after the worker has had a
+     * chance to drain older entries, rather than silently losing this transition.
      */
     private fun enqueueHostedState(
         client: HostedCallApiClient,
         callId: String,
         state: String,
         reason: String? = null,
-    ) {
+    ): Boolean {
         if (!hostedStateQueue.enqueue(callId, state, reason)) {
-            AppLog.w("hosted call state queue is full; update was not accepted locally")
-            return
+            AppLog.w("hosted call state queue rejected an update; retrying after 30 seconds")
+            hostedStateWorker.schedule(
+                { enqueueHostedState(client, callId, state, reason) },
+                30,
+                TimeUnit.SECONDS,
+            )
+            return false
         }
         hostedStateWorker.execute { drainHostedStateQueue(client) }
+        return true
     }
 
     private fun drainHostedStateQueue(
