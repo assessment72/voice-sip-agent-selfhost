@@ -100,6 +100,40 @@ def test_unfinished_queued_job_claim_expires_and_can_be_retried(tmp_path, monkey
     retried = client.get("/v1/device/jobs/next", headers=device_headers).json()["job"]
     assert retried["id"] == created["id"]
 
+def test_long_poll_returns_immediately_when_no_jobs_after_wait_window(tmp_path, monkeypatch):
+    client = setup_client(tmp_path, monkeypatch)
+    import time
+    started = time.monotonic()
+    response = client.get("/v1/device/jobs/next?wait=1", headers=headers("test-device-token"))
+    elapsed = time.monotonic() - started
+    assert response.status_code == 200
+    assert response.json()["job"] is None
+    assert elapsed >= 0.9
+    assert elapsed < 3
+
+
+def test_long_poll_wakes_for_newly_queued_job(tmp_path, monkeypatch):
+    client = setup_client(tmp_path, monkeypatch)
+    import threading
+    import time
+    result = {}
+    device_headers = headers("test-device-token")
+
+    def wait_for_job():
+        result["response"] = client.get("/v1/device/jobs/next?wait=5", headers=device_headers)
+
+    thread = threading.Thread(target=wait_for_job)
+    thread.start()
+    time.sleep(0.35)
+    created = client.post("/v1/calls", json={"phoneNumber": "777405578"},
+                          headers=headers("test-caller-token", **{"Idempotency-Key": str(uuid.uuid4())}))
+    thread.join(timeout=3)
+    assert created.status_code == 202
+    assert not thread.is_alive()
+    assert result["response"].status_code == 200
+    assert result["response"].json()["job"]["id"] == created.json()["id"]
+
+
 def test_device_cannot_update_unclaimed_call(tmp_path, monkeypatch):
     client = setup_client(tmp_path, monkeypatch)
     key = str(uuid.uuid4())
