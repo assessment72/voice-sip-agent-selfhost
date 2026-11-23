@@ -1179,7 +1179,9 @@ def update_organization_call_state(call_id: str, body: CallUpdate,
         if row["claimed_by"] != device_ctx["device_id"]:
             raise HTTPException(status_code=403, detail="job_not_owned")
         updated = transition(c, call_id, body.state, body.reasonCode)
-        return safe_call(updated)
+        result = safe_call(updated)
+        c.commit()
+        return result
 
 
 @app.get("/v1/admin/calls/{call_id}")
