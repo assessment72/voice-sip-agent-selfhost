@@ -47,6 +47,11 @@ def test_idempotency_and_single_device_job(tmp_path, monkeypatch):
                              json={"state": state}, headers=device_headers)
         assert result.status_code == 200
         assert result.json()["state"] == state
+        # Replaying the same transition must succeed for durable handset outbox delivery.
+        replay = client.post(f"/v1/device/calls/{job['id']}/state",
+                             json={"state": state}, headers=device_headers)
+        assert replay.status_code == 200
+        assert replay.json()["state"] == state
 
     assert client.get(f"/v1/calls/{job['id']}", headers=device_headers).status_code == 401
     assert client.get(f"/v1/calls/{job['id']}", headers=headers("test-caller-token")).json()["state"] == "ended"
