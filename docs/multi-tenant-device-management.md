@@ -11,7 +11,7 @@ The existing SIP account settings remain device-local and unchanged. Hosted API 
 
 ## Logical architecture
 
-- Admin web UI: organization switcher, dashboard, devices, calls, live activity, commands, users/roles, audit and reports.
+- Admin web UI: Arabic starter dashboard at `/admin` for organization device presence, call history and safe allow-listed device commands. Organization authentication is entered for the active page session; the token is not persisted in localStorage.
 - Control-plane API: authentication, organization membership, device enrollment, presence, configuration, commands, hosted calls, metrics and audit.
 - Device agent: outbound HTTPS only; enrollment, heartbeat, long-poll command/job retrieval, state/event reporting.
 - Persistence: relational database for durable identity, ownership and call records; queue/lease mechanism for commands and call jobs.
@@ -120,6 +120,7 @@ The current branch now includes:
 - organization-scoped member creation and role enforcement;
 - limited-use enrollment tokens and one-time per-device credentials;
 - heartbeat ingestion, server-time-based online/unstable/offline calculation, device list and activity timeline;
+- role-bound member API credentials, device revocation and a browser-based Arabic admin dashboard served at `/admin`;
 - device revocation and allow-listed command delivery/result lifecycle;
 - organization-scoped call creation, device job claiming, call state updates and admin call history.
 
@@ -127,7 +128,7 @@ Required environment secret: `ORG_BOOTSTRAP_TOKEN` must be a long random secret 
 
 ## Remaining production blockers
 
-- Admin web UI is not implemented yet.
+- The admin UI is an initial operational dashboard, not yet a full organization-management console; branch management, member management screens, charts, filters and realtime push updates remain to be built.
 - Android agent has not yet been updated to use enrollment, per-device tokens, heartbeat, tenant job polling or commands.
 - Existing legacy global-token call routes remain for compatibility and must be disabled or isolated before a multi-tenant production release.
 - Add bounded heartbeat/event retention, tenant metrics, API credential revocation/rotation, organization suspension behavior, and audit coverage.
