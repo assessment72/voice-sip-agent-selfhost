@@ -321,6 +321,10 @@ class GatewayRuntime private constructor(context: Context) {
             _hostedDeviceMessage.value = "أدخل رابط HTTPS ورمز تسجيل صالحاً"
             return@execute
         }
+        if (settings.hostedDeviceToken.isNotBlank() && !hostedStateQueue.isEmpty()) {
+            _hostedDeviceMessage.value = "توجد تحديثات مكالمات معلّقة؛ انتظر مزامنتها قبل إعادة تسجيل الجهاز"
+            return@execute
+        }
         _hostedDeviceMessage.value = "جارٍ تسجيل الجهاز..."
         try {
             val externalId = settingsStore.getOrCreateHostedExternalDeviceId()
