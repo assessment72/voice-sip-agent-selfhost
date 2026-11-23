@@ -95,3 +95,21 @@ Fixed on the working branch:
 This makes same-state replay safe for both legacy and organization-scoped device state routes because both use the shared transition function. It does not make arbitrary out-of-order transitions valid.
 
 The latest commit's CI status remains unverified; the available workflow-run lookup returned no pull-request-triggered runs for this commit. Do not interpret that as a pass.
+
+
+### Outbox overflow/rejection recovery correction
+
+- `188b5378df6f8387e23f8bebc4be55e23f128417`: do not advance `hostedLastState` unless the state update has been accepted by the durable outbox. If enqueue is rejected (including a full or unreadable queue), schedule another attempt after 30 seconds. This prevents the in-memory duplicate-suppression guard from silently discarding a transition that was never persisted.
+- The retry remains ordered behind older outbox entries; no queue contents are discarded to make room.
+
+### CI verification for the latest correction
+
+GitHub Actions runs were created for commit `188b5378df6f8387e23f8bebc4be55e23f128417`:
+
+| Workflow | Run | Observed status at audit update |
+|---|---:|---|
+| Android build and tests | [45099943469](https://github.com/assessment72/voice-sip-agent-selfhost/actions/runs/45099943469) | in progress |
+| General CI | [45099943506](https://github.com/assessment72/voice-sip-agent-selfhost/actions/runs/45099943506) | in progress |
+| Hosted Call API tests | [45099943473](https://github.com/assessment72/voice-sip-agent-selfhost/actions/runs/45099943473) | in progress |
+
+These runs are not yet passes. The Android unit-test step, general JVM test step, and hosted API pytest step were running when checked. Final conclusions must be recorded only after GitHub reports completed results.
