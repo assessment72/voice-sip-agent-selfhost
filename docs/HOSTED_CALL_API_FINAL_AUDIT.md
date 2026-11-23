@@ -454,3 +454,20 @@ Validation on commit `01ac896`:
 - Android build/tests [45189637639](https://github.com/assessment72/voice-sip-agent-selfhost/actions/runs/45189637639): in progress when recorded.
 
 The separate Vercel Preview health check on code commit `ad7d344` returned HTTP 200 with `backend=mongodb`, confirming runtime connectivity and MongoDB selection with the isolated Preview credential. It is not a substitute for the expanded live Atlas transaction suite.
+
+
+### Audit coverage and latest hosted CI checkpoint — 2026-11-23
+
+Latest code checkpoint: `fad17df0a63eec58f6e5ae32b5e90610e4076a9b`.
+
+MongoDB audit events are now written transactionally alongside organization bootstrap, branch creation, enrollment-token issuance, device enrollment, member lifecycle changes, device commands, ownership transfer, and device revocation. Audit reads are scoped to the authenticated organization. The database credential still has broad database-level read/write permissions; immutability is enforced by application behavior, not a MongoDB append-only role.
+
+Hosted API workflow [45190607304](https://github.com/assessment72/voice-sip-agent-selfhost/actions/runs/45190607304) on the immediately preceding code/test checkpoint `974e168` completed successfully:
+- 66 passed, 3 skipped, 1 warning.
+- Docker image build succeeded.
+- Container health smoke test succeeded.
+- The three skipped tests are opt-in Atlas integration tests; no live transaction or rate-limit integration run is claimed.
+
+The correction in commit `fad17df` updates the tenant-isolation test to account for the expected organization-bootstrap audit record. Hosted API CI is running again on that latest commit. JVM CI and Android build/tests are also running; their results must be read from the latest PR runs before declaring them passed.
+
+Vercel's automatic Preview build for the newer branch commits was rejected by the team's build-rate limit. The earlier Preview deployment for code commit `ad7d344` remains the verified runtime checkpoint: it was READY and returned HTTP 200 with `backend=mongodb` from `/health/database`. No paid plan upgrade or additional deployment attempt was made. The newest audit-code changes have not yet been deployed to Preview.
