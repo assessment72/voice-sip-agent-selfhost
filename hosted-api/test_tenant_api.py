@@ -7,6 +7,7 @@ import main
 def setup_client(tmp_path, monkeypatch):
     monkeypatch.setattr(main, "DB", str(tmp_path / "tenant-api.sqlite3"))
     monkeypatch.setattr(main, "CALL_TOKEN", "legacy-call-token")
+    monkeypatch.setattr(main, "PREFIXES", ("+9677",))
     monkeypatch.setattr(main, "DEVICE_TOKEN", "legacy-device-token")
     monkeypatch.setattr(main, "BOOTSTRAP_TOKEN", "test-bootstrap-secret")
     monkeypatch.setattr(main, "PRESENCE_ONLINE_SECONDS", 60)
