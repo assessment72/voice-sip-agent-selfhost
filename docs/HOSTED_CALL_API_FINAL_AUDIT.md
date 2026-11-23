@@ -4,7 +4,9 @@ Audit date: 2026-11-23
 Repository: `assessment72/voice-sip-agent-selfhost`  
 Working branch: `feature/hosted-call-api`  
 Pull request: [#10 — Hosted Call API and cellular-first SIP bridge](https://github.com/assessment72/voice-sip-agent-selfhost/pull/10)  
-Audited commit: `224a81334b74df5ee5ca4492401efc4196bd6d07`
+
+> **Report reading note:** Earlier sections are historical snapshots from the initial audit/remediation checkpoints. The final section, **Extended remediation and validation update**, is the authoritative latest status and supersedes earlier interim CI counts and blocker descriptions.
+Audited code commit: `d9098ef475a20f9f3d6fdfd1d99441576d6e89f6`
 
 ## Scope and safety boundary
 
