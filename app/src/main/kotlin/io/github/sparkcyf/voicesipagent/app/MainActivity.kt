@@ -347,6 +347,10 @@ private fun FaqSection() {
 private fun SettingsSection(rt: GatewayRuntime) {
     // Re-seed the form whenever settings change elsewhere (e.g. adb provisioning).
     val cur by rt.settingsFlow.collectAsState()
+    val context = LocalContext.current
+    var relayUrl by remember(cur) { mutableStateOf(cur.relayUrl) }
+    var relayDeviceId by remember(cur) { mutableStateOf(cur.relayDeviceId.ifBlank { rt.settingsStore.getOrCreateRelayDeviceId() }) }
+    var relayDeviceToken by remember(cur) { mutableStateOf(cur.relayDeviceToken) }
     var serverMode by remember(cur) { mutableStateOf(cur.serverMode) }
     var localPort by remember(cur) { mutableStateOf(cur.localSipPort.toString()) }
     var server by remember(cur) { mutableStateOf(cur.server) }
@@ -420,6 +424,19 @@ private fun SettingsSection(rt: GatewayRuntime) {
         )
         Field(t("Куда переводить входящие (пусто = логин)", "Cellular inbound -> SIP target (blank = username)"), target, info = "inbound_target") { target = it }
         Field(t("Префиксы для исходящих (через запятую, пусто = любой)", "Allowed dial-out prefixes (comma separated, empty = any)"), prefixes, info = "prefixes") { prefixes = it }
+        LabelWithInfo(t("التحكم عبر Telegram (الوسيط المحلي)", "Telegram control (local relay)"), "local_relay")
+        Field(t("عنوان الوسيط المحلي (ws:// أو wss://)", "Local relay URL (ws:// or wss://)"), relayUrl) { relayUrl = it }
+        Field(t("معرّف هذا الهاتف", "This phone device ID"), relayDeviceId) { relayDeviceId = it }
+        OutlinedTextField(
+            value = relayDeviceToken, onValueChange = { relayDeviceToken = it },
+            label = { Text(t("رمز الجهاز الخاص بالوسيط", "Relay device token")) },
+            visualTransformation = PasswordVisualTransformation(), singleLine = true, modifier = Modifier.fillMaxWidth(),
+        )
+        Text(
+            t("أنشئ رمزاً مستقلاً لهذا الهاتف في إعدادات الوسيط. يُحفظ الرمز مشفراً. استخدم ws:// داخل شبكة موثوقة فقط، أو wss:// عبر اتصال VPN/وكيل TLS. تبقى قناة التحكم مستقلة عن تشغيل بوابة SIP.",
+                "Create a unique token for this phone in the relay configuration. The token is encrypted at rest. Use ws:// only on a trusted LAN, or wss:// through a VPN/TLS proxy. The control channel stays independent of the SIP gateway."),
+            style = MaterialTheme.typography.bodySmall,
+        )
         LabelWithInfo(t("Hosted Call API", "Hosted Call API"), "hosted_api")
         Field(t("عنوان API المستضاف (HTTPS)", "Hosted API base URL (HTTPS)"), hostedApiUrl) { hostedApiUrl = it }
         Field(t("اسم هذا الجهاز", "This device name"), hostedDeviceName) { hostedDeviceName = it }
@@ -450,19 +467,20 @@ private fun SettingsSection(rt: GatewayRuntime) {
             busy = it
         }
         Button(onClick = {
-            rt.applySettings(
-                cur.copy(
-                    serverMode = serverMode,
-                    localSipPort = localPort.toIntOrNull()?.takeIf { it in 1..65535 } ?: cur.localSipPort,
-                    registrarLeaseSec = lease.toIntOrNull()?.takeIf { it in 30..86400 } ?: cur.registrarLeaseSec,
-                    registrarPassword = regPassword,
-                    server = server, port = port.toIntOrNull() ?: transport.defaultPort, username = user, authUsername = authUser, password = password,
-                    inboundTarget = target, allowedPrefixes = prefixes, domain = domain,
-                    hostedApiUrl = hostedApiUrl, hostedDeviceToken = hostedDeviceToken,
-                    sipStack = stack, sipTransport = transport.id, srtp = srtp.id, busyPolicy = busy,
-                ),
+            val updated = cur.copy(
+                serverMode = serverMode,
+                localSipPort = localPort.toIntOrNull()?.takeIf { it in 1..65535 } ?: cur.localSipPort,
+                registrarLeaseSec = lease.toIntOrNull()?.takeIf { it in 30..86400 } ?: cur.registrarLeaseSec,
+                registrarPassword = regPassword,
+                server = server, port = port.toIntOrNull() ?: transport.defaultPort, username = user, authUsername = authUser, password = password,
+                inboundTarget = target, allowedPrefixes = prefixes, domain = domain,
+                hostedApiUrl = hostedApiUrl, hostedDeviceToken = hostedDeviceToken,
+                relayUrl = relayUrl.trim(), relayDeviceId = relayDeviceId.trim(), relayDeviceToken = relayDeviceToken,
+                sipStack = stack, sipTransport = transport.id, srtp = srtp.id, busyPolicy = busy,
             )
-        }) { Text(t("Сохранить и применить", "Save & apply")) }
+            rt.applySettings(updated)
+            ControlRelayService.sync(context, updated)
+        }) { Text(t("Сохранить و تطبيق", "Save & apply")) }
     }
 }
 
