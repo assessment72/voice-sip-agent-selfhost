@@ -332,13 +332,12 @@ const server = http.createServer(async (req, res) => {
       const b = await body(req);
       if (!configured.has(b.deviceId)) return json(res, 404, { error: "device_not_registered" });
       if (!ALLOWED_COMMANDS.has(b.type)) return json(res, 400, { error: "unsupported_command" });
-      if (b.type === "audio.set" && (!b.payload || typeof b.payload !== "object" || Array.isArray(b.payload))) return json(res, 400, { error: "audio.set requires an object payload" });
       const idem = typeof req.headers["idempotency-key"] === "string" ? req.headers["idempotency-key"].slice(0, 128) : null;
       if (idem) {
         const old = state.commands.find(c => c.deviceId === b.deviceId && c.idempotencyKey === idem);
         if (old) return json(res, 200, { command: old, reused: true });
       }
-      const c = queueCommand(b.deviceId, b.type, b.type === "audio.set" ? b.payload : {}, null);
+      const c = queueCommand(b.deviceId, b.type, {}, null);
       c.idempotencyKey = idem;
       await save();
       return json(res, 202, { command: c });
