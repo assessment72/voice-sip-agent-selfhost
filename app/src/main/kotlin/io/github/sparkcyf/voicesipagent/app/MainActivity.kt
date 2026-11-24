@@ -284,7 +284,7 @@ private fun SettingsSection(rt: GatewayRuntime) {
     val builtin = stack == SipStack.BUILTIN
 
     Section(t("Voicx Control API", "Voicx Control API")) {
-        Text(t("إعداد اختياري للربط بمركز التحكم الخاص. يتطلب HTTPS عبر VPN أو وكيل TLS. لا يغير إعدادات SIP.",
+        Text(t("Необязательное подключение к частному центру управления. Требуется HTTPS через VPN или TLS-прокси. Настройки SIP не меняются.",
             "Optional connection to your private control bridge. HTTPS via VPN or TLS proxy is required. SIP settings are not changed."),
             style = MaterialTheme.typography.bodySmall)
         Field(t("عنوان الجسر HTTPS", "Bridge HTTPS URL"), bridgeUrl) { bridgeUrl = it }
