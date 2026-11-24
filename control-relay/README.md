@@ -38,7 +38,7 @@ The relay must be the only process polling this bot's updates.
 
 ## Network model
 
-- On one LAN, expose TCP 8765 only to the local subnet.
+- On one LAN, expose TCP 8765 only to the local subnet. For Android cleartext WebSocket, configure the relay host to resolve as voicx-relay.local and use ws://voicx-relay.local:8765; the app allows cleartext only for that exact hostname. For other hostnames or remote access, use wss:// behind a trusted TLS endpoint/private VPN. Do not use plain ws:// across the public internet.
 - For phones outside that LAN, connect the relay and phones through a private overlay VPN
   (recommended: Tailscale or WireGuard). No VPS is needed if the relay host remains online.
 - Do not expose the plain HTTP/WebSocket listener directly to the public internet. Put it behind
@@ -59,8 +59,7 @@ Receive command packets:
 Return:
 `{"type":"result","id":"UUID","result":{"ok":true,"message":"..."}}`
 
-The Android client must validate the action allowlist, reject stale command timestamps, and only
-start/stop its own foreground gateway service. Add confirmation for disruptive actions before
+The Android client validates the action allowlist, rejects commands older than 120 seconds, and changes only its own gateway takeover switch. The separate Android control foreground service remains connected so the gateway can be started again remotely. Add confirmation for disruptive actions before
 enabling them in production.
 
 ## Security and limitations
