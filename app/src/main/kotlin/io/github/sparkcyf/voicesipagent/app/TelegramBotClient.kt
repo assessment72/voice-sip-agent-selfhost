@@ -4,7 +4,6 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.net.HttpURLConnection
 import java.net.URL
-import java.net.URLEncoder
 
 /**
  * Direct Telegram Bot API long-poll transport. Call only from Dispatchers.IO.
