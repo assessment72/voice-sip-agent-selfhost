@@ -188,7 +188,7 @@ class GatewayRuntimeLifecycleTest {
         f.runtime.setTakeover(false)
         f.drain()
         assertTrue(f.runtime.health.value.takeoverOffPending)
-        verify(f.endpoints.constructed().single(), never()).stop(anyLong(), anyBoolean())
+        verify(f.endpoints.constructed().single(), never()).stop(anyLong())
         `when`(f.runtime.cellular.hasCalls).thenReturn(false)
         f.callsChanged(CallSnapshot())
         f.drain()
