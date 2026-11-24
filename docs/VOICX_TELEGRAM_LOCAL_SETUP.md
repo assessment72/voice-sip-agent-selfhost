@@ -68,7 +68,7 @@ Open a private chat with the bot from an allowlisted Telegram account:
 - `/start_device phone-01` — confirm, then enable that phone's SIP/call takeover
 - `/stop_device phone-01` — confirm, then disable that phone's SIP/call takeover
 
-Start/stop confirmation is one-time and expires after 60 seconds. Results return to the same Telegram private chat. Only the local bridge polls the bot token; do not run multiple bridge instances with the same token.
+Start/stop confirmation is one-time and expires after 60 seconds. Each queued device command also expires after 60 seconds if the phone does not receive it. Results return to the same Telegram private chat. Only the local bridge polls the bot token; do not run multiple bridge instances with the same token.
 
 ## Scope and limits
 
