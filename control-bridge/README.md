@@ -47,8 +47,8 @@ curl -X POST http://127.0.0.1:8787/api/v1/devices/command \
   -d '{"deviceId":"phone-01","type":"service.status"}'
 ```
 
-Allowed command types in this first slice: `service.status`, `service.start`,
-`service.stop`, and `audio.set`. Commands expire after 60 seconds. Delivery is
+Allowed command types in this first slice: `service.status`, `service.start`, and
+`service.stop`. Audio controls remain disabled until a separately reviewed adapter is implemented. Commands expire after 60 seconds. Delivery is
 at-least-once; clients should use the command UUID to deduplicate. Idempotency keys
 prevent duplicate admin submissions for the same device.
 
@@ -82,15 +82,14 @@ The bridge's built-in listener is plain HTTP. Android requires HTTPS for its bri
 
 Heartbeat freshness window is 90 seconds. Device credentials are independent and can
 be revoked by removing/replacing that device's configured token and restarting the
-bridge. Android-side enrollment/agent integration is the next implementation step.
+bridge. Each handset is configured independently in the Android app.
 
 ## Deliberate safety limits
 
 - No endpoint starts a real SIP call. The call route returns HTTP 501 until the
   outbound SIP path is implemented and validated on the target handset.
 - No SIP listener, call audio, SMS content, or SIP credentials are exposed by this API.
-- Service commands are only queued; the Android agent must validate and execute them
-  under Android's foreground-service and permission rules.
+- The Android agent executes only the three allow-listed service status/start/stop commands. It does not accept arbitrary shell commands, initiate SIP calls, or alter audio settings.
 - The bridge has no internet-facing authentication proxy or TLS termination. Put it
   behind a private VPN/overlay or a separately configured HTTPS reverse proxy.
 
