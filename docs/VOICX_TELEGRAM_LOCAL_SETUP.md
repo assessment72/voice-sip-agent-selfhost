@@ -35,6 +35,7 @@ From the `control-bridge` directory:
 
 ```bash
 docker compose up -d --build
+docker compose ps
 docker compose logs -f voicx-control-bridge
 ```
 
