@@ -29,8 +29,9 @@ import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 
 /**
- * Keeps the process and SIP registration alive while takeover is on, with a status notification.
- * When takeover is off, keeps a reminder visible while this app still holds the dialer role.
+ * Persistent foreground host for the gateway. The service remains alive independently of the
+ * takeover switch; SIP/call bridging itself remains gated by GatewayRuntime.gatewayEnabled.
+ * Android force-stop and OEM task killers can still terminate any application.
  */
 class GatewayService : Service() {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
