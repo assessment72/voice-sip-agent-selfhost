@@ -134,9 +134,13 @@ async def handle_update(update: dict[str, Any]) -> None:
             await tg("sendMessage", {"chat_id": admin_id, "text": "لا توجد أجهزة متصلة الآن."})
             return
         rows = []
-        for device_id, device in sorted(devices.items()):
-            age = int(time.time() - device.last_seen)
-            rows.append([{"text": f"{device_id} · متصل · آخر تحديث {age}s", "callback_data": f"status:{device_id}"}])
+        for device_id in sorted(DEVICE_TOKENS):
+            device = devices.get(device_id)
+            if device is None:
+                rows.append([{"text": f"{device_id} · غير متصل", "callback_data": f"status:{device_id}"}])
+            else:
+                age = int(time.time() - device.last_seen)
+                rows.append([{"text": f"{device_id} · متصل · آخر تحديث {age}s", "callback_data": f"status:{device_id}"}])
         await tg("sendMessage", {"chat_id": admin_id, "text": "الأجهزة المسجلة والمتصلة:", "reply_markup": {"inline_keyboard": rows}})
     elif text.startswith(("/status ", "/start_device ", "/stop_device ")):
         cmd, _, device_id = text.partition(" ")
