@@ -58,6 +58,15 @@
         </service>
 
         <service
+            android:name=".ControlRelayService"
+            android:exported="false"
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="Maintains an authenticated device control connection to the user local Voicx relay" />
+        </service>
+
+        <service
             android:name=".GatewayService"
             android:exported="false"
             android:foregroundServiceType="specialUse">
