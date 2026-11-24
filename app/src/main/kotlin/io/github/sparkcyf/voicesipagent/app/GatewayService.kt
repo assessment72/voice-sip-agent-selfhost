@@ -89,7 +89,10 @@ class GatewayService : Service() {
         if (statusJob == null) {
             val nm = getSystemService(NotificationManager::class.java)
             statusJob = scope.launch {
-                runtime.health.map { it.needsForegroundService to summary(it) }.distinctUntilChanged().collect { (needed, text) ->
+                runtime.health.map {
+                    Triple(it.needsForegroundService, summary(it), it.takeover || it.session != null || it.calls.owned > 0)
+                }.distinctUntilChanged().collect { (needed, text, keepCpuAwake) ->
+                    if (keepCpuAwake) acquireWakeLock() else releaseWakeLock()
                     if (needed) nm.notify(NOTIFICATION_ID, build(text)) else stopGateway()
                 }
             }
@@ -106,7 +109,8 @@ class GatewayService : Service() {
             startForeground(NOTIFICATION_ID, build(summary(health)))
         }
         foreground = true
-        acquireWakeLock()
+        if (health.takeover || health.session != null || health.calls.owned > 0) acquireWakeLock()
+        else releaseWakeLock()
     }
 
     private fun stopGateway(startId: Int? = null) {
