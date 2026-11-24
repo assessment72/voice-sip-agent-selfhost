@@ -18,11 +18,15 @@ const ALLOWED_COMMANDS = new Set(["service.status", "service.start", "service.st
 if (ADMIN_TOKEN.length < 32) throw new Error("VOICX_ADMIN_TOKEN must be at least 32 characters");
 if (!Array.isArray(DEVICE_CONFIG) || DEVICE_CONFIG.length > 20) throw new Error("VOICX_DEVICES must be an array of at most 20 devices");
 const configured = new Map();
+const configuredTokenHashes = new Set();
 for (const d of DEVICE_CONFIG) {
   if (!d || !DEVICE_ID.test(d.id || "") || typeof d.name !== "string" || !d.name.trim() ||
       typeof d.token !== "string" || d.token.length < 32 || configured.has(d.id)) {
     throw new Error("Each device needs a unique id, non-empty name, and token of at least 32 characters");
   }
+  const tokenHash = hash(d.token).toString("hex");
+  if (configuredTokenHashes.has(tokenHash)) throw new Error("Every phone must have a different device token");
+  configuredTokenHashes.add(tokenHash);
   configured.set(d.id, { id: d.id, name: d.name.trim(), tokenHash: hash(d.token) });
 }
 
@@ -274,6 +278,9 @@ const server = http.createServer(async (req, res) => {
               c.status = Date.parse(c.expiresAt) <= now ? "expired" : "failed";
               c.error = "device_delivery_timeout";
               c.updatedAt = new Date().toISOString();
+              if (c.telegramChatId) {
+                telegramMessage(c.telegramChatId, "انتهت مهلة الأمر على الجهاز " + id + " ولم يصل تأكيد التنفيذ.").catch(() => {});
+              }
             } else {
               c.status = "queued";
               delete c.deliveredAt;
