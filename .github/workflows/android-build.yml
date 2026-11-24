@@ -1,6 +1,8 @@
 name: Android build and tests
 
 on:
+  push:
+    branches: [main, feature/org-device-enrollment-multi-device]
   pull_request:
     branches: [main, feat/sip-to-cellular-outbound]
   workflow_dispatch:
@@ -61,3 +63,17 @@ jobs:
             **/build/test-results/**
           if-no-files-found: ignore
           retention-days: 7
+
+  local-relay-tests:
+    name: Local Telegram relay tests
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: control-relay
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install -r requirements.txt
+      - run: python -m unittest -v
