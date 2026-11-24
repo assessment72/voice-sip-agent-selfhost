@@ -67,9 +67,10 @@ It supports authenticated heartbeat, command polling, and result reporting. It
 requires an HTTPS URL. The app now exposes optional bridge URL/device ID/token fields
 under **Voicx Control API** settings and stores the token encrypted using Android
 Keystore. Saving these fields does not restart SIP or start network activity. The
-transport is still not started by `GatewayService`: background polling lifecycle and
-the command-to-runtime adapter remain future work. In particular, it does not execute
-service or audio commands.
+when configured, `GatewayService` sends a heartbeat every 30 seconds while the
+foreground gateway service is active. Command polling and the command-to-runtime
+adapter remain future work. In particular, it does not execute service or audio
+commands.
 The bridge's built-in listener is plain HTTP, so use a private HTTPS reverse proxy
 or VPN endpoint with TLS termination for this Android client; do not weaken its
 HTTPS requirement.
