@@ -73,9 +73,16 @@ data class HealthState(
     val privilegedReady: Boolean
         get() = callAccessReady && audioReady && shizuku == ShizukuConnector.State.CONNECTED
 
-    /** Takeover needs persistence even before setup; a retained dialer role needs a reminder. */
+    /**
+     * The gateway host is intentionally persistent even when call takeover is disabled.
+     * Keeping the foreground service alive allows health monitoring and recovery without
+     * changing SIP/call behavior; actual SIP and call bridging remain gated by [takeover].
+     *
+     * Android may still stop a process (force-stop, OEM policy, resource pressure), so this
+     * is a best-effort persistence policy rather than an OS-level guarantee.
+     */
     val needsForegroundService: Boolean
-        get() = takeover || holdsDialer || session != null || calls.owned > 0
+        get() = true
 }
 
 /**
