@@ -51,6 +51,7 @@ class Device:
 
 devices: dict[str, Device] = {}
 pending: dict[str, tuple[int, str, float]] = {}
+confirmations: dict[str, tuple[int, str, str, float]] = {}
 http: httpx.AsyncClient | None = None
 poll_task: asyncio.Task | None = None
 offset = 0
@@ -108,13 +109,19 @@ async def handle_update(update: dict[str, Any]) -> None:
         data = callback.get("data", "")
         await tg("answerCallbackQuery", {"callback_query_id": callback["id"]})
         parts = data.split(":")
-        if len(parts) == 3 and parts[0] == "confirm" and parts[1] in {"gateway_start", "gateway_stop"}:
-            result = await command_device(parts[2], parts[1], admin_id)
-            await tg("sendMessage", {"chat_id": admin_id, "text": result})
+        if len(parts) == 2 and parts[0] == "confirm":
+            confirmation = confirmations.pop(parts[1], None)
+            if confirmation and confirmation[0] == admin_id and confirmation[3] >= time.time():
+                _, device_id, action, _ = confirmation
+                result = await command_device(device_id, action, admin_id)
+                await tg("sendMessage", {"chat_id": admin_id, "text": result})
+            else:
+                await tg("sendMessage", {"chat_id": admin_id, "text": "انتهت صلاحية التأكيد أو سبق استخدامه."})
         elif len(parts) == 2 and parts[0] == "status":
             result = await command_device(parts[1], "status", admin_id)
             await tg("sendMessage", {"chat_id": admin_id, "text": result})
-        elif parts and parts[0] == "cancel":
+        elif len(parts) == 2 and parts[0] == "cancel":
+            confirmations.pop(parts[1], None)
             await tg("sendMessage", {"chat_id": admin_id, "text": "تم إلغاء الأمر."})
         return
     message = update.get("message", {})
@@ -142,11 +149,13 @@ async def handle_update(update: dict[str, Any]) -> None:
             await tg("sendMessage", {"chat_id": admin_id, "text": result})
         else:
             verb = "تشغيل" if action == "gateway_start" else "إيقاف"
+            nonce = secrets.token_urlsafe(6)
+            confirmations[nonce] = (admin_id, device_id, action, time.time() + 60)
             await tg("sendMessage", {"chat_id": admin_id,
-                "text": f"تأكيد {verb} خدمة البوابة على الجهاز {device_id}؟",
+                "text": f"تأكيد {verb} خدمة البوابة على الجهاز {device_id}؟ صلاحية التأكيد 60 ثانية ويُستخدم مرة واحدة.",
                 "reply_markup": {"inline_keyboard": [[
-                    {"text": "تأكيد", "callback_data": f"confirm:{action}:{device_id}"},
-                    {"text": "إلغاء", "callback_data": f"cancel:{device_id}"}
+                    {"text": "تأكيد", "callback_data": f"confirm:{nonce}"},
+                    {"text": "إلغاء", "callback_data": f"cancel:{nonce}"}
                 ]]}})
     else:
         await tg("sendMessage", {"chat_id": admin_id, "text": "أمر غير معروف. الأوامر: /devices أو /status DEVICE أو /start_device DEVICE أو /stop_device DEVICE."})
