@@ -8,10 +8,12 @@ const HOST = process.env.HOST || "127.0.0.1";
 const STORE = path.resolve(process.env.VOICX_STORE || "./data/voicx-store.json");
 const ADMIN_TOKEN = process.env.VOICX_ADMIN_TOKEN || "";
 const DEVICE_CONFIG = JSON.parse(process.env.VOICX_DEVICES || "[]");
+const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN || "";
+const TELEGRAM_ADMIN_IDS = new Set((process.env.TELEGRAM_ADMIN_IDS || "").split(",").map(x => x.trim()).filter(x => /^\\d+$/.test(x)));
 const MAX_BODY = 16 * 1024;
 const COMMAND_TTL_MS = 60_000;
 const DEVICE_ID = /^[a-zA-Z0-9_-]{1,64}$/;
-const ALLOWED_COMMANDS = new Set(["service.status", "service.start", "service.stop", "audio.set"]);
+const ALLOWED_COMMANDS = new Set(["service.status", "service.start", "service.stop"]);
 
 if (ADMIN_TOKEN.length < 32) throw new Error("VOICX_ADMIN_TOKEN must be at least 32 characters");
 if (!Array.isArray(DEVICE_CONFIG) || DEVICE_CONFIG.length > 20) throw new Error("VOICX_DEVICES must be an array of at most 20 devices");
@@ -81,6 +83,147 @@ function publicDevice(id, d) {
   };
 }
 function routeMatch(pathname, pattern) { return pathname.match(pattern); }
+
+function queueCommand(deviceId, type, payload = {}, telegramChatId = null) {
+  if (!configured.has(deviceId)) throw Object.assign(new Error("device_not_registered"), { status: 404 });
+  if (!ALLOWED_COMMANDS.has(type)) throw Object.assign(new Error("unsupported_command"), { status: 400 });
+  const c = {
+    id: randomUUID(), deviceId, type, payload,
+    status: "queued", createdAt: new Date().toISOString(),
+    expiresAt: new Date(Date.now() + COMMAND_TTL_MS).toISOString(),
+    idempotencyKey: null, telegramChatId
+  };
+  state.commands.push(c);
+  if (state.commands.length > 5000) state.commands.splice(0, state.commands.length - 5000);
+  audit("command.queued", telegramChatId ? "telegram-admin" : "api-client",
+    { commandId: c.id, deviceId, type });
+  return c;
+}
+
+async function telegram(method, payload) {
+  if (!TELEGRAM_BOT_TOKEN) throw new Error("Telegram bot is not configured");
+  const response = await fetch("https://api.telegram.org/bot" + TELEGRAM_BOT_TOKEN + "/" + method, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(payload),
+    signal: AbortSignal.timeout(35_000)
+  });
+  const data = await response.json();
+  if (!response.ok || !data.ok) throw new Error("Telegram API request failed");
+  return data.result;
+}
+
+async function telegramMessage(chatId, text, replyMarkup = undefined) {
+  const payload = { chat_id: chatId, text: String(text).slice(0, 3900) };
+  if (replyMarkup) payload.reply_markup = replyMarkup;
+  return telegram("sendMessage", payload);
+}
+
+const telegramConfirmations = new Map();
+let telegramOffset = 0;
+
+function isTelegramAdmin(update) {
+  const message = update.message || update.callback_query?.message;
+  const sender = update.message?.from || update.callback_query?.from;
+  return !!message && message.chat?.type === "private" &&
+    String(message.chat.id) === String(sender?.id) &&
+    TELEGRAM_ADMIN_IDS.has(String(sender?.id));
+}
+
+async function telegramQueueCommand(chatId, deviceId, type) {
+  if (!configured.has(deviceId)) {
+    await telegramMessage(chatId, "معرّف الجهاز غير موجود في إعدادات الوسيط.");
+    return;
+  }
+  const command = queueCommand(deviceId, type, {}, String(chatId));
+  await save();
+  await telegramMessage(chatId, "تم إرسال الأمر " + type + " إلى " + deviceId + ". رقم المتابعة: " + command.id.slice(0, 8));
+}
+
+async function handleTelegramUpdate(update) {
+  if (!isTelegramAdmin(update)) return;
+  if (update.callback_query) {
+    const callback = update.callback_query;
+    await telegram("answerCallbackQuery", { callback_query_id: callback.id });
+    const parts = String(callback.data || "").split(":");
+    const kind = parts[0], value = parts[1];
+    if (kind === "status" && configured.has(value)) {
+      await telegramQueueCommand(callback.message.chat.id, value, "service.status");
+    } else if (kind === "confirm") {
+      const item = telegramConfirmations.get(value);
+      telegramConfirmations.delete(value);
+      if (item && item.adminId === String(callback.from.id) && item.expiresAt > Date.now()) {
+        await telegramQueueCommand(callback.message.chat.id, item.deviceId, item.type);
+      } else {
+        await telegramMessage(callback.message.chat.id, "انتهت صلاحية التأكيد أو سبق استخدامه.");
+      }
+    } else if (kind === "cancel") {
+      telegramConfirmations.delete(value);
+      await telegramMessage(callback.message.chat.id, "تم إلغاء الأمر.");
+    }
+    return;
+  }
+
+  const message = update.message;
+  const text = String(message.text || "").trim();
+  const parts = text.split(/\s+/, 2);
+  const command = (parts[0] || "").split("@")[0].toLowerCase();
+  const deviceId = parts[1] || "";
+  const chatId = message.chat.id;
+  if (command === "/start" || command === "/help") {
+    await telegramMessage(chatId,
+      "Voicx SIP Control جاهز.\n/devices عرض الهواتف\n/status DEVICE فحص هاتف\n/start_device DEVICE تشغيل بوابة SIP\n/stop_device DEVICE إيقاف بوابة SIP");
+  } else if (command === "/devices") {
+    const rows = [...configured.keys()].map(id => {
+      const device = publicDevice(id, state.devices[id]);
+      return [{ text: (device.online ? "🟢 " : "⚪ ") + device.name + " · " + id, callback_data: "status:" + id }];
+    });
+    await telegramMessage(chatId, rows.length ? "الأجهزة المسجلة (اضغط لفحص الحالة):" : "لا توجد أجهزة مسجلة.",
+      rows.length ? { inline_keyboard: rows } : undefined);
+  } else if (command === "/status" && deviceId) {
+    await telegramQueueCommand(chatId, deviceId, "service.status");
+  } else if ((command === "/start_device" || command === "/stop_device") && deviceId) {
+    if (!configured.has(deviceId)) {
+      await telegramMessage(chatId, "معرّف الجهاز غير موجود في إعدادات الوسيط.");
+      return;
+    }
+    const type = command === "/start_device" ? "service.start" : "service.stop";
+    const nonce = randomUUID().replace(/-/g, "").slice(0, 16);
+    telegramConfirmations.set(nonce, { adminId: String(message.from.id), deviceId, type, expiresAt: Date.now() + 60_000 });
+    await telegramMessage(chatId, "تأكيد " + (type === "service.start" ? "تشغيل" : "إيقاف") +
+      " بوابة SIP على " + deviceId + "؟ التأكيد صالح لمدة 60 ثانية ويستخدم مرة واحدة.",
+      { inline_keyboard: [[
+        { text: "تأكيد", callback_data: "confirm:" + nonce },
+        { text: "إلغاء", callback_data: "cancel:" + nonce }
+      ]] });
+  } else {
+    await telegramMessage(chatId, "أمر غير معروف. أرسل /help لعرض الأوامر.");
+  }
+}
+
+async function telegramPoll() {
+  if (!TELEGRAM_BOT_TOKEN || TELEGRAM_ADMIN_IDS.size === 0) {
+    console.log("Telegram control disabled (bot token/admin allowlist not configured)");
+    return;
+  }
+  console.log("Telegram control enabled for " + TELEGRAM_ADMIN_IDS.size + " admin account(s)");
+  while (true) {
+    try {
+      const updates = await telegram("getUpdates", {
+        offset: telegramOffset, timeout: 25,
+        allowed_updates: ["message", "callback_query"]
+      });
+      for (const update of updates) {
+        telegramOffset = Math.max(telegramOffset, update.update_id + 1);
+        try { await handleTelegramUpdate(update); }
+        catch { console.error("Telegram update handler failed"); }
+      }
+    } catch {
+      console.error("Telegram polling failed; retrying");
+      await new Promise(resolve => setTimeout(resolve, 3000));
+    }
+  }
+}
 
 const server = http.createServer(async (req, res) => {
   try {
