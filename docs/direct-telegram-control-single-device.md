@@ -15,7 +15,7 @@ This feature is for one device only: the user's HONOR MTN-NX1 running Voicx SIP.
 - Configure the bot token and authorized numeric Telegram user ID in the app.
 - Store the bot token encrypted using the existing Android Keystore-backed SettingsStore pattern. Never put a real token in source, BuildConfig, logs, crash reports, or repository files.
 - Accept commands only from the configured Telegram user ID and private chat. Ignore groups and all other senders.
-- Maintain the Telegram update offset for the lifetime of the running service. The offset is not yet persisted across process restarts.
+- Persist the Telegram update offset in app preferences and reset it when the bot token changes.
 - Never log message bodies, bot tokens, or authorization headers.
 
 ## Initial command allowlist
@@ -57,7 +57,7 @@ Implemented on the dedicated feature branch:
 Still pending before release:
 - Android build and CI verification.
 - Runtime tests with a newly issued bot token and the user's own authorized ID.
-- Persisting the update offset across process restarts and improving retry/backoff behavior.
+- Improving retry/backoff behavior and surfacing Telegram connection health in the UI.
 - Handling/reporting Telegram webhook conflicts and exposing connection health in the UI.
 
 The implementation has not been built into an APK or tested against a live bot in this session. Do not treat it as release-ready yet.
