@@ -19,6 +19,8 @@ export VOICX_DEVICES='[{"id":"phone-01","name":"HONOR MTN-NX1","token":"replace-
 export HOST='127.0.0.1'
 export PORT='8787'
 export VOICX_STORE='./data/voicx-store.json'
+export TELEGRAM_BOT_TOKEN='token-from-botfather'
+export TELEGRAM_ADMIN_IDS='123456789'
 node server.mjs
 ```
 
@@ -61,19 +63,22 @@ Device requests use that device's own bearer token.
   `{"status":"succeeded","result":{"serviceState":"running"}}` or
   `{"status":"failed","error":"permission_denied"}`
 
-The Android source now includes an opt-in transport implementation at
-`app/src/main/kotlin/io/github/sparkcyf/voicesipagent/app/ControlBridgeClient.kt`.
-It supports authenticated heartbeat, command polling, and result reporting. It
-requires an HTTPS URL. The app now exposes optional bridge URL/device ID/token fields
-under **Voicx Control API** settings and stores the token encrypted using Android
-Keystore. Saving these fields does not restart SIP or start network activity. The
-when configured, `GatewayService` sends a heartbeat every 30 seconds while the
-foreground gateway service is active. Command polling and the command-to-runtime
-adapter remain future work. In particular, it does not execute service or audio
-commands.
-The bridge's built-in listener is plain HTTP, so use a private HTTPS reverse proxy
-or VPN endpoint with TLS termination for this Android client; do not weaken its
-HTTPS requirement.
+The Android source includes an opt-in `ControlBridgeClient` with authenticated heartbeat, command polling, and result reporting. The device token is encrypted using Android Keystore. `GatewayService` reports heartbeat every 30 seconds and polls the local command queue every 8 seconds while its persistent foreground host is running. The approved command adapter supports only `service.status`, `service.start`, and `service.stop`; start/stop change the phone's SIP/call-takeover switch, while the foreground control host remains alive so it can be started again. It does not initiate or terminate real calls, and it does not change audio settings remotely.
+
+### Telegram bot control
+
+Set `TELEGRAM_BOT_TOKEN` to the token created with BotFather and `TELEGRAM_ADMIN_IDS` to the numeric Telegram user IDs allowed to control the system. The bot accepts private chats from allowlisted IDs only; groups and all other users are ignored. The Node bridge is the only process that polls `getUpdates` for this bot token—do not run a second copy of the bridge with the same token.
+
+Commands:
+
+- `/devices` — list all configured phones and their last reported online state.
+- `/status phone-01` — queue a status request for one phone.
+- `/start_device phone-01` — ask for a one-time confirmation, then enable that phone's gateway takeover.
+- `/stop_device phone-01` — ask for a one-time confirmation, then disable that phone's gateway takeover.
+
+Start/stop confirmations expire after 60 seconds and can be used once. Results are sent back to the same private Telegram chat after the phone reports completion. Bot credentials stay on the local bridge host; they are never placed in the APK.
+
+The bridge's built-in listener is plain HTTP. Android requires HTTPS for its bridge URL, so put it behind a private HTTPS endpoint. A local always-on computer can use Tailscale Serve or another private VPN/reverse proxy for TLS termination; no VPS is required. The host must remain powered and connected, and each phone must be able to reach that private HTTPS address. Do not expose the bridge directly to the public internet.
 
 Heartbeat freshness window is 90 seconds. Device credentials are independent and can
 be revoked by removing/replacing that device's configured token and restarting the
@@ -91,7 +96,7 @@ bridge. Android-side enrollment/agent integration is the next implementation ste
 
 ## Smoke test
 
-Run the end-to-end local API smoke test with Node.js 20+: `npm test` (or `node smoke-test.mjs`). It checks admin/device authentication, heartbeat telemetry, command queue delivery/result reporting, and confirms that outbound SIP call requests remain disabled (HTTP 501).
+Run the end-to-end local API smoke test with Node.js 20+: `npm test` (or `node smoke-test.mjs`). It checks admin/device authentication, heartbeat telemetry, command queue delivery/result reporting, and confirms that outbound SIP call requests remain disabled (HTTP 501). The Telegram poller stays disabled in tests unless a bot token and admin allowlist are supplied.
 
 ## Persistence
 
