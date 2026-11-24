@@ -701,9 +701,6 @@ class GatewayRuntime private constructor(context: Context) {
         require(clean.isEmpty() || (clean.length >= 30 && Regex("^[0-9]+:[A-Za-z0-9_-]+$").matches(clean))) {
             "Invalid Telegram bot token format"
         }
-        val updated = settings.copy(telegramBotToken = clean)
-        settingsStore.save(updated)
-        _settings.value = updated
         val allowedId = allowedUserId.trim().toLongOrNull()?.takeIf { it > 0 } ?: 0L
         require(clean.isEmpty() || allowedId > 0) { "Enter the numeric Telegram user ID allowed to control this phone" }
         val updated = settings.copy(telegramBotToken = clean, telegramAllowedUserId = if (clean.isEmpty()) 0L else allowedId)
