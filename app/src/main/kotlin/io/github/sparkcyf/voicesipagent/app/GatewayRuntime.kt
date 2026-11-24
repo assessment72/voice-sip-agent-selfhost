@@ -661,6 +661,33 @@ class GatewayRuntime private constructor(context: Context) {
 
     // ------------------------------------------------------------ external controls
 
+    /**
+     * Saves only remote-control configuration. This intentionally does not restart SIP,
+     * alter takeover, or start a network worker.
+     */
+    fun updateControlBridgeSettings(url: String, deviceId: String, token: String) = worker.execute {
+        val cleanUrl = url.trim().trimEnd('/')
+        val cleanId = deviceId.trim()
+        if (cleanUrl.isNotEmpty()) {
+            val parsed = runCatching { java.net.URI(cleanUrl) }.getOrNull()
+            require(parsed?.scheme.equals("https", ignoreCase = true) &&
+                !parsed?.host.isNullOrBlank() && parsed?.userInfo == null &&
+                parsed?.query == null && parsed?.fragment == null) {
+                "Control bridge URL must be a valid HTTPS URL"
+            }
+            require(cleanId.matches(Regex("[A-Za-z0-9_-]{1,64}"))) { "Invalid device id" }
+            require(token.length >= 32) { "Device token must be at least 32 characters" }
+        }
+        val updated = settings.copy(
+            controlBridgeUrl = cleanUrl,
+            controlBridgeDeviceId = if (cleanUrl.isEmpty()) "" else cleanId,
+            controlBridgeToken = if (cleanUrl.isEmpty()) "" else token,
+        )
+        settingsStore.save(updated)
+        _settings.value = updated
+        AppLog.i(if (cleanUrl.isEmpty()) "Voicx remote control disabled" else "Voicx bridge settings saved")
+    }
+
     fun applySettings(new: GatewaySettings) = worker.execute {
         require(new.audioMethod in 0..2 && new.callAccess in 0..2) { "unknown platform setting" }
         if (hasActiveWork()) {
