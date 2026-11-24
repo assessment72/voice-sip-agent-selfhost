@@ -122,7 +122,26 @@ private val arabicUi = mapOf(
     "Save & apply" to "حفظ وتطبيق",
     "Unavailable with the current platform or audio method" to "غير متاح مع النظام أو طريقة الصوت الحالية",
     "Waiting for helper" to "بانتظار المساعد",
-    "Show help / recommended clients" to "عرض المساعدة والتطبيقات المقترحة"
+    "Show help / recommended clients" to "عرض المساعدة والتطبيقات المقترحة",
+    "Alongside dialer" to "بجانب تطبيق الهاتف",
+    "Turning on requests the default-dialer role. Turning off restores your previous dialer unless you keep the role in Advanced settings." to "عند التشغيل سيُطلب تعيين التطبيق كهاتف افتراضي. وعند الإيقاف ستتم استعادة تطبيق الهاتف السابق ما لم تختر الاحتفاظ بالدور من الإعدادات المتقدمة.",
+    "The service uses an ongoing notification and is started after reboot. On HONOR, remove battery restrictions for this app." to "تعمل الخدمة بإشعار دائم وتبدأ بعد إعادة تشغيل الهاتف. على أجهزة HONOR أزل قيود البطارية عن التطبيق.",
+    "Default-dialer mode bridges calls through the PBX. For manual calling, switch back to your usual dialer." to "وضع الهاتف الافتراضي يربط المكالمات عبر مقسم SIP. لإجراء مكالمة يدوياً، أعد تطبيق الهاتف المعتاد.",
+    "Applies the next time takeover is switched off. Restore manually below when needed." to "يُطبّق عند إيقاف تحويل المكالمات في المرة القادمة. ويمكنك الاستعادة يدوياً من الزر أدناه.",
+    "★ If a call connects but nobody is heard, switch this very setting (details in ⓘ)." to "★ إذا اتصلت المكالمة دون سماع صوت، غيّر هذا الخيار (التفاصيل في زر المعلومات).",
+    "Keeps normal call output for local listening; microphone stays muted. Applies from next call." to "يُبقي صوت المكالمة على سماعة الهاتف للاستماع محلياً، مع كتم الميكروفون. يبدأ من المكالمة التالية.",
+    "Mutes call output when supported; applies from next call" to "يكتم صوت المكالمة إذا كان الجهاز يدعم ذلك؛ يبدأ من المكالمة التالية.",
+    "Echoes incoming calls instead of connecting the PBX" to "يعيد صوت المكالمة الواردة كصدى بدلاً من ربطها بمقسم SIP.",
+    "Info-level logs with masked numbers" to "سجل معلومات مع إخفاء أرقام الهواتف.",
+    "Audio access and frame counters do not verify remote delivery. Verify both directions on this device." to "صلاحية الصوت وعدّادات الإطارات لا تثبت وصول الصوت للطرف الآخر. اختبر السماع في الاتجاهين فعلياً.",
+    "Optional connection to your private control bridge. HTTPS via VPN or TLS proxy is required. SIP settings are not changed." to "اتصال اختياري بجسر التحكم الخاص بك. يلزم HTTPS عبر VPN أو وسيط TLS. لا تتغير إعدادات SIP.",
+    "The token is encrypted with Android Keystore. Leaving the bridge URL empty disables the connection settings and clears the saved credentials." to "يُشفّر الرمز باستخدام Android Keystore. ترك عنوان الجسر فارغاً يعطّل الاتصال ويمسح بيانات الاعتماد المحفوظة.",
+    "This phone hosts the SIP registrar; your softphone (e.g. baresip) registers straight to it. No external PBX is needed, so the PBX fields below are optional." to "هذا الهاتف يستضيف مسجل SIP؛ سجّل تطبيق الاتصال (مثل baresip) عليه مباشرة. لا تحتاج إلى مقسم خارجي، لذا حقول المقسم أدناه اختيارية.",
+    "Off: this gateway registers to an external PBX / SIP server. Fill in PBX host, user and password below." to "عند الإيقاف: تتصل البوابة بمقسم SIP خارجي. أدخل عنوان المقسم واسم المستخدم وكلمة المرور أدناه.",
+    "Point your softphone at  <this phone's IP>:$localPort  over UDP." to "وجّه تطبيق الاتصال إلى <عنوان IP لهذا الهاتف>:$localPort باستخدام UDP.",
+    "Empty = no password, anyone may register. Set one before exposing the gateway to the internet, and enter the same password in your softphone." to "تركه فارغاً يعني عدم وجود كلمة مرور وإمكانية تسجيل أي شخص. عيّن كلمة مرور قبل إتاحة البوابة عبر الإنترنت، واستخدمها نفسها في تطبيق الاتصال.",
+    "Cellular inbound -> SIP target (blank = username)" to "وجهة مكالمات الشريحة الواردة إلى SIP (فارغ = اسم المستخدم)",
+    "Allowed dial-out prefixes (comma separated, empty = any)" to "بادئات الأرقام المسموح الاتصال بها عبر الشريحة (افصل بفواصل، فارغ = جميع الأرقام)"
 )
 
 /** Pick the string for the current UI language. Safe to call anywhere. */
