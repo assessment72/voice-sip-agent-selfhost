@@ -96,6 +96,7 @@ class GatewayService : Service() {
         }
         runtime.onForegroundStarted(runtimeToken)
         syncControlBridge(runtime.settings)
+        syncTelegramControl(runtime.settings.telegramBotToken, runtime.settings.telegramAllowedUserId)
         if (statusJob == null) {
             val nm = getSystemService(NotificationManager::class.java)
             statusJob = scope.launch {
