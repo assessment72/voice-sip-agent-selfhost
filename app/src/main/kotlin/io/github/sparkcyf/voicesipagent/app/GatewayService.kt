@@ -38,6 +38,9 @@ class GatewayService : Service() {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
     private var statusJob: Job? = null
     private var bridgeSettingsJob: Job? = null
+    private var telegramSettingsJob: Job? = null
+    private var telegramCommandJob: Job? = null
+    private var telegramUpdateOffset: Long = 0L
     private var bridgeHeartbeatJob: Job? = null
     private var bridgeCommandJob: Job? = null
     private var foreground = false
@@ -67,6 +70,11 @@ class GatewayService : Service() {
             runtime.settingsFlow.map { Triple(it.controlBridgeUrl, it.controlBridgeDeviceId, it.controlBridgeToken) }
                 .distinctUntilChanged()
                 .collect { syncControlBridge(runtime.settings) }
+        }
+        telegramSettingsJob = scope.launch {
+            runtime.settingsFlow.map { it.telegramBotToken to it.telegramAllowedUserId }
+                .distinctUntilChanged()
+                .collect { (token, allowedUserId) -> syncTelegramControl(token, allowedUserId) }
         }
     }
 
@@ -122,6 +130,8 @@ class GatewayService : Service() {
         bridgeHeartbeatJob = null
         bridgeCommandJob?.cancel()
         bridgeCommandJob = null
+        telegramCommandJob?.cancel()
+        telegramCommandJob = null
         stopForeground(STOP_FOREGROUND_REMOVE)
         foreground = false
         releaseWakeLock()
@@ -134,8 +144,10 @@ class GatewayService : Service() {
         GatewayRuntime.get(this).onForegroundStopped(runtimeToken)
         unregisterReceiver(roleReceiver)
         bridgeSettingsJob?.cancel()
+        telegramSettingsJob?.cancel()
         bridgeHeartbeatJob?.cancel()
         bridgeCommandJob?.cancel()
+        telegramCommandJob?.cancel()
         scope.cancel()
         stopForeground(STOP_FOREGROUND_REMOVE)
         releaseWakeLock()
@@ -212,6 +224,64 @@ class GatewayService : Service() {
                     AppLog.w("Voicx command poll failed")
                 }
                 delay(8_000)
+            }
+        }
+    }
+
+    /**
+     * Direct, single-device Telegram polling. The bot token is stored encrypted by SettingsStore.
+     * Only the configured numeric user ID in a private chat can execute commands.
+     */
+    private fun syncTelegramControl(token: String, allowedUserId: Long) {
+        telegramCommandJob?.cancel()
+        telegramCommandJob = null
+        if (!foreground || token.isBlank() || allowedUserId <= 0L) return
+        val client = runCatching { TelegramBotClient(token) }.getOrElse {
+            AppLog.w("Telegram configuration invalid: \${it.javaClass.simpleName}")
+            return
+        }
+        telegramCommandJob = scope.launch {
+            while (isActive && foreground) {
+                try {
+                    val updates = withContext(Dispatchers.IO) { client.poll(telegramUpdateOffset) }
+                    for (update in updates) {
+                        telegramUpdateOffset = maxOf(telegramUpdateOffset, update.updateId + 1L)
+                        if (!update.privateChat || update.senderId != allowedUserId) continue
+                        val command = update.text.substringBefore(' ').substringBefore('@').lowercase()
+                        val reply = try {
+                            when (command) {
+                                "/start", "/help" ->
+                                    "Voicx control connected. Commands:\n/status - gateway status\n/sip - SIP status\n/calls - call status\n/service_on - enable call takeover\n/service_off - disable call takeover"
+                                "/status" -> {
+                                    val h = GatewayRuntime.get(this@GatewayService).health.value
+                                    "Gateway: \${if (h.takeover) "ON" else "OFF"}\nSIP: \${if (h.sip.ready) "ready" else "not ready"}\nActive call: \${h.session != null || h.calls.owned > 0}"
+                                }
+                                "/sip" -> {
+                                    val h = GatewayRuntime.get(this@GatewayService).health.value
+                                    "SIP: \${if (h.sip.ready) "ready" else "not ready"}\n\${h.sip.detail.take(500)}"
+                                }
+                                "/calls" -> GatewayRuntime.get(this@GatewayService).health.value.calls.summary.take(1000)
+                                "/service_on" -> {
+                                    GatewayRuntime.get(this@GatewayService).setTakeover(true)
+                                    "Enable request accepted. Check /status in a moment."
+                                }
+                                "/service_off" -> {
+                                    GatewayRuntime.get(this@GatewayService).setTakeover(false)
+                                    "Disable request accepted. An active call will finish first."
+                                }
+                                else -> "Unknown command. Send /help."
+                            }
+                        } catch (e: Exception) {
+                            "Command failed: \${e.javaClass.simpleName}"
+                        }
+                        withContext(Dispatchers.IO) { client.sendMessage(update.chatId, reply) }
+                    }
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    AppLog.w("Telegram polling failed: \${e.javaClass.simpleName}")
+                    delay(5_000)
+                }
             }
         }
     }
