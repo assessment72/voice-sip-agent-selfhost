@@ -18,7 +18,10 @@ from dataclasses import dataclass, field
 from typing import Any
 
 import httpx
+from dotenv import load_dotenv
 from fastapi import FastAPI, Header, HTTPException, WebSocket, WebSocketDisconnect
+
+load_dotenv()
 
 logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
 log = logging.getLogger("voicx-relay")
