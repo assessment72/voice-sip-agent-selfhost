@@ -1,6 +1,7 @@
 package io.github.sparkcyf.voicesipagent.app
 
 import android.os.Bundle
+import android.content.Intent
 import android.os.Build
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.layout.Arrangement
@@ -45,6 +46,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalUriHandler
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
@@ -111,6 +113,19 @@ private fun Screen(rt: GatewayRuntime, modifier: Modifier, requestDialer: () -> 
                     style = MaterialTheme.typography.bodySmall)
             }
             if (h.settingsPending) Text(t("Настройки применятся после завершения звонков", "Settings will apply after current calls end"))
+        }
+        Section(t("Работа в фоне", "Background operation")) {
+            val context = LocalContext.current
+            Text(t("Служба работает с постоянным уведомлением и запускается после перезагрузки. Для HONOR отключи для приложения ограничения батареи.",
+                "The service uses an ongoing notification and is started after reboot. On HONOR, remove battery restrictions for this app."),
+                style = MaterialTheme.typography.bodySmall)
+            OutlinedButton(onClick = {
+                runCatching {
+                    context.startActivity(Intent(android.provider.Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS))
+                }
+            }) {
+                Text(t("إعدادات تحسين البطارية", "Battery optimization settings"))
+            }
         }
         Section(t("Состояние", "Health")) {
             val p = h.privileged
