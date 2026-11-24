@@ -238,7 +238,7 @@ class GatewayService : Service() {
         telegramCommandJob = null
         if (!foreground || token.isBlank() || allowedUserId <= 0L) return
         val client = runCatching { TelegramBotClient(token) }.getOrElse {
-            AppLog.w("Telegram configuration invalid: \${it.javaClass.simpleName}")
+            AppLog.w("Telegram configuration invalid: ${it.javaClass.simpleName}")
             return
         }
         telegramCommandJob = scope.launch {
@@ -255,11 +255,11 @@ class GatewayService : Service() {
                                     "Voicx control connected. Commands:\n/status - gateway status\n/sip - SIP status\n/calls - call status\n/service_on - enable call takeover\n/service_off - disable call takeover"
                                 "/status" -> {
                                     val h = GatewayRuntime.get(this@GatewayService).health.value
-                                    "Gateway: \${if (h.takeover) "ON" else "OFF"}\nSIP: \${if (h.sip.ready) "ready" else "not ready"}\nActive call: \${h.session != null || h.calls.owned > 0}"
+                                    "Gateway: ${if (h.takeover) "ON" else "OFF"}\nSIP: ${if (h.sip.ready) "ready" else "not ready"}\nActive call: ${h.session != null || h.calls.owned > 0}"
                                 }
                                 "/sip" -> {
                                     val h = GatewayRuntime.get(this@GatewayService).health.value
-                                    "SIP: \${if (h.sip.ready) "ready" else "not ready"}\n\${h.sip.detail.take(500)}"
+                                    "SIP: ${if (h.sip.ready) "ready" else "not ready"}\n${h.sip.detail.take(500)}"
                                 }
                                 "/calls" -> GatewayRuntime.get(this@GatewayService).health.value.calls.summary.take(1000)
                                 "/service_on" -> {
@@ -273,14 +273,14 @@ class GatewayService : Service() {
                                 else -> "Unknown command. Send /help."
                             }
                         } catch (e: Exception) {
-                            "Command failed: \${e.javaClass.simpleName}"
+                            "Command failed: ${e.javaClass.simpleName}"
                         }
                         withContext(Dispatchers.IO) { client.sendMessage(update.chatId, reply) }
                     }
                 } catch (e: CancellationException) {
                     throw e
                 } catch (e: Exception) {
-                    AppLog.w("Telegram polling failed: \${e.javaClass.simpleName}")
+                    AppLog.w("Telegram polling failed: ${e.javaClass.simpleName}")
                     delay(5_000)
                 }
             }
