@@ -138,7 +138,7 @@ private val arabicUi = mapOf(
     "The token is encrypted with Android Keystore. Leaving the bridge URL empty disables the connection settings and clears the saved credentials." to "يُشفّر الرمز باستخدام Android Keystore. ترك عنوان الجسر فارغاً يعطّل الاتصال ويمسح بيانات الاعتماد المحفوظة.",
     "This phone hosts the SIP registrar; your softphone (e.g. baresip) registers straight to it. No external PBX is needed, so the PBX fields below are optional." to "هذا الهاتف يستضيف مسجل SIP؛ سجّل تطبيق الاتصال (مثل baresip) عليه مباشرة. لا تحتاج إلى مقسم خارجي، لذا حقول المقسم أدناه اختيارية.",
     "Off: this gateway registers to an external PBX / SIP server. Fill in PBX host, user and password below." to "عند الإيقاف: تتصل البوابة بمقسم SIP خارجي. أدخل عنوان المقسم واسم المستخدم وكلمة المرور أدناه.",
-    "Point your softphone at  <this phone's IP>:$localPort  over UDP." to "وجّه تطبيق الاتصال إلى <عنوان IP لهذا الهاتف>:$localPort باستخدام UDP.",
+    "Point your softphone at  <this phone's IP>:\$localPort  over UDP." to "وجّه تطبيق الاتصال إلى <عنوان IP لهذا الهاتف>:\$localPort باستخدام UDP.",
     "Empty = no password, anyone may register. Set one before exposing the gateway to the internet, and enter the same password in your softphone." to "تركه فارغاً يعني عدم وجود كلمة مرور وإمكانية تسجيل أي شخص. عيّن كلمة مرور قبل إتاحة البوابة عبر الإنترنت، واستخدمها نفسها في تطبيق الاتصال.",
     "Cellular inbound -> SIP target (blank = username)" to "وجهة مكالمات الشريحة الواردة إلى SIP (فارغ = اسم المستخدم)",
     "Allowed dial-out prefixes (comma separated, empty = any)" to "بادئات الأرقام المسموح الاتصال بها عبر الشريحة (افصل بفواصل، فارغ = جميع الأرقام)"
