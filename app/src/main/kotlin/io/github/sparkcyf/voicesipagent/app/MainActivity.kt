@@ -333,7 +333,7 @@ private fun SettingsSection(rt: GatewayRuntime) {
             modifier = Modifier.fillMaxWidth(),
         )
         Field(t("معرّف حساب Telegram المسموح", "Allowed Telegram numeric user ID"), telegramAllowedUserId, KeyboardType.Number) {
-            telegramAllowedUserId = it.filter(Char::isDigit)
+            telegramAllowedUserId = it.filter { ch -> ch.isDigit() }
         }
         Text(t(
             "للعثور على المعرّف: افتح محادثة البوت المساعد الذي يعرض Telegram ID، ثم أدخل الرقم هنا. الأوامر لا تُقبل إلا من هذا الحساب وفي محادثة خاصة.",
