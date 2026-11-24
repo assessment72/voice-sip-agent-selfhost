@@ -296,6 +296,8 @@ private fun SettingsSection(rt: GatewayRuntime) {
     var bridgeUrl by remember(cur) { mutableStateOf(cur.controlBridgeUrl) }
     var bridgeDeviceId by remember(cur) { mutableStateOf(cur.controlBridgeDeviceId) }
     var bridgeToken by remember(cur) { mutableStateOf(cur.controlBridgeToken) }
+    var telegramBotToken by remember(cur) { mutableStateOf(cur.telegramBotToken) }
+    var telegramAllowedUserId by remember(cur) { mutableStateOf(if (cur.telegramAllowedUserId > 0) cur.telegramAllowedUserId.toString() else "") }
     val builtin = stack == SipStack.BUILTIN
 
     Section(t("Voicx Control API", "Voicx Control API")) {
@@ -315,6 +317,35 @@ private fun SettingsSection(rt: GatewayRuntime) {
         Button(onClick = { rt.updateControlBridgeSettings(bridgeUrl, bridgeDeviceId, bridgeToken) }) {
             Text(t("حفظ إعدادات Voicx", "Save Voicx settings"))
         }
+    }
+
+    Section(t("التحكم المباشر عبر Telegram", "Direct Telegram control")) {
+        Text(t(
+            "يرتبط هذا الهاتف مباشرة ببوت تيليجرام. أدخل رمز البوت ومعرّف حسابك الرقمي؛ لا يحتاج Termux أو خادماً وسيطاً. لا تشارك رمز البوت مع أحد.",
+            "This phone connects directly to your Telegram bot. Enter the bot token and your numeric Telegram user ID. No Termux or relay server is used. Never share the bot token."
+        ), style = MaterialTheme.typography.bodySmall)
+        OutlinedTextField(
+            value = telegramBotToken,
+            onValueChange = { telegramBotToken = it },
+            label = { Text(t("رمز البوت", "Bot token")) },
+            visualTransformation = PasswordVisualTransformation(),
+            singleLine = true,
+            modifier = Modifier.fillMaxWidth(),
+        )
+        Field(t("معرّف حساب Telegram المسموح", "Allowed Telegram numeric user ID"), telegramAllowedUserId, KeyboardType.Number) {
+            telegramAllowedUserId = it.filter(Char::isDigit)
+        }
+        Text(t(
+            "للعثور على المعرّف: افتح محادثة البوت المساعد الذي يعرض Telegram ID، ثم أدخل الرقم هنا. الأوامر لا تُقبل إلا من هذا الحساب وفي محادثة خاصة.",
+            "Get your numeric ID from a trusted Telegram ID helper bot. Commands are accepted only from this account in a private chat."
+        ), style = MaterialTheme.typography.bodySmall)
+        Button(onClick = { rt.updateTelegramBotSettings(telegramBotToken, telegramAllowedUserId) }) {
+            Text(t("حفظ اتصال Telegram", "Save Telegram connection"))
+        }
+        Text(t(
+            "الأوامر المتاحة: /start و /help و /status و /sip و /calls و /service_on و /service_off. إيقاف الخدمة لا يقطع مكالمة جارية.",
+            "Commands: /start, /help, /status, /sip, /calls, /service_on, /service_off. Stopping waits for an active call to finish."
+        ), style = MaterialTheme.typography.bodySmall)
     }
 
     Section(t("Настройки", "Settings")) {
