@@ -7,6 +7,23 @@ It is a design baseline, not a claim that the API or multi-device runtime has al
 been implemented. The existing SIP engine and current call behavior must remain intact
 until replacement paths pass device-level tests.
 
+## Android background persistence policy
+
+- The Android foreground gateway host is intended to remain running regardless of the
+  call-takeover switch. Disabling takeover disables SIP/call-bridge work, not the host
+  service or its persistent status notification.
+- The service returns `START_STICKY` and is started on boot and app replacement.
+  A partial CPU wake lock is held while the foreground host is active.
+- The app provides a shortcut to Android's battery-optimization settings. On HONOR,
+  users should set the app to unrestricted / allow background activity and enable
+  auto-launch where the firmware exposes that option.
+- Android does not permit an app to guarantee survival after a user force-stop,
+  Settings > Force stop, reboot-before-first-unlock restrictions, severe resource
+  pressure, or OEM task-killer policies. Reboot recovery and system restarts are
+  best-effort, not an absolute uptime guarantee.
+- The persistent notification is intentional and must not be hidden or removed while
+  the gateway host is expected to stay active.
+
 ## Target topology
 
 - One always-on **local bridge** is the control-plane host. It is not a VPS and does
