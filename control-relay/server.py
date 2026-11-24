@@ -9,6 +9,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import secrets
 import time
 import uuid
@@ -25,6 +26,13 @@ log = logging.getLogger("voicx-relay")
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
 ADMIN_IDS = {int(x) for x in os.getenv("TELEGRAM_ADMIN_IDS", "").split(",") if x.strip().isdigit()}
 DEVICE_TOKENS: dict[str, str] = json.loads(os.getenv("VOICX_DEVICES_JSON", "{}"))
+if not isinstance(DEVICE_TOKENS, dict) or len(DEVICE_TOKENS) > 20:
+    raise RuntimeError("VOICX_DEVICES_JSON must be an object with at most 20 devices")
+for _device_id, _token in DEVICE_TOKENS.items():
+    if not re.fullmatch(r"[A-Za-z0-9_-]{1,32}", _device_id):
+        raise RuntimeError("Device IDs must be 1-32 characters: letters, digits, _ or -")
+    if not isinstance(_token, str) or len(_token) < 32:
+        raise RuntimeError("Each device token must contain at least 32 characters")
 BIND = os.getenv("RELAY_BIND", "0.0.0.0")
 PORT = int(os.getenv("RELAY_PORT", "8765"))
 TELEGRAM_API = f"https://api.telegram.org/bot{BOT_TOKEN}" if BOT_TOKEN else ""
@@ -66,7 +74,7 @@ async def notify_admins(message: str, reply_markup: dict | None = None) -> None:
 
 def authorized_admin(update: dict[str, Any]) -> int | None:
     message = update.get("message") or update.get("callback_query", {}).get("message") or {}
-    sender = (update.get("message") or update.get("callback_query", {}).get("from") or {})
+    sender = (update.get("message", {}).get("from") or update.get("callback_query", {}).get("from") or {})
     user_id = sender.get("id")
     chat_id = (message.get("chat") or {}).get("id")
     if user_id in ADMIN_IDS and chat_id == user_id:
