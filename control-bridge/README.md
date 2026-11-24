@@ -15,13 +15,14 @@ Generate long random secrets (at least 32 characters each), then configure:
 ```bash
 export VOICX_ADMIN_TOKEN='replace-with-a-long-random-admin-secret'
 export VOICX_DEVICES='[{"id":"phone-01","name":"HONOR MTN-NX1","token":"replace-with-a-different-long-device-secret"}]'
+# Bind to loopback for local-only use; for handset access, bind to the host's private LAN/VPN IP.
 export HOST='127.0.0.1'
 export PORT='8787'
 export VOICX_STORE='./data/voicx-store.json'
 node server.mjs
 ```
 
-For a second device, add another object with a unique id and unique token. Never commit real tokens. Keep the service bound to loopback or a private VPN interface; do not expose it directly to the public internet. Use a private VPN/overlay for remote administration.
+For a second device, add another object with a unique id and unique token. Never commit real tokens. Android devices cannot reach a loopback-bound listener on the bridge host: for handset access, set `HOST` to the host's private LAN or VPN interface address and restrict the port with the host firewall. Do not expose it directly to the public internet. Use a private VPN/overlay for remote administration.
 
 ## Admin API
 
