@@ -22,9 +22,9 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 
-/** UI language. Pure presentation; stored as "ru"/"en" in settings. */
-enum class UiLang { RU, EN;
-    companion object { fun of(s: String?) = if (s == "en") EN else RU }
+/** UI language. Pure presentation; stored as "ru", "en", or "ar" in settings. */
+enum class UiLang { RU, EN, AR;
+    companion object { fun of(s: String?) = when (s) { "en" -> EN; "ar" -> AR; else -> RU } }
 }
 
 /**
@@ -37,8 +37,100 @@ enum class UiLang { RU, EN;
 @Volatile
 var currentUiLang: UiLang = UiLang.RU
 
+/** Arabic translations for the complete primary screen vocabulary. Technical protocol names stay standard. */
+private val arabicUi = mapOf(
+    "Takeover" to "إدارة المكالمات", "Take over calls" to "تحويل المكالمات",
+    "Turning off after the current call" to "سيتم الإيقاف بعد انتهاء المكالمة الحالية",
+    "Turning on after current calls end" to "سيتم التشغيل بعد انتهاء المكالمات الحالية",
+    "Changing the default dialer" to "جارٍ تغيير تطبيق الهاتف الافتراضي",
+    "Waiting to become the default dialer" to "بانتظار تعيين التطبيق هاتفاً افتراضياً",
+    "Waiting to restore your previous dialer" to "بانتظار استعادة تطبيق الهاتف السابق",
+    "Calls are bridged to the PBX" to "تم ربط المكالمات بمقسم SIP",
+    "Gateway off; keeping the default-dialer role" to "البوابة متوقفة؛ مع الاحتفاظ بدور تطبيق الهاتف الافتراضي",
+    "Gateway off; dialer restoration needs attention" to "البوابة متوقفة؛ يلزم استعادة تطبيق الهاتف",
+    "Gateway off; calls stay with your dialer" to "البوابة متوقفة؛ المكالمات على تطبيق الهاتف المعتاد",
+    "Settings will apply after current calls end" to "سيتم تطبيق الإعدادات بعد انتهاء المكالمات الحالية",
+    "Background operation" to "العمل في الخلفية",
+    "Battery optimization settings" to "إعدادات تحسين استهلاك البطارية",
+    "Health" to "الحالة",
+    "Call access" to "صلاحية المكالمات",
+    "Default dialer" to "تطبيق الهاتف الافتراضي",
+    "Alongside your dialer" to "بجانب تطبيق الهاتف",
+    "Call audio access" to "الوصول إلى صوت المكالمة",
+    "Doze allowlisted" to "مستثنى من وضع توفير الطاقة",
+    "SIP registration" to "تسجيل SIP",
+    "Enable takeover" to "تفعيل تحويل المكالمات",
+    "Default dialer selection is unavailable on this device." to "اختيار تطبيق الهاتف الافتراضي غير متاح على هذا الجهاز.",
+    "Restore previous dialer" to "استعادة تطبيق الهاتف السابق",
+    "Choose dialer in Settings" to "اختر تطبيق الهاتف من الإعدادات",
+    "Cancel dialer change" to "إلغاء تغيير تطبيق الهاتف",
+    "Grant Shizuku" to "منح صلاحية Shizuku",
+    "Re-run setup" to "إعادة الإعداد",
+    "Re-register" to "إعادة التسجيل",
+    "Call" to "مكالمة",
+    "No active session" to "لا توجد جلسة نشطة",
+    "Application log" to "سجل تشغيل التطبيق",
+    "Copy log" to "نسخ السجل",
+    "Share application log" to "مشاركة سجل التطبيق",
+    "Share log" to "مشاركة السجل",
+    "Hide advanced settings" to "إخفاء الإعدادات المتقدمة",
+    "Advanced settings" to "الإعدادات المتقدمة",
+    "Platform integration" to "تكامل النظام",
+    "Automatic" to "تلقائي",
+    "Keep default-dialer role when gateway is off" to "الاحتفاظ بدور تطبيق الهاتف الافتراضي عند إيقاف البوابة",
+    "Restore manually below when needed." to "يمكن الاستعادة يدوياً من الأسفل عند الحاجة.",
+    "Become default dialer" to "تعيين التطبيق كهاتف افتراضي",
+    "Cellular audio" to "صوت شبكة الهاتف",
+    "Direct telephony" to "المسار الهاتفي المباشر",
+    "Call redirection" to "إعادة توجيه المكالمة",
+    "Mute local call output" to "كتم صوت المكالمة على هذا الهاتف",
+    "Loopback test (echo inbound calls)" to "اختبار الصدى للمكالمات الواردة",
+    "Debug log" to "سجل التشخيص",
+    "Diagnostics" to "التشخيص",
+    "Waiting for helper" to "بانتظار المساعد",
+    "♡ Support development (optional)" to "♡ دعم التطوير (اختياري)",
+    "Help & FAQ" to "المساعدة والأسئلة الشائعة",
+    "Hide" to "إخفاء",
+    "Show help / recommended clients" to "عرض المساعدة والتطبيقات المقترحة",
+    "Voicx Control API" to "واجهة تحكم Voicx",
+    "Bridge HTTPS URL" to "عنوان جسر HTTPS",
+    "This phone's device ID" to "معرّف هذا الهاتف",
+    "Device token (at least 32 characters)" to "رمز الجهاز (32 حرفاً على الأقل)",
+    "Save Voicx settings" to "حفظ إعدادات Voicx",
+    "Direct Telegram control" to "التحكم المباشر عبر Telegram",
+    "Bot token" to "رمز البوت",
+    "Allowed Telegram numeric user ID" to "معرّف مستخدم Telegram المسموح",
+    "Save Telegram connection" to "حفظ اتصال Telegram",
+    "Settings" to "الإعدادات",
+    "Device-in-itself mode (built-in SIP server)" to "وضع الخادم المدمج (خادم SIP داخل الهاتف)",
+    "Local SIP port (registrar listens here)" to "منفذ SIP المحلي",
+    "Registration lease (sec)" to "مدة صلاحية التسجيل (ثانية)",
+    "Softphone password (registrar auth)" to "كلمة مرور تطبيق الاتصال",
+    "SIP stack" to "محرك SIP",
+    "Transport" to "بروتوكول النقل",
+    "SRTP (TLS only)" to "تشفير SRTP (يتطلب TLS)",
+    "External PBX (optional in device-in-itself mode)" to "مقسم SIP خارجي (اختياري في وضع الخادم المدمج)",
+    "External PBX" to "مقسم SIP خارجي",
+    "PBX host" to "عنوان مقسم SIP",
+    "PBX port" to "منفذ مقسم SIP",
+    "SIP domain (empty = PBX host)" to "نطاق SIP (فارغ = عنوان المقسم)",
+    "Extension / user" to "الرقم الداخلي / المستخدم",
+    "Password" to "كلمة المرور",
+    "Second call while busy" to "مكالمة ثانية أثناء الانشغال",
+    "Reject" to "رفض",
+    "Leave to phone" to "اتركها لتطبيق الهاتف",
+    "Save & apply" to "حفظ وتطبيق",
+    "Unavailable with the current platform or audio method" to "غير متاح مع النظام أو طريقة الصوت الحالية",
+    "Waiting for helper" to "بانتظار المساعد",
+    "Show help / recommended clients" to "عرض المساعدة والتطبيقات المقترحة"
+)
+
 /** Pick the string for the current UI language. Safe to call anywhere. */
-fun t(ru: String, en: String): String = if (currentUiLang == UiLang.RU) ru else en
+fun t(ru: String, en: String): String = when (currentUiLang) {
+    UiLang.RU -> ru
+    UiLang.EN -> en
+    UiLang.AR -> arabicUi[en] ?: en
+}
 
 /**
  * A small "ⓘ" affordance next to a label. Tapping it opens a dialog that explains, in the current
