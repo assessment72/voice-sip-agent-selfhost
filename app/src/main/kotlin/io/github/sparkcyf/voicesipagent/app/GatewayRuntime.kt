@@ -695,6 +695,18 @@ class GatewayRuntime private constructor(context: Context) {
         AppLog.i(if (cleanUrl.isEmpty()) "Voicx remote control disabled" else "Voicx bridge settings saved")
     }
 
+    /** Saves the direct Telegram bot credential without changing SIP or takeover state. */
+    fun updateTelegramBotToken(token: String) = worker.execute {
+        val clean = token.trim()
+        require(clean.isEmpty() || (clean.length >= 30 && Regex("^[0-9]+:[A-Za-z0-9_-]+$").matches(clean))) {
+            "Invalid Telegram bot token format"
+        }
+        val updated = settings.copy(telegramBotToken = clean)
+        settingsStore.save(updated)
+        _settings.value = updated
+        AppLog.i(if (clean.isEmpty()) "Telegram control disabled" else "Telegram bot credential saved")
+    }
+
     fun applySettings(new: GatewaySettings) = worker.execute {
         require(new.audioMethod in 0..2 && new.callAccess in 0..2) { "unknown platform setting" }
         if (hasActiveWork()) {
