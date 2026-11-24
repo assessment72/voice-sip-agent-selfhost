@@ -61,6 +61,7 @@ class GatewayService : Service() {
     override fun onCreate() {
         super.onCreate()
         val runtime = GatewayRuntime.get(this)
+        telegramUpdateOffset = SettingsStore(this).loadTelegramUpdateOffset()
         runtime.start()
         runtime.onServiceCreated(runtimeToken)
         ContextCompat.registerReceiver(this, roleReceiver,
@@ -247,6 +248,7 @@ class GatewayService : Service() {
                     val updates = withContext(Dispatchers.IO) { client.poll(telegramUpdateOffset) }
                     for (update in updates) {
                         telegramUpdateOffset = maxOf(telegramUpdateOffset, update.updateId + 1L)
+                        SettingsStore(this@GatewayService).saveTelegramUpdateOffset(telegramUpdateOffset)
                         if (!update.privateChat || update.senderId != allowedUserId) continue
                         val command = update.text.substringBefore(' ').substringBefore('@').lowercase()
                         val reply = try {
