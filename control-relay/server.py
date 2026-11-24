@@ -96,10 +96,15 @@ async def handle_update(update: dict[str, Any]) -> None:
     if callback:
         data = callback.get("data", "")
         await tg("answerCallbackQuery", {"callback_query_id": callback["id"]})
-        parts = data.split(":", 1)
-        if len(parts) == 2 and parts[0] in {"status", "gateway_start", "gateway_stop"}:
-            result = await command_device(parts[1], parts[0], admin_id)
+        parts = data.split(":")
+        if len(parts) == 3 and parts[0] == "confirm" and parts[1] in {"gateway_start", "gateway_stop"}:
+            result = await command_device(parts[2], parts[1], admin_id)
             await tg("sendMessage", {"chat_id": admin_id, "text": result})
+        elif len(parts) == 2 and parts[0] == "status":
+            result = await command_device(parts[1], "status", admin_id)
+            await tg("sendMessage", {"chat_id": admin_id, "text": result})
+        elif parts and parts[0] == "cancel":
+            await tg("sendMessage", {"chat_id": admin_id, "text": "تم إلغاء الأمر."})
         return
     message = update.get("message", {})
     text = (message.get("text") or "").strip()
@@ -121,8 +126,17 @@ async def handle_update(update: dict[str, Any]) -> None:
         if not device_id or device_id not in DEVICE_TOKENS:
             await tg("sendMessage", {"chat_id": admin_id, "text": "معرّف الجهاز غير معروف."})
             return
-        result = await command_device(device_id, action, admin_id)
-        await tg("sendMessage", {"chat_id": admin_id, "text": result})
+        if action == "status":
+            result = await command_device(device_id, action, admin_id)
+            await tg("sendMessage", {"chat_id": admin_id, "text": result})
+        else:
+            verb = "تشغيل" if action == "gateway_start" else "إيقاف"
+            await tg("sendMessage", {"chat_id": admin_id,
+                "text": f"تأكيد {verb} خدمة البوابة على الجهاز {device_id}؟",
+                "reply_markup": {"inline_keyboard": [[
+                    {"text": "تأكيد", "callback_data": f"confirm:{action}:{device_id}"},
+                    {"text": "إلغاء", "callback_data": f"cancel:{device_id}"}
+                ]]}})
     else:
         await tg("sendMessage", {"chat_id": admin_id, "text": "أمر غير معروف. الأوامر: /devices أو /status DEVICE أو /start_device DEVICE أو /stop_device DEVICE."})
 
