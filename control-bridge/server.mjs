@@ -281,6 +281,11 @@ const server = http.createServer(async (req, res) => {
       if (b.error != null) c.error = String(b.error).slice(0, 500);
       audit("command.result", id, { commandId, status: c.status });
       await save();
+      if (c.telegramChatId && b.status !== "running") {
+        const outcome = b.status === "succeeded" ? "اكتمل الأمر بنجاح" : "فشل تنفيذ الأمر";
+        const details = c.result ? String(c.result).slice(0, 1200) : String(b.error || "");
+        telegramMessage(c.telegramChatId, outcome + " على " + id + ".\\n" + details).catch(() => {});
+      }
       return json(res, 200, { ok: true });
     }
 
@@ -295,13 +300,8 @@ const server = http.createServer(async (req, res) => {
         const old = state.commands.find(c => c.deviceId === b.deviceId && c.idempotencyKey === idem);
         if (old) return json(res, 200, { command: old, reused: true });
       }
-      const c = { id: randomUUID(), deviceId: b.deviceId, type: b.type,
-        payload: b.type === "audio.set" ? b.payload : {},
-        status: "queued", createdAt: new Date().toISOString(),
-        expiresAt: new Date(Date.now() + COMMAND_TTL_MS).toISOString(), idempotencyKey: idem };
-      state.commands.push(c);
-      if (state.commands.length > 5000) state.commands.splice(0, state.commands.length - 5000);
-      audit("command.queued", "api-client", { commandId: c.id, deviceId: c.deviceId, type: c.type });
+      const c = queueCommand(b.deviceId, b.type, b.type === "audio.set" ? b.payload : {}, null);
+      c.idempotencyKey = idem;
       await save();
       return json(res, 202, { command: c });
     }
@@ -331,4 +331,5 @@ const server = http.createServer(async (req, res) => {
 
 server.listen(PORT, HOST, () => {
   console.log(`Voicx Control Bridge listening on http://${HOST}:${PORT}`);
+  void telegramPoll();
 });
