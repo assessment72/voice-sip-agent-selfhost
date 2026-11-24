@@ -60,6 +60,12 @@ data class GatewaySettings(
     val hostedDeviceId: String = "",
     /** Organization assigned by enrollment; not a credential. */
     val hostedOrganizationId: String = "",
+    /** Local Voicx relay WebSocket URL. */
+    val relayUrl: String = "",
+    /** Stable local device identity, not a credential. */
+    val relayDeviceId: String = "",
+    /** Per-device relay bearer secret, sealed with Android Keystore. */
+    val relayDeviceToken: String = "",
     val busyPolicy: BusyPolicy = BusyPolicy.REJECT,
     val audioMethod: Int = AudioMethod.AUTO,
     val callAccess: Int = CallAccess.AUTO,
@@ -132,6 +138,9 @@ class SettingsStore(context: Context) {
         hostedDeviceToken = prefs.getString("hosted_device_token_sealed", null)?.let { unsealWithAlias(it, HOSTED_KEY_ALIAS) }.orEmpty(),
         hostedDeviceId = prefs.getString("hosted_device_id", "").orEmpty(),
         hostedOrganizationId = prefs.getString("hosted_organization_id", "").orEmpty(),
+        relayUrl = prefs.getString("relay_url", "").orEmpty(),
+        relayDeviceId = prefs.getString("relay_device_id", "").orEmpty(),
+        relayDeviceToken = prefs.getString("relay_device_token_sealed", null)?.let { unsealWithAlias(it, RELAY_KEY_ALIAS) }.orEmpty(),
         busyPolicy = runCatching { BusyPolicy.valueOf(prefs.getString("busy_policy", "REJECT")!!) }.getOrDefault(BusyPolicy.REJECT),
         audioMethod = prefs.getInt("audio_method", AudioMethod.AUTO).takeIf { it in 0..2 } ?: AudioMethod.AUTO,
         callAccess = prefs.getInt("call_access", CallAccess.AUTO).takeIf { it in 0..2 } ?: CallAccess.AUTO,
@@ -169,6 +178,9 @@ class SettingsStore(context: Context) {
             .putString("hosted_device_token_sealed", sealWithAlias(s.hostedDeviceToken, HOSTED_KEY_ALIAS))
             .putString("hosted_device_id", s.hostedDeviceId)
             .putString("hosted_organization_id", s.hostedOrganizationId)
+            .putString("relay_url", s.relayUrl.trim())
+            .putString("relay_device_id", s.relayDeviceId.trim())
+            .putString("relay_device_token_sealed", sealWithAlias(s.relayDeviceToken, RELAY_KEY_ALIAS))
             .putString("busy_policy", s.busyPolicy.name)
             .putInt("audio_method", s.audioMethod)
             .putInt("call_access", s.callAccess)
@@ -184,6 +196,14 @@ class SettingsStore(context: Context) {
         val created = java.util.UUID.randomUUID().toString()
         prefs.edit().putString("hosted_external_device_id", created).commit()
         return prefs.getString("hosted_external_device_id", created) ?: created
+    }
+
+    /** Stable identifier used to map this installation to one relay-side device entry. */
+    fun getOrCreateRelayDeviceId(): String {
+        prefs.getString("relay_device_id", null)?.takeIf { it.isNotBlank() }?.let { return it }
+        val created = "phone-" + java.util.UUID.randomUUID().toString().take(8)
+        prefs.edit().putString("relay_device_id", created).commit()
+        return created
     }
 
     private fun key(alias: String = KEY_ALIAS): SecretKey {
@@ -223,5 +243,6 @@ class SettingsStore(context: Context) {
     companion object {
         private const val KEY_ALIAS = "sip-password"
         private const val HOSTED_KEY_ALIAS = "hosted-api-device-token"
+        private const val RELAY_KEY_ALIAS = "voicx-local-relay-device-token"
     }
 }
