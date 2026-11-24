@@ -159,6 +159,13 @@ class SettingsStore(context: Context) {
             .apply()
     }
 
+    fun loadTelegramUpdateOffset(): Long =
+        prefs.getLong("telegram_update_offset", 0L).coerceAtLeast(0L)
+
+    fun saveTelegramUpdateOffset(offset: Long) {
+        if (offset >= 0L) prefs.edit().putLong("telegram_update_offset", offset).apply()
+    }
+
     private fun key(): SecretKey {
         val ks = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
         (ks.getKey(KEY_ALIAS, null) as? SecretKey)?.let { return it }
