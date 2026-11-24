@@ -64,7 +64,8 @@ class ControlRelayService : Service() {
     }
 
     private fun validSettings(s: GatewaySettings): Boolean {
-        val urlOk = s.relayUrl.startsWith("ws://", true) || s.relayUrl.startsWith("wss://", true)
+        val urlOk = (s.relayUrl.startsWith("ws://", true) || s.relayUrl.startsWith("wss://", true)) &&
+            runCatching { java.net.URI(s.relayUrl).host?.isNotBlank() == true }.getOrDefault(false)
         return urlOk && s.relayDeviceId.isNotBlank() && s.relayDeviceToken.length >= 32
     }
 
@@ -98,11 +99,12 @@ class ControlRelayService : Service() {
             if (!validSettings(settings)) return
             val opened = CompletableDeferred<Unit>()
             val closed = CompletableDeferred<Unit>()
-            val request = Request.Builder()
-                .url(deviceWebSocketUrl(settings.relayUrl, settings.relayDeviceId))
-                .header("Authorization", "Bearer ${settings.relayDeviceToken}")
-                .build()
-            socket = client.newWebSocket(request, object : WebSocketListener() {
+            val ws = try {
+                val request = Request.Builder()
+                    .url(deviceWebSocketUrl(settings.relayUrl, settings.relayDeviceId))
+                    .header("Authorization", "Bearer ${settings.relayDeviceToken}")
+                    .build()
+                client.newWebSocket(request, object : WebSocketListener() {
                 override fun onOpen(webSocket: WebSocket, response: Response) {
                     backoffSeconds = 2L
                     sendHeartbeat(webSocket)
@@ -125,6 +127,15 @@ class ControlRelayService : Service() {
                     AppLog.w("local control relay connection failed", t)
                 }
             })
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                AppLog.w("could not create local relay WebSocket", e)
+                delay(backoffSeconds * 1_000)
+                backoffSeconds = min(backoffSeconds * 2, 60L)
+                continue
+            }
+            socket = ws
             try {
                 opened.await()
                 val heartbeatJob = scope.launch {
