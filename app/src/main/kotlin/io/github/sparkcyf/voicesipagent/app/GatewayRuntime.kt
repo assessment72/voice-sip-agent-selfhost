@@ -703,6 +703,7 @@ class GatewayRuntime private constructor(context: Context) {
         }
         val allowedId = allowedUserId.trim().toLongOrNull()?.takeIf { it > 0 } ?: 0L
         require(clean.isEmpty() || allowedId > 0) { "Enter the numeric Telegram user ID allowed to control this phone" }
+        if (settings.telegramBotToken != clean) settingsStore.saveTelegramUpdateOffset(0L)
         val updated = settings.copy(telegramBotToken = clean, telegramAllowedUserId = if (clean.isEmpty()) 0L else allowedId)
         settingsStore.save(updated)
         _settings.value = updated
