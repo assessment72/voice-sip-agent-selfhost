@@ -62,6 +62,8 @@ data class GatewaySettings(
     val controlBridgeToken: String = "",
     /** Optional direct Telegram Bot API control; encrypted with Android Keystore. */
     val telegramBotToken: String = "",
+    /** Telegram numeric user ID allowed to issue private-chat commands; zero disables control. */
+    val telegramAllowedUserId: Long = 0L,
     /** UI language: "ru" or "en". Pure UI preference, no SIP restart. */
     val uiLanguage: String = "ru",
 ) {
@@ -119,6 +121,7 @@ class SettingsStore(context: Context) {
         controlBridgeDeviceId = prefs.getString("control_bridge_device_id", "")!!,
         controlBridgeToken = prefs.getString("control_bridge_token_sealed", null)?.let(::unseal).orEmpty(),
         telegramBotToken = prefs.getString("telegram_bot_token_sealed", null)?.let(::unseal).orEmpty(),
+        telegramAllowedUserId = prefs.getLong("telegram_allowed_user_id", 0L).takeIf { it > 0 } ?: 0L,
         // First run (key absent): default to the system language — Russian locale → "ru",
         // anything else → "en". Once the user picks a language it is saved and always wins.
         uiLanguage = prefs.getString("ui_lang", null) ?: systemDefaultUiLang(),
@@ -151,6 +154,7 @@ class SettingsStore(context: Context) {
             .putString("control_bridge_device_id", s.controlBridgeDeviceId.trim())
             .putString("control_bridge_token_sealed", seal(s.controlBridgeToken))
             .putString("telegram_bot_token_sealed", seal(s.telegramBotToken))
+            .putLong("telegram_allowed_user_id", s.telegramAllowedUserId)
             .putString("ui_lang", s.uiLanguage)
             .apply()
     }
