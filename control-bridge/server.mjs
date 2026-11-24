@@ -135,6 +135,10 @@ async function telegramQueueCommand(chatId, deviceId, type) {
     await telegramMessage(chatId, "معرّف الجهاز غير موجود في إعدادات الوسيط.");
     return;
   }
+  if (!publicDevice(deviceId, state.devices[deviceId]).online) {
+    await telegramMessage(chatId, "الجهاز " + deviceId + " غير متصل حالياً؛ لم أرسل الأمر.");
+    return;
+  }
   const command = queueCommand(deviceId, type, {}, String(chatId));
   await save();
   await telegramMessage(chatId, "تم إرسال الأمر " + type + " إلى " + deviceId + ". رقم المتابعة: " + command.id.slice(0, 8));
@@ -260,10 +264,37 @@ const server = http.createServer(async (req, res) => {
       const id = decodeURIComponent(m[1]);
       if (!authDevice(req, id)) return json(res, 401, { error: "unauthorized" });
       const now = Date.now();
-      for (const c of state.commands) if (c.deviceId === id && c.status === "queued" && Date.parse(c.expiresAt) <= now) c.status = "expired";
+      let changed = false;
+      for (const c of state.commands) {
+        if (c.deviceId !== id) continue;
+        if (["delivered", "running"].includes(c.status)) {
+          const lastAttempt = Date.parse(c.updatedAt || c.deliveredAt || c.createdAt);
+          if (now - lastAttempt > 30_000) {
+            if (Date.parse(c.expiresAt) <= now || (c.deliveryAttempts || 0) >= 3) {
+              c.status = Date.parse(c.expiresAt) <= now ? "expired" : "failed";
+              c.error = "device_delivery_timeout";
+              c.updatedAt = new Date().toISOString();
+            } else {
+              c.status = "queued";
+              delete c.deliveredAt;
+            }
+            changed = true;
+          }
+        }
+        if (c.status === "queued" && Date.parse(c.expiresAt) <= now) {
+          c.status = "expired";
+          c.updatedAt = new Date().toISOString();
+          changed = true;
+        }
+      }
       const pending = state.commands.filter(c => c.deviceId === id && c.status === "queued" && Date.parse(c.expiresAt) > now).slice(0, 10);
-      for (const c of pending) { c.status = "delivered"; c.deliveredAt = new Date().toISOString(); }
-      if (pending.length) { audit("command.delivered", id, { commandIds: pending.map(c => c.id) }); await save(); }
+      for (const c of pending) {
+        c.status = "delivered";
+        c.deliveredAt = new Date().toISOString();
+        c.deliveryAttempts = (c.deliveryAttempts || 0) + 1;
+      }
+      if (pending.length) audit("command.delivered", id, { commandIds: pending.map(c => c.id) });
+      if (changed || pending.length) await save();
       return json(res, 200, { commands: pending });
     }
 
