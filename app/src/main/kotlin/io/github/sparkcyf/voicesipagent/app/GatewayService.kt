@@ -143,8 +143,9 @@ class GatewayService : Service() {
     }
 
     /**
-     * Reports telemetry only. Command polling/execution is deliberately not connected until
-     * a reviewed Android runtime adapter exists for every allow-listed command.
+     * Keeps the authenticated control-plane heartbeat and bounded command poller active.
+     * Only service.status/start/stop are accepted by executeControlCommand; no SIP call action
+     * or arbitrary command is exposed through this bridge.
      */
     private fun syncControlBridge(settings: GatewaySettings) {
         val runtime = GatewayRuntime.get(this)
