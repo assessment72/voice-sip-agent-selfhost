@@ -2,6 +2,8 @@ package io.github.sparkcyf.voicesipagent.app
 
 import android.os.Bundle
 import android.content.Intent
+import android.content.ClipData
+import android.content.ClipboardManager
 import android.os.Build
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.layout.Arrangement
@@ -44,6 +46,9 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalLayoutDirection
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.platform.LocalContext
@@ -81,6 +86,7 @@ private fun Screen(rt: GatewayRuntime, modifier: Modifier, requestDialer: () -> 
     val log by AppLog.tail.collectAsState()
     val cur by rt.settingsFlow.collectAsState()
     currentUiLang = UiLang.of(cur.uiLanguage)
+    CompositionLocalProvider(LocalLayoutDirection provides if (currentUiLang == UiLang.AR) LayoutDirection.Rtl else LayoutDirection.Ltr) {
     Column(
         modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
@@ -91,6 +97,7 @@ private fun Screen(rt: GatewayRuntime, modifier: Modifier, requestDialer: () -> 
                 val lang = UiLang.of(cur.uiLanguage)
                 TextButton(onClick = { rt.setUiLanguage("ru") }, enabled = lang != UiLang.RU) { Text("РУ") }
                 TextButton(onClick = { rt.setUiLanguage("en") }, enabled = lang != UiLang.EN) { Text("EN") }
+                TextButton(onClick = { rt.setUiLanguage("ar") }, enabled = lang != UiLang.AR) { Text("ع") }
                 InfoButton("language")
             }
         }
@@ -167,7 +174,23 @@ private fun Screen(rt: GatewayRuntime, modifier: Modifier, requestDialer: () -> 
             Text(h.session ?: t("Нет активной сессии", "No active session"))
         }
         SettingsSection(rt)
-        Section(t("Журнал", "Log")) {
+        Section(t("سجل تشغيل التطبيق", "Application log")) {
+            val context = LocalContext.current
+            val logText = log.joinToString("\n")
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedButton(onClick = {
+                    val clipboard = context.getSystemService(android.content.Context.CLIPBOARD_SERVICE) as ClipboardManager
+                    clipboard.setPrimaryClip(ClipData.newPlainText("Voicx application log", logText))
+                }, enabled = log.isNotEmpty()) { Text(t("نسخ السجل", "Copy log")) }
+                OutlinedButton(onClick = {
+                    val send = Intent(Intent.ACTION_SEND).apply {
+                        type = "text/plain"
+                        putExtra(Intent.EXTRA_SUBJECT, "Voicx application log")
+                        putExtra(Intent.EXTRA_TEXT, logText)
+                    }
+                    context.startActivity(Intent.createChooser(send, t("مشاركة سجل التشغيل", "Share application log")))
+                }, enabled = log.isNotEmpty()) { Text(t("مشاركة السجل", "Share log")) }
+            }
             Text(log.takeLast(60).reversed().joinToString("\n"), fontFamily = FontFamily.Monospace,
                 fontSize = 11.sp, lineHeight = 14.sp)
         }
@@ -227,6 +250,7 @@ private fun Screen(rt: GatewayRuntime, modifier: Modifier, requestDialer: () -> 
         }
         FaqSection()
         DonateFooter()
+    }
     }
 }
 
@@ -296,6 +320,8 @@ private fun SettingsSection(rt: GatewayRuntime) {
     var bridgeUrl by remember(cur) { mutableStateOf(cur.controlBridgeUrl) }
     var bridgeDeviceId by remember(cur) { mutableStateOf(cur.controlBridgeDeviceId) }
     var bridgeToken by remember(cur) { mutableStateOf(cur.controlBridgeToken) }
+    var telegramBotToken by remember(cur) { mutableStateOf(cur.telegramBotToken) }
+    var telegramAllowedUserId by remember(cur) { mutableStateOf(if (cur.telegramAllowedUserId > 0) cur.telegramAllowedUserId.toString() else "") }
     val builtin = stack == SipStack.BUILTIN
 
     Section(t("Voicx Control API", "Voicx Control API")) {
@@ -315,6 +341,35 @@ private fun SettingsSection(rt: GatewayRuntime) {
         Button(onClick = { rt.updateControlBridgeSettings(bridgeUrl, bridgeDeviceId, bridgeToken) }) {
             Text(t("حفظ إعدادات Voicx", "Save Voicx settings"))
         }
+    }
+
+    Section(t("التحكم المباشر عبر Telegram", "Direct Telegram control")) {
+        Text(t(
+            "يرتبط هذا الهاتف مباشرة ببوت تيليجرام. أدخل رمز البوت ومعرّف حسابك الرقمي؛ لا يحتاج Termux أو خادماً وسيطاً. لا تشارك رمز البوت مع أحد.",
+            "This phone connects directly to your Telegram bot. Enter the bot token and your numeric Telegram user ID. No Termux or relay server is used. Never share the bot token."
+        ), style = MaterialTheme.typography.bodySmall)
+        OutlinedTextField(
+            value = telegramBotToken,
+            onValueChange = { telegramBotToken = it },
+            label = { Text(t("رمز البوت", "Bot token")) },
+            visualTransformation = PasswordVisualTransformation(),
+            singleLine = true,
+            modifier = Modifier.fillMaxWidth(),
+        )
+        Field(t("معرّف حساب Telegram المسموح", "Allowed Telegram numeric user ID"), telegramAllowedUserId, KeyboardType.Number) {
+            telegramAllowedUserId = it.filter { ch -> ch.isDigit() }
+        }
+        Text(t(
+            "للعثور على المعرّف: افتح محادثة البوت المساعد الذي يعرض Telegram ID، ثم أدخل الرقم هنا. الأوامر لا تُقبل إلا من هذا الحساب وفي محادثة خاصة.",
+            "Get your numeric ID from a trusted Telegram ID helper bot. Commands are accepted only from this account in a private chat."
+        ), style = MaterialTheme.typography.bodySmall)
+        Button(onClick = { rt.updateTelegramBotSettings(telegramBotToken, telegramAllowedUserId) }) {
+            Text(t("حفظ اتصال Telegram", "Save Telegram connection"))
+        }
+        Text(t(
+            "الأوامر المتاحة: /start و /help و /status و /sip و /calls و /service_on و /service_off. إيقاف الخدمة لا يقطع مكالمة جارية.",
+            "Commands: /start, /help, /status, /sip, /calls, /service_on, /service_off. Stopping waits for an active call to finish."
+        ), style = MaterialTheme.typography.bodySmall)
     }
 
     Section(t("Настройки", "Settings")) {

@@ -22,9 +22,9 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 
-/** UI language. Pure presentation; stored as "ru"/"en" in settings. */
-enum class UiLang { RU, EN;
-    companion object { fun of(s: String?) = if (s == "en") EN else RU }
+/** UI language. Pure presentation; stored as "ru", "en", or "ar" in settings. */
+enum class UiLang { RU, EN, AR;
+    companion object { fun of(s: String?) = when (s) { "en" -> EN; "ar" -> AR; else -> RU } }
 }
 
 /**
@@ -37,8 +37,119 @@ enum class UiLang { RU, EN;
 @Volatile
 var currentUiLang: UiLang = UiLang.RU
 
+/** Arabic translations for the complete primary screen vocabulary. Technical protocol names stay standard. */
+private val arabicUi = mapOf(
+    "Takeover" to "إدارة المكالمات", "Take over calls" to "تحويل المكالمات",
+    "Turning off after the current call" to "سيتم الإيقاف بعد انتهاء المكالمة الحالية",
+    "Turning on after current calls end" to "سيتم التشغيل بعد انتهاء المكالمات الحالية",
+    "Changing the default dialer" to "جارٍ تغيير تطبيق الهاتف الافتراضي",
+    "Waiting to become the default dialer" to "بانتظار تعيين التطبيق هاتفاً افتراضياً",
+    "Waiting to restore your previous dialer" to "بانتظار استعادة تطبيق الهاتف السابق",
+    "Calls are bridged to the PBX" to "تم ربط المكالمات بمقسم SIP",
+    "Gateway off; keeping the default-dialer role" to "البوابة متوقفة؛ مع الاحتفاظ بدور تطبيق الهاتف الافتراضي",
+    "Gateway off; dialer restoration needs attention" to "البوابة متوقفة؛ يلزم استعادة تطبيق الهاتف",
+    "Gateway off; calls stay with your dialer" to "البوابة متوقفة؛ المكالمات على تطبيق الهاتف المعتاد",
+    "Settings will apply after current calls end" to "سيتم تطبيق الإعدادات بعد انتهاء المكالمات الحالية",
+    "Background operation" to "العمل في الخلفية",
+    "Battery optimization settings" to "إعدادات تحسين استهلاك البطارية",
+    "Health" to "الحالة",
+    "Call access" to "صلاحية المكالمات",
+    "Default dialer" to "تطبيق الهاتف الافتراضي",
+    "Alongside your dialer" to "بجانب تطبيق الهاتف",
+    "Call audio access" to "الوصول إلى صوت المكالمة",
+    "Doze allowlisted" to "مستثنى من وضع توفير الطاقة",
+    "SIP registration" to "تسجيل SIP",
+    "Enable takeover" to "تفعيل تحويل المكالمات",
+    "Default dialer selection is unavailable on this device." to "اختيار تطبيق الهاتف الافتراضي غير متاح على هذا الجهاز.",
+    "Restore previous dialer" to "استعادة تطبيق الهاتف السابق",
+    "Choose dialer in Settings" to "اختر تطبيق الهاتف من الإعدادات",
+    "Cancel dialer change" to "إلغاء تغيير تطبيق الهاتف",
+    "Grant Shizuku" to "منح صلاحية Shizuku",
+    "Re-run setup" to "إعادة الإعداد",
+    "Re-register" to "إعادة التسجيل",
+    "Call" to "مكالمة",
+    "No active session" to "لا توجد جلسة نشطة",
+    "Application log" to "سجل تشغيل التطبيق",
+    "Copy log" to "نسخ السجل",
+    "Share application log" to "مشاركة سجل التطبيق",
+    "Share log" to "مشاركة السجل",
+    "Hide advanced settings" to "إخفاء الإعدادات المتقدمة",
+    "Advanced settings" to "الإعدادات المتقدمة",
+    "Platform integration" to "تكامل النظام",
+    "Automatic" to "تلقائي",
+    "Keep default-dialer role when gateway is off" to "الاحتفاظ بدور تطبيق الهاتف الافتراضي عند إيقاف البوابة",
+    "Restore manually below when needed." to "يمكن الاستعادة يدوياً من الأسفل عند الحاجة.",
+    "Become default dialer" to "تعيين التطبيق كهاتف افتراضي",
+    "Cellular audio" to "صوت شبكة الهاتف",
+    "Direct telephony" to "المسار الهاتفي المباشر",
+    "Call redirection" to "إعادة توجيه المكالمة",
+    "Mute local call output" to "كتم صوت المكالمة على هذا الهاتف",
+    "Loopback test (echo inbound calls)" to "اختبار الصدى للمكالمات الواردة",
+    "Debug log" to "سجل التشخيص",
+    "Diagnostics" to "التشخيص",
+    "Waiting for helper" to "بانتظار المساعد",
+    "♡ Support development (optional)" to "♡ دعم التطوير (اختياري)",
+    "Help & FAQ" to "المساعدة والأسئلة الشائعة",
+    "Hide" to "إخفاء",
+    "Show help / recommended clients" to "عرض المساعدة والتطبيقات المقترحة",
+    "Voicx Control API" to "واجهة تحكم Voicx",
+    "Bridge HTTPS URL" to "عنوان جسر HTTPS",
+    "This phone's device ID" to "معرّف هذا الهاتف",
+    "Device token (at least 32 characters)" to "رمز الجهاز (32 حرفاً على الأقل)",
+    "Save Voicx settings" to "حفظ إعدادات Voicx",
+    "Direct Telegram control" to "التحكم المباشر عبر Telegram",
+    "Bot token" to "رمز البوت",
+    "Allowed Telegram numeric user ID" to "معرّف مستخدم Telegram المسموح",
+    "Save Telegram connection" to "حفظ اتصال Telegram",
+    "Settings" to "الإعدادات",
+    "Device-in-itself mode (built-in SIP server)" to "وضع الخادم المدمج (خادم SIP داخل الهاتف)",
+    "Local SIP port (registrar listens here)" to "منفذ SIP المحلي",
+    "Registration lease (sec)" to "مدة صلاحية التسجيل (ثانية)",
+    "Softphone password (registrar auth)" to "كلمة مرور تطبيق الاتصال",
+    "SIP stack" to "محرك SIP",
+    "Transport" to "بروتوكول النقل",
+    "SRTP (TLS only)" to "تشفير SRTP (يتطلب TLS)",
+    "External PBX (optional in device-in-itself mode)" to "مقسم SIP خارجي (اختياري في وضع الخادم المدمج)",
+    "External PBX" to "مقسم SIP خارجي",
+    "PBX host" to "عنوان مقسم SIP",
+    "PBX port" to "منفذ مقسم SIP",
+    "SIP domain (empty = PBX host)" to "نطاق SIP (فارغ = عنوان المقسم)",
+    "Extension / user" to "الرقم الداخلي / المستخدم",
+    "Password" to "كلمة المرور",
+    "Second call while busy" to "مكالمة ثانية أثناء الانشغال",
+    "Reject" to "رفض",
+    "Leave to phone" to "اتركها لتطبيق الهاتف",
+    "Save & apply" to "حفظ وتطبيق",
+    "Unavailable with the current platform or audio method" to "غير متاح مع النظام أو طريقة الصوت الحالية",
+    "Waiting for helper" to "بانتظار المساعد",
+    "Show help / recommended clients" to "عرض المساعدة والتطبيقات المقترحة",
+    "Alongside dialer" to "بجانب تطبيق الهاتف",
+    "Turning on requests the default-dialer role. Turning off restores your previous dialer unless you keep the role in Advanced settings." to "عند التشغيل سيُطلب تعيين التطبيق كهاتف افتراضي. وعند الإيقاف ستتم استعادة تطبيق الهاتف السابق ما لم تختر الاحتفاظ بالدور من الإعدادات المتقدمة.",
+    "The service uses an ongoing notification and is started after reboot. On HONOR, remove battery restrictions for this app." to "تعمل الخدمة بإشعار دائم وتبدأ بعد إعادة تشغيل الهاتف. على أجهزة HONOR أزل قيود البطارية عن التطبيق.",
+    "Default-dialer mode bridges calls through the PBX. For manual calling, switch back to your usual dialer." to "وضع الهاتف الافتراضي يربط المكالمات عبر مقسم SIP. لإجراء مكالمة يدوياً، أعد تطبيق الهاتف المعتاد.",
+    "Applies the next time takeover is switched off. Restore manually below when needed." to "يُطبّق عند إيقاف تحويل المكالمات في المرة القادمة. ويمكنك الاستعادة يدوياً من الزر أدناه.",
+    "★ If a call connects but nobody is heard, switch this very setting (details in ⓘ)." to "★ إذا اتصلت المكالمة دون سماع صوت، غيّر هذا الخيار (التفاصيل في زر المعلومات).",
+    "Keeps normal call output for local listening; microphone stays muted. Applies from next call." to "يُبقي صوت المكالمة على سماعة الهاتف للاستماع محلياً، مع كتم الميكروفون. يبدأ من المكالمة التالية.",
+    "Mutes call output when supported; applies from next call" to "يكتم صوت المكالمة إذا كان الجهاز يدعم ذلك؛ يبدأ من المكالمة التالية.",
+    "Echoes incoming calls instead of connecting the PBX" to "يعيد صوت المكالمة الواردة كصدى بدلاً من ربطها بمقسم SIP.",
+    "Info-level logs with masked numbers" to "سجل معلومات مع إخفاء أرقام الهواتف.",
+    "Audio access and frame counters do not verify remote delivery. Verify both directions on this device." to "صلاحية الصوت وعدّادات الإطارات لا تثبت وصول الصوت للطرف الآخر. اختبر السماع في الاتجاهين فعلياً.",
+    "Optional connection to your private control bridge. HTTPS via VPN or TLS proxy is required. SIP settings are not changed." to "اتصال اختياري بجسر التحكم الخاص بك. يلزم HTTPS عبر VPN أو وسيط TLS. لا تتغير إعدادات SIP.",
+    "The token is encrypted with Android Keystore. Leaving the bridge URL empty disables the connection settings and clears the saved credentials." to "يُشفّر الرمز باستخدام Android Keystore. ترك عنوان الجسر فارغاً يعطّل الاتصال ويمسح بيانات الاعتماد المحفوظة.",
+    "This phone hosts the SIP registrar; your softphone (e.g. baresip) registers straight to it. No external PBX is needed, so the PBX fields below are optional." to "هذا الهاتف يستضيف مسجل SIP؛ سجّل تطبيق الاتصال (مثل baresip) عليه مباشرة. لا تحتاج إلى مقسم خارجي، لذا حقول المقسم أدناه اختيارية.",
+    "Off: this gateway registers to an external PBX / SIP server. Fill in PBX host, user and password below." to "عند الإيقاف: تتصل البوابة بمقسم SIP خارجي. أدخل عنوان المقسم واسم المستخدم وكلمة المرور أدناه.",
+    "Point your softphone at  <this phone's IP>:$localPort  over UDP." to "وجّه تطبيق الاتصال إلى <عنوان IP لهذا الهاتف>:$localPort باستخدام UDP.",
+    "Empty = no password, anyone may register. Set one before exposing the gateway to the internet, and enter the same password in your softphone." to "تركه فارغاً يعني عدم وجود كلمة مرور وإمكانية تسجيل أي شخص. عيّن كلمة مرور قبل إتاحة البوابة عبر الإنترنت، واستخدمها نفسها في تطبيق الاتصال.",
+    "Cellular inbound -> SIP target (blank = username)" to "وجهة مكالمات الشريحة الواردة إلى SIP (فارغ = اسم المستخدم)",
+    "Allowed dial-out prefixes (comma separated, empty = any)" to "بادئات الأرقام المسموح الاتصال بها عبر الشريحة (افصل بفواصل، فارغ = جميع الأرقام)"
+)
+
 /** Pick the string for the current UI language. Safe to call anywhere. */
-fun t(ru: String, en: String): String = if (currentUiLang == UiLang.RU) ru else en
+fun t(ru: String, en: String): String = when (currentUiLang) {
+    UiLang.RU -> ru
+    UiLang.EN -> en
+    UiLang.AR -> arabicUi[en] ?: en
+}
 
 /**
  * A small "ⓘ" affordance next to a label. Tapping it opens a dialog that explains, in the current
