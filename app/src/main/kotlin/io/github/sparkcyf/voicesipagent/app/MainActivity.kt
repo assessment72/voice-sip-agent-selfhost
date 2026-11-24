@@ -124,7 +124,7 @@ private fun Screen(rt: GatewayRuntime, modifier: Modifier, requestDialer: () -> 
                     context.startActivity(Intent(android.provider.Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS))
                 }
             }) {
-                Text(t("إعدادات تحسين البطارية", "Battery optimization settings"))
+                Text(t("Настройки оптимизации батареи", "Battery optimization settings"))
             }
         }
         Section(t("Состояние", "Health")) {
