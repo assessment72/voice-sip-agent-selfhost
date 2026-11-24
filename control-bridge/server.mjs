@@ -291,6 +291,9 @@ const server = http.createServer(async (req, res) => {
         if (c.status === "queued" && Date.parse(c.expiresAt) <= now) {
           c.status = "expired";
           c.updatedAt = new Date().toISOString();
+          if (c.telegramChatId) {
+            telegramMessage(c.telegramChatId, "انتهت مهلة الأمر على الجهاز " + id + " قبل استلامه.").catch(() => {});
+          }
           changed = true;
         }
       }
