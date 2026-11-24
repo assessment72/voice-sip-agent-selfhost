@@ -278,7 +278,30 @@ private fun SettingsSection(rt: GatewayRuntime) {
     var busy by remember(cur) { mutableStateOf(cur.busyPolicy) }
     var lease by remember(cur) { mutableStateOf(cur.registrarLeaseSec.toString()) }
     var regPassword by remember(cur) { mutableStateOf(cur.registrarPassword) }
+    var bridgeUrl by remember(cur) { mutableStateOf(cur.controlBridgeUrl) }
+    var bridgeDeviceId by remember(cur) { mutableStateOf(cur.controlBridgeDeviceId) }
+    var bridgeToken by remember(cur) { mutableStateOf(cur.controlBridgeToken) }
     val builtin = stack == SipStack.BUILTIN
+
+    Section(t("Voicx Control API", "Voicx Control API")) {
+        Text(t("إعداد اختياري للربط بمركز التحكم الخاص. يتطلب HTTPS عبر VPN أو وكيل TLS. لا يغير إعدادات SIP.",
+            "Optional connection to your private control bridge. HTTPS via VPN or TLS proxy is required. SIP settings are not changed."),
+            style = MaterialTheme.typography.bodySmall)
+        Field(t("عنوان الجسر HTTPS", "Bridge HTTPS URL"), bridgeUrl) { bridgeUrl = it }
+        Field(t("معرّف هذا الهاتف", "This phone's device ID"), bridgeDeviceId) { bridgeDeviceId = it }
+        OutlinedTextField(
+            value = bridgeToken, onValueChange = { bridgeToken = it },
+            label = { Text(t("رمز الجهاز (32 حرفاً على الأقل)", "Device token (at least 32 characters)")) },
+            visualTransformation = PasswordVisualTransformation(), singleLine = true, modifier = Modifier.fillMaxWidth(),
+        )
+        Text(t("يُخزّن الرمز مشفراً في Android Keystore. ترك عنوان الجسر فارغاً يعطّل إعداد الربط ويمسح بياناته المحفوظة.",
+            "The token is encrypted with Android Keystore. Leaving the bridge URL empty disables the connection settings and clears the saved credentials."),
+            style = MaterialTheme.typography.bodySmall)
+        Button(onClick = { rt.updateControlBridgeSettings(bridgeUrl, bridgeDeviceId, bridgeToken) }) {
+            Text(t("حفظ إعدادات Voicx", "Save Voicx settings"))
+        }
+    }
+
     Section(t("Настройки", "Settings")) {
         // Core mode: this phone is its own SIP server, or it registers to an external PBX.
         Toggle(t("Режим «устройство в себе» (встроенный SIP-сервер)", "Device-in-itself mode (built-in SIP server)"), serverMode, { serverMode = it }, info = "server_mode") {
