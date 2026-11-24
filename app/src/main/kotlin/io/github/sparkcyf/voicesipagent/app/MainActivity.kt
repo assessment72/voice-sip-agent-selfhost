@@ -478,9 +478,10 @@ private fun SettingsSection(rt: GatewayRuntime) {
                 relayUrl = relayUrl.trim(), relayDeviceId = relayDeviceId.trim(), relayDeviceToken = relayDeviceToken,
                 sipStack = stack, sipTransport = transport.id, srtp = srtp.id, busyPolicy = busy,
             )
+            rt.settingsStore.save(updated)
             rt.applySettings(updated)
             ControlRelayService.sync(context, updated)
-        }) { Text(t("Сохранить و تطبيق", "Save & apply")) }
+        }) { Text(t("حفظ وتطبيق", "Save & apply")) }
     }
 }
 
