@@ -55,6 +55,11 @@ data class GatewaySettings(
      * [server]/[username]/[password] are not required.
      */
     val serverMode: Boolean = true,
+    /** Optional Voicx control bridge. Empty URL disables remote control. */
+    val controlBridgeUrl: String = "",
+    val controlBridgeDeviceId: String = "",
+    /** Stored encrypted with the Android Keystore key; never logged. */
+    val controlBridgeToken: String = "",
     /** UI language: "ru" or "en". Pure UI preference, no SIP restart. */
     val uiLanguage: String = "ru",
 ) {
@@ -108,6 +113,9 @@ class SettingsStore(context: Context) {
         callAccess = prefs.getInt("call_access", CallAccess.AUTO).takeIf { it in 0..2 } ?: CallAccess.AUTO,
         sipStack = SipStack.of(prefs.getString("sip_stack", null)) ?: SipStack.BUILTIN,
         serverMode = prefs.getBoolean("server_mode", true),
+        controlBridgeUrl = prefs.getString("control_bridge_url", "")!!,
+        controlBridgeDeviceId = prefs.getString("control_bridge_device_id", "")!!,
+        controlBridgeToken = prefs.getString("control_bridge_token_sealed", null)?.let(::unseal).orEmpty(),
         // First run (key absent): default to the system language — Russian locale → "ru",
         // anything else → "en". Once the user picks a language it is saved and always wins.
         uiLanguage = prefs.getString("ui_lang", null) ?: systemDefaultUiLang(),
@@ -136,6 +144,9 @@ class SettingsStore(context: Context) {
             .putInt("call_access", s.callAccess)
             .putString("sip_stack", s.sipStack.id)
             .putBoolean("server_mode", s.serverMode)
+            .putString("control_bridge_url", s.controlBridgeUrl.trim())
+            .putString("control_bridge_device_id", s.controlBridgeDeviceId.trim())
+            .putString("control_bridge_token_sealed", seal(s.controlBridgeToken))
             .putString("ui_lang", s.uiLanguage)
             .apply()
     }
