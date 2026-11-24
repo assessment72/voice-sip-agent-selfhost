@@ -2,6 +2,8 @@ package io.github.sparkcyf.voicesipagent.app
 
 import android.os.Bundle
 import android.content.Intent
+import android.content.ClipData
+import android.content.ClipboardManager
 import android.os.Build
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.layout.Arrangement
@@ -167,7 +169,23 @@ private fun Screen(rt: GatewayRuntime, modifier: Modifier, requestDialer: () -> 
             Text(h.session ?: t("Нет активной сессии", "No active session"))
         }
         SettingsSection(rt)
-        Section(t("Журнал", "Log")) {
+        Section(t("سجل تشغيل التطبيق", "Application log")) {
+            val context = LocalContext.current
+            val logText = log.joinToString("\n")
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedButton(onClick = {
+                    val clipboard = context.getSystemService(android.content.Context.CLIPBOARD_SERVICE) as ClipboardManager
+                    clipboard.setPrimaryClip(ClipData.newPlainText("Voicx application log", logText))
+                }, enabled = log.isNotEmpty()) { Text(t("نسخ السجل", "Copy log")) }
+                OutlinedButton(onClick = {
+                    val send = Intent(Intent.ACTION_SEND).apply {
+                        type = "text/plain"
+                        putExtra(Intent.EXTRA_SUBJECT, "Voicx application log")
+                        putExtra(Intent.EXTRA_TEXT, logText)
+                    }
+                    context.startActivity(Intent.createChooser(send, t("مشاركة سجل التشغيل", "Share application log")))
+                }, enabled = log.isNotEmpty()) { Text(t("مشاركة السجل", "Share log")) }
+            }
             Text(log.takeLast(60).reversed().joinToString("\n"), fontFamily = FontFamily.Monospace,
                 fontSize = 11.sp, lineHeight = 14.sp)
         }
