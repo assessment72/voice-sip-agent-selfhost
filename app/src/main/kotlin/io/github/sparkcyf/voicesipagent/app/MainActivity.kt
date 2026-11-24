@@ -1,11 +1,14 @@
 package io.github.sparkcyf.voicesipagent.app
 
 import android.os.Bundle
+import android.Manifest
 import android.content.Intent
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.os.Build
 import androidx.activity.compose.setContent
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.FlowRow
@@ -44,6 +47,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalLayoutDirection
@@ -52,12 +56,17 @@ import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.platform.LocalContext
+import androidx.core.content.ContextCompat
+import android.content.pm.PackageManager
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import io.github.sparkcyf.voicesipagent.gateway.BusyPolicy
 import io.github.sparkcyf.voicesipagent.privileged.HealthKeys
 import io.github.sparkcyf.voicesipagent.privileged.AudioMethod
@@ -322,6 +331,16 @@ private fun SettingsSection(rt: GatewayRuntime) {
     var bridgeToken by remember(cur) { mutableStateOf(cur.controlBridgeToken) }
     var telegramBotToken by remember(cur) { mutableStateOf(cur.telegramBotToken) }
     var telegramAllowedUserId by remember(cur) { mutableStateOf(if (cur.telegramAllowedUserId > 0) cur.telegramAllowedUserId.toString() else "") }
+    var telegramTestRunning by remember { mutableStateOf(false) }
+    var telegramTestResult by remember { mutableStateOf("") }
+    val telegramScope = rememberCoroutineScope()
+    val context = LocalContext.current
+    var ussdPermissionGranted by remember {
+        mutableStateOf(ContextCompat.checkSelfPermission(context, Manifest.permission.CALL_PHONE) == PackageManager.PERMISSION_GRANTED)
+    }
+    val ussdPermissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+        ussdPermissionGranted = granted
+    }
     val builtin = stack == SipStack.BUILTIN
 
     Section(t("Voicx Control API", "Voicx Control API")) {
@@ -366,10 +385,48 @@ private fun SettingsSection(rt: GatewayRuntime) {
         Button(onClick = { rt.updateTelegramBotSettings(telegramBotToken, telegramAllowedUserId) }) {
             Text(t("حفظ اتصال Telegram", "Save Telegram connection"))
         }
-        Text(t(
-            "الأوامر المتاحة: /start و /help و /status و /sip و /calls و /service_on و /service_off. إيقاف الخدمة لا يقطع مكالمة جارية.",
-            "Commands: /start, /help, /status, /sip, /calls, /service_on, /service_off. Stopping waits for an active call to finish."
-        ), style = MaterialTheme.typography.bodySmall)
+        OutlinedButton(
+            enabled = !telegramTestRunning && telegramBotToken.isNotBlank(),
+            onClick = {
+                telegramTestRunning = true
+                telegramTestResult = ""
+                telegramScope.launch {
+                    telegramTestResult = try {
+                        val bot = withContext(Dispatchers.IO) { TelegramBotClient(telegramBotToken.trim()).testConnection() }
+                        t("الاتصال ناجح: $bot", "Connection successful: $bot")
+                    } catch (_: Exception) {
+                        // Do not show exception text: network errors may contain the tokenized URL.
+                        t("فشل الاتصال. تحقق من الرمز والإنترنت.", "Connection failed. Check the token and internet access.")
+                    } finally {
+                        telegramTestRunning = false
+                    }
+                }
+            },
+        ) {
+            Text(if (telegramTestRunning) t("جارٍ الاختبار…", "Testing…") else t("اختبار اتصال Telegram", "Test Telegram connection"))
+        }
+        if (telegramTestResult.isNotEmpty()) Text(telegramTestResult, style = MaterialTheme.typography.bodySmall)
+        Card(Modifier.fillMaxWidth()) {
+            Column(Modifier.fillMaxWidth().padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                Text(t("أوامر البوت", "Bot commands"), style = MaterialTheme.typography.titleSmall)
+                val commands = "/start — بدء / Start\n/help — المساعدة / Help\n/status — حالة البوابة / Gateway status\n/sip — حالة SIP / SIP status\n/calls — حالة المكالمات / Call status\n/simcall <رقم> — اتصال عبر SIM وربطه بـ SIP / Call via SIM and bridge to SIP\n/simcall_cancel — إنهاء الاتصال الجاري / End active call\n/account — سجل المدد والصوت والبطارية / Call history, audio and battery\n/balance — استعلام *144# عبر USSD / Query *144# by USSD\n/simcall_delete <id> — حذف سجل / Delete a record\n/service_on — تشغيل التحويل / Enable takeover\n/service_off — إيقاف التحويل / Disable takeover"
+                Text(commands, style = MaterialTheme.typography.bodySmall)
+                Text(t("قد تُحتسب رسوم على المكالمة أو استعلام USSD وفق باقة المشغّل. بعد كل مكالمة تم الرد عليها سيُطلب *144# تلقائياً، ويُرسل رد المشغّل إلى Telegram. حالة الصوت تقيس إطارات ومؤشرات مسار الصوت فقط، ولا تثبت جودة السماع.", "The carrier may charge for calls or USSD. After each answered call, *144# is queried automatically and the carrier response is sent to Telegram. Audio status reports media-path frames/levels; it cannot guarantee perceived audio quality."), style = MaterialTheme.typography.bodySmall)
+                if (!ussdPermissionGranted) {
+                    OutlinedButton(onClick = { ussdPermissionLauncher.launch(Manifest.permission.CALL_PHONE) }) {
+                        Text(t("السماح باستعلام الرصيد عبر USSD", "Allow USSD balance queries"))
+                    }
+                } else {
+                    Text(t("إذن USSD: ممنوح؛ سيُستخدم الرمز *144# يدوياً وبعد المكالمات المردود عليها.", "USSD permission: granted; *144# will be used manually and after answered calls."), style = MaterialTheme.typography.bodySmall)
+                }
+                Text(t("إيقاف التحويل لا يقطع مكالمة جارية.", "Disabling takeover does not interrupt an active call."), style = MaterialTheme.typography.bodySmall)
+                OutlinedButton(onClick = {
+                    val clipboard = context.getSystemService(android.content.Context.CLIPBOARD_SERVICE) as ClipboardManager
+                    val commandList = commands.lines().map { it.substringBefore(" —") }.joinToString("\n")
+                    clipboard.setPrimaryClip(ClipData.newPlainText("Telegram bot commands", commandList))
+                }) { Text(t("نسخ الأوامر", "Copy commands")) }
+            }
+        }
     }
 
     Section(t("Настройки", "Settings")) {

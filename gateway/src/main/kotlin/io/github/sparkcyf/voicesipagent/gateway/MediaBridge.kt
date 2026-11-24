@@ -26,8 +26,6 @@ class MediaBridge(private val a: MediaPort, private val b: MediaPort) {
         private set
     @Volatile var peakB = 0
         private set
-    private var windowPeakA = 0
-    private var windowPeakB = 0
 
     fun start() {
         val m = master
@@ -51,12 +49,9 @@ class MediaBridge(private val a: MediaPort, private val b: MediaPort) {
             val fb = b.readFrame()
             b.writeFrame(fa)
             a.writeFrame(fb)
-            windowPeakA = maxOf(windowPeakA, VoiceFormat.peak(fa))
-            windowPeakB = maxOf(windowPeakB, VoiceFormat.peak(fb))
-            if (++frames % 50 == 0L) {
-                peakA = windowPeakA; peakB = windowPeakB
-                windowPeakA = 0; windowPeakB = 0
-            }
+            peakA = maxOf(peakA, VoiceFormat.peak(fa))
+            peakB = maxOf(peakB, VoiceFormat.peak(fb))
+            frames++
         } catch (_: Throwable) {
             // A failing port must not kill the clock thread; leg teardown stops the bridge.
         }

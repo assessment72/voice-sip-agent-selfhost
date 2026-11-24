@@ -1,11 +1,14 @@
 package io.github.sparkcyf.voicesipagent.app
 
 import android.content.Context
+import android.content.Intent
+import android.content.IntentFilter
 import android.net.ConnectivityManager
 import android.net.LinkProperties
 import android.net.Network
 import android.os.Bundle
 import android.os.Build
+import android.os.BatteryManager
 import android.telecom.TelecomManager
 import android.content.ComponentName
 import android.content.pm.PackageManager
@@ -94,6 +97,7 @@ data class HealthState(
  */
 class GatewayRuntime private constructor(context: Context) {
     private val app = context.applicationContext
+    private val ussdBalance = TelegramUssdBalance(app)
     private val worker = newWorker()
     val settingsStore = SettingsStore(app)
     private val _settings = MutableStateFlow(settingsStore.load())
@@ -123,6 +127,8 @@ class GatewayRuntime private constructor(context: Context) {
     private var sip: CallEndpoint? = null
     private var bridge: CallBridge? = null
     private var echo: EchoEndpoint? = null
+    @Volatile
+    private var telegramSimCall: TelegramSimCall? = null
     private var started = false
     private var pendingSettings: GatewaySettings? = null
     private var restartPending = false
@@ -410,7 +416,7 @@ class GatewayRuntime private constructor(context: Context) {
         if (GatewayService.sync(app, h)) foregroundRequested = h.needsForegroundService
     }
 
-    private fun hasActiveWork() = cellular.hasCalls || bridge?.session != null || _health.value.session != null
+    private fun hasActiveWork() = telegramSimCall != null || cellular.hasCalls || bridge?.session != null || _health.value.session != null
 
     fun showDialerMessage(message: String) { _dialerMessage.value = message }
 
@@ -708,6 +714,112 @@ class GatewayRuntime private constructor(context: Context) {
         settingsStore.save(updated)
         _settings.value = updated
         AppLog.i(if (clean.isEmpty()) "Telegram control disabled" else "Telegram bot settings saved")
+    }
+
+    /** Starts an authenticated Telegram-originated SIM call and bridges it to the registered SIP phone. */
+    fun startTelegramSimCall(rawNumber: String, notify: (String) -> Unit) = worker.execute {
+        val raw = rawNumber.trim().filterNot { it.isWhitespace() || it == '(' || it == ')' || it == '-' }
+        if (!raw.matches(Regex("\\+?[0-9]{3,20}"))) {
+            notify("صيغة الرقم غير صالحة. استخدم /simcall <رقم>.")
+            return@execute
+        }
+        val number = raw
+        val h = _health.value
+        val sipEndpoint = sip
+        when {
+            telegramSimCall != null -> notify("هناك مكالمة SIM نشطة بالفعل. استخدم /simcall_cancel أولاً.")
+            !gatewayEnabled || !h.takeover -> notify("البوابة متوقفة؛ فعّلها أولاً قبل إجراء اتصال SIM.")
+            !cellular.status.ready || !h.callAccessReady || !h.audioReady -> notify("اتصال SIM/SIP غير جاهز: تحقق من صلاحيات الهاتف وShizuku والصوت.")
+            sipEndpoint == null || !sipEndpoint.status.ready -> notify("لا يوجد هاتف SIP مسجّل وجاهز لاستقبال المكالمة.")
+            cellular.hasCalls || h.session != null -> notify("خط SIM مشغول بمكالمة أخرى.")
+            cellular.isEmergencyNumber(number) -> notify("مرفوض: لا يمكن بدء مكالمة طوارئ عبر هذا الأمر.")
+            else -> {
+                val prefixes = settings.allowedPrefixes.split(',').map(String::trim).filter(String::isNotEmpty)
+                val digitsOnly = number.filter(Char::isDigit)
+                if (prefixes.isNotEmpty() && prefixes.none { prefix ->
+                        val normalized = prefix.filter { it.isDigit() || it == '+' }
+                        normalized.isNotBlank() && (number.startsWith(normalized) || digitsOnly.startsWith(normalized.filter(Char::isDigit)))
+                    }) {
+                    notify("الرقم مرفوض وفق قائمة بادئات الاتصال المسموح بها.")
+                    return@execute
+                }
+                val sipTarget = settings.inboundTarget.ifBlank { settings.username.ifBlank { "phone" } }
+                var callRef: TelegramSimCall? = null
+                val call = TelegramSimCall(
+                    cellular = cellular,
+                    sip = sipEndpoint,
+                    number = number,
+                    sipTarget = sipTarget,
+                    notify = notify,
+                    batteryStatus = ::batteryStatus,
+                    onFinished = { record -> worker.execute {
+                        TelegramCallHistory(app).add(record)
+                        if (telegramSimCall === callRef) telegramSimCall = null
+                        if (record.answeredAtMs != null) {
+                            worker.schedule({
+                                queryUssdBalance { result ->
+                                    notify(result.fold(
+                                        { "استعلام الرصيد بعد المكالمة عبر *144# (USSD، وليس SMS):\n$it" },
+                                        { "تعذر استعلام الدقائق/الرصيد بعد المكالمة عبر *144#. تحقق من إذن الهاتف وتغطية الشبكة." },
+                                    ))
+                                }
+                            }, 2, TimeUnit.SECONDS)
+                        }
+                    } },
+                )
+                callRef = call
+                telegramSimCall = call
+                call.start()
+            }
+        }
+    }
+
+    /** Ends the one active SIM call, including either leg of its SIP bridge. */
+    fun cancelTelegramSimCall(): Boolean {
+        val active = telegramSimCall ?: return false
+        active.cancel()
+        return true
+    }
+
+    fun deleteTelegramCallRecord(id: String): Boolean = TelegramCallHistory(app).delete(id)
+
+    /** Starts the carrier's fixed *144# balance query, returning its network response to Telegram. */
+    fun requestTelegramBalance(notify: (String) -> Unit) = worker.execute {
+        queryUssdBalance { result ->
+            notify(result.fold(
+                { "نتيجة *144# عبر USSD (ليست رسالة SMS):\n$it" },
+                { "فشل استعلام *144#. تأكد من إذن الهاتف، الشريحة الافتراضية، وتغطية الشبكة." },
+            ))
+        }
+    }
+
+    private fun queryUssdBalance(callback: (Result<String>) -> Unit) = ussdBalance.query(callback)
+
+    @Suppress("DEPRECATION")
+    private fun batteryStatus(): String {
+        val intent = app.registerReceiver(null, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
+        val level = intent?.getIntExtra(BatteryManager.EXTRA_LEVEL, -1) ?: -1
+        val scale = intent?.getIntExtra(BatteryManager.EXTRA_SCALE, -1) ?: -1
+        val percent = if (level >= 0 && scale > 0) (level * 100 / scale).coerceIn(0, 100) else -1
+        val status = intent?.getIntExtra(BatteryManager.EXTRA_STATUS, BatteryManager.BATTERY_STATUS_UNKNOWN)
+            ?: BatteryManager.BATTERY_STATUS_UNKNOWN
+        val plugged = intent?.getIntExtra(BatteryManager.EXTRA_PLUGGED, 0) ?: 0
+        val charging = status == BatteryManager.BATTERY_STATUS_CHARGING ||
+            status == BatteryManager.BATTERY_STATUS_FULL || plugged != 0
+        val levelText = if (percent >= 0) "$percent%" else "المستوى غير متاح"
+        return "البطارية $levelText؛ ${if (charging) "قيد الشحن/موصول بالطاقة" else "غير موصولة بالشاحن"}"
+    }
+
+    /** Reports local call history, measured audio-path status, and battery state; carrier charges are not inferred. */
+    fun telegramAccountReport(): String {
+        val records = TelegramCallHistory(app).list(100)
+        if (records.isEmpty()) return "لا توجد مكالمات SIM مسجلة حتى الآن."
+        val answered = records.filter { it.answeredAtMs != null }
+        val totalSeconds = answered.sumOf { it.durationSeconds }
+        val lines = records.take(8).joinToString("\n") { record ->
+            "#${record.id} ${TelegramSimCall.maskNumber(record.number)} · ${record.result} · ${TelegramSimCall.formatDuration(record.durationSeconds)}\n  الصوت: ${record.audioStatus.take(120)}\n  🔋 ${record.batteryStatus.take(60)}"
+        }
+        return "سجل مكالمات SIM: ${records.size} (آخر 8 أدناه)\nتم الرد: ${answered.size} · مجموع مدة SIM بعد الرد: ${TelegramSimCall.formatDuration(totalSeconds)}\n$lines\nلحذف سجل: /simcall_delete <id>\nلا تُستنتج رسوم المشغّل من هذا السجل."
     }
 
     fun applySettings(new: GatewaySettings) = worker.execute {

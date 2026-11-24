@@ -32,6 +32,14 @@ internal class TelegramBotClient(
         val text: String,
     )
 
+    /** Validates the token with Telegram without starting long polling or exposing the token. */
+    fun testConnection(): String {
+        val result = request("GET", "/getMe").optJSONObject("result")
+            ?: throw IllegalStateException("Telegram returned no bot information")
+        return result.optString("username").takeIf { it.isNotBlank() }?.let { "@$it" }
+            ?: throw IllegalStateException("Telegram account is not a bot")
+    }
+
     fun poll(offset: Long): List<Incoming> {
         val query = "timeout=20&offset=$offset&allowed_updates=%5B%22message%22%5D"
         val json = request("GET", "/getUpdates?$query")

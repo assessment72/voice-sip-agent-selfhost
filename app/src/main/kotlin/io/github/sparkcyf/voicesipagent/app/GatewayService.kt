@@ -250,11 +250,13 @@ class GatewayService : Service() {
                         telegramUpdateOffset = maxOf(telegramUpdateOffset, update.updateId + 1L)
                         SettingsStore(this@GatewayService).saveTelegramUpdateOffset(telegramUpdateOffset)
                         if (!update.privateChat || update.senderId != allowedUserId) continue
-                        val command = update.text.substringBefore(' ').substringBefore('@').lowercase()
+                        val commandParts = update.text.trim().split(Regex("\\s+"), limit = 2)
+                        val command = commandParts.firstOrNull().orEmpty().substringBefore('@').lowercase()
+                        val argument = commandParts.getOrNull(1).orEmpty().trim()
                         val reply = try {
                             when (command) {
                                 "/start", "/help" ->
-                                    "Voicx control connected. Commands:\n/status - gateway status\n/sip - SIP status\n/calls - call status\n/service_on - enable call takeover\n/service_off - disable call takeover"
+                                    "Voicx control جاهز. الأوامر:\n/status - حالة البوابة\n/sip - حالة SIP\n/calls - حالة المكالمات\n/simcall <رقم> - اتصال عبر SIM وربطه بـ SIP\n/simcall_cancel - إنهاء الاتصال الجاري\n/account - سجل المكالمات والصوت والبطارية\n/balance - استعلام *144# عبر USSD\n/simcall_delete <id> - حذف سجل\n/service_on - تشغيل البوابة\n/service_off - إيقاف التحويل"
                                 "/status" -> {
                                     val h = GatewayRuntime.get(this@GatewayService).health.value
                                     "Gateway: ${if (h.takeover) "ON" else "OFF"}\nSIP: ${if (h.sip.ready) "ready" else "not ready"}\nActive call: ${h.session != null || h.calls.owned > 0}"
@@ -264,6 +266,32 @@ class GatewayService : Service() {
                                     "SIP: ${if (h.sip.ready) "ready" else "not ready"}\n${h.sip.detail.take(500)}"
                                 }
                                 "/calls" -> GatewayRuntime.get(this@GatewayService).health.value.calls.summary.take(1000)
+                                "/simcall" -> {
+                                    if (argument.isBlank()) "الاستخدام: /simcall <رقم>"
+                                    else {
+                                        val chatId = update.chatId
+                                        GatewayRuntime.get(this@GatewayService).startTelegramSimCall(argument) { event ->
+                                            scope.launch(Dispatchers.IO) { runCatching { client.sendMessage(chatId, event) } }
+                                        }
+                                        "تم استلام الطلب. قد تُحتسب رسوم اتصال من المشغّل. سأرسل تحديثات الرنين والرد والانتهاء هنا."
+                                    }
+                                }
+                                "/simcall_cancel" -> if (GatewayRuntime.get(this@GatewayService).cancelTelegramSimCall()) {
+                                    "أُرسل طلب إنهاء مكالمة SIM الحالية."
+                                } else "لا توجد مكالمة SIM نشطة."
+                                "/simcall_delete" -> if (argument.isBlank()) {
+                                    "الاستخدام: /simcall_delete <id> — اعرض السجلات أولاً عبر /account."
+                                } else if (GatewayRuntime.get(this@GatewayService).deleteTelegramCallRecord(argument)) {
+                                    "تم حذف سجل المكالمة #$argument."
+                                } else "لم أعثر على سجل بالمعرّف المحدد."
+                                "/account" -> GatewayRuntime.get(this@GatewayService).telegramAccountReport()
+                                "/balance" -> {
+                                    val chatId = update.chatId
+                                    GatewayRuntime.get(this@GatewayService).requestTelegramBalance { event ->
+                                        scope.launch(Dispatchers.IO) { runCatching { client.sendMessage(chatId, event) } }
+                                    }
+                                    "جارٍ إرسال *144# عبر USSD؛ قد تُحتسب رسوم حسب المشغّل. سأرسل الرد هنا، وليس عبر SMS."
+                                }
                                 "/service_on" -> {
                                     GatewayRuntime.get(this@GatewayService).setTakeover(true)
                                     "Enable request accepted. Check /status in a moment."
