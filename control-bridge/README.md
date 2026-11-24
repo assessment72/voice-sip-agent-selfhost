@@ -1,0 +1,104 @@
+# Voicx Control Bridge (API v1)
+
+A small local control-plane service for up to 20 Android gateway devices. It uses Node.js built-ins only and stores state in a local JSON file. It does not replace or modify the SIP engine.
+
+## Requirements
+
+- Node.js 20+
+- A dedicated always-on local host
+- Private network access from Android devices and API clients
+
+## Start
+
+Generate long random secrets (at least 32 characters each), then configure:
+
+```bash
+export VOICX_ADMIN_TOKEN='replace-with-a-long-random-admin-secret'
+export VOICX_DEVICES='[{"id":"phone-01","name":"HONOR MTN-NX1","token":"replace-with-a-different-long-device-secret"}]'
+# Bind to loopback for local-only use; for handset access, bind to the host's private LAN/VPN IP.
+export HOST='127.0.0.1'
+export PORT='8787'
+export VOICX_STORE='./data/voicx-store.json'
+export TELEGRAM_BOT_TOKEN='token-from-botfather'
+export TELEGRAM_ADMIN_IDS='123456789'
+node server.mjs
+```
+
+For a second device, add another object with a unique id and unique token. Never commit real tokens. Android devices cannot reach a loopback-bound listener on the bridge host: for handset access, set `HOST` to the host's private LAN or VPN interface address and restrict the port with the host firewall. Do not expose it directly to the public internet. Use a private VPN/overlay for remote administration.
+
+## Admin API
+
+Send `Authorization: Bearer $VOICX_ADMIN_TOKEN`.
+
+- `GET /health` — liveness (no secrets)
+- `GET /api/v1/devices` — configured devices and last-seen telemetry
+- `POST /api/v1/devices/command` — queue an allow-listed command
+- `GET /api/v1/commands/{commandId}` — inspect command state
+- `GET /api/v1/audit` — recent audit events
+
+Example:
+
+```bash
+curl -H "Authorization: Bearer $VOICX_ADMIN_TOKEN" http://127.0.0.1:8787/api/v1/devices
+curl -X POST http://127.0.0.1:8787/api/v1/devices/command \
+  -H "Authorization: Bearer $VOICX_ADMIN_TOKEN" \
+  -H 'Content-Type: application/json' \
+  -H 'Idempotency-Key: service-status-phone-01-001' \
+  -d '{"deviceId":"phone-01","type":"service.status"}'
+```
+
+Allowed command types in this first slice: `service.status`, `service.start`, and
+`service.stop`. Audio controls remain disabled until a separately reviewed adapter is implemented. Commands expire after 60 seconds. Delivery is
+at-least-once; clients should use the command UUID to deduplicate. Idempotency keys
+prevent duplicate admin submissions for the same device.
+
+## Android device protocol
+
+Device requests use that device's own bearer token.
+
+- `POST /api/v1/devices/{deviceId}/heartbeat` with JSON such as
+  `{"battery":87,"charging":true,"serviceState":"running","appVersion":"0.2.0"}`
+- `GET /api/v1/devices/{deviceId}/commands/next` to receive queued commands
+- `POST /api/v1/devices/{deviceId}/commands/{commandId}/result` with
+  `{"status":"succeeded","result":{"serviceState":"running"}}` or
+  `{"status":"failed","error":"permission_denied"}`
+
+The Android source includes an opt-in `ControlBridgeClient` with authenticated heartbeat, command polling, and result reporting. The device token is encrypted using Android Keystore. `GatewayService` reports heartbeat every 30 seconds and polls the local command queue every 8 seconds while its persistent foreground host is running. The approved command adapter supports only `service.status`, `service.start`, and `service.stop`; start/stop change the phone's SIP/call-takeover switch, while the foreground control host remains alive so it can be started again. It does not initiate or terminate real calls, and it does not change audio settings remotely.
+
+### Telegram bot control
+
+Set `TELEGRAM_BOT_TOKEN` to the token created with BotFather and `TELEGRAM_ADMIN_IDS` to the numeric Telegram user IDs allowed to control the system. The bot accepts private chats from allowlisted IDs only; groups and all other users are ignored. The Node bridge is the only process that polls `getUpdates` for this bot token—do not run a second copy of the bridge with the same token.
+
+Commands:
+
+- `/devices` — list all configured phones and their last reported online state.
+- `/status phone-01` — queue a status request for one phone.
+- `/start_device phone-01` — ask for a one-time confirmation, then enable that phone's gateway takeover.
+- `/stop_device phone-01` — ask for a one-time confirmation, then disable that phone's gateway takeover.
+
+Start/stop confirmations expire after 60 seconds and can be used once. Results are sent back to the same private Telegram chat after the phone reports completion. Bot credentials stay on the local bridge host; they are never placed in the APK.
+
+The bridge's built-in listener is plain HTTP. Android requires HTTPS for its bridge URL, so put it behind a private HTTPS endpoint. A local always-on computer can use Tailscale Serve or another private VPN/reverse proxy for TLS termination; no VPS is required. The host must remain powered and connected, and each phone must be able to reach that private HTTPS address. Do not expose the bridge directly to the public internet.
+
+Heartbeat freshness window is 90 seconds. Device credentials are independent and can
+be revoked by removing/replacing that device's configured token and restarting the
+bridge. Each handset is configured independently in the Android app.
+
+## Deliberate safety limits
+
+- No endpoint starts a real SIP call. The call route returns HTTP 501 until the
+  outbound SIP path is implemented and validated on the target handset.
+- No SIP listener, call audio, SMS content, or SIP credentials are exposed by this API.
+- The Android agent executes only the three allow-listed service status/start/stop commands. It does not accept arbitrary shell commands, initiate SIP calls, or alter audio settings.
+- The bridge has no internet-facing authentication proxy or TLS termination. Put it
+  behind a private VPN/overlay or a separately configured HTTPS reverse proxy.
+
+## Smoke test
+
+Run the end-to-end local API smoke test with Node.js 20+: `npm test` (or `node smoke-test.mjs`). It checks admin/device authentication, heartbeat telemetry, command queue delivery/result reporting, and confirms that outbound SIP call requests remain disabled (HTTP 501). The Telegram poller stays disabled in tests unless a bot token and admin allowlist are supplied.
+
+## Persistence
+
+State is atomically written to a local JSON file with restrictive file permissions.
+Back up this file securely. It contains device telemetry, command metadata, and audit
+records; it does not contain bearer tokens.

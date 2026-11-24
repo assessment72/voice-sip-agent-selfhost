@@ -1,6 +1,7 @@
 package io.github.sparkcyf.voicesipagent.app
 
 import android.os.Bundle
+import android.content.Intent
 import android.os.Build
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.layout.Arrangement
@@ -45,6 +46,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalUriHandler
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
@@ -111,6 +113,19 @@ private fun Screen(rt: GatewayRuntime, modifier: Modifier, requestDialer: () -> 
                     style = MaterialTheme.typography.bodySmall)
             }
             if (h.settingsPending) Text(t("Настройки применятся после завершения звонков", "Settings will apply after current calls end"))
+        }
+        Section(t("Работа в фоне", "Background operation")) {
+            val context = LocalContext.current
+            Text(t("Служба работает с постоянным уведомлением и запускается после перезагрузки. Для HONOR отключи для приложения ограничения батареи.",
+                "The service uses an ongoing notification and is started after reboot. On HONOR, remove battery restrictions for this app."),
+                style = MaterialTheme.typography.bodySmall)
+            OutlinedButton(onClick = {
+                runCatching {
+                    context.startActivity(Intent(android.provider.Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS))
+                }
+            }) {
+                Text(t("Настройки оптимизации батареи", "Battery optimization settings"))
+            }
         }
         Section(t("Состояние", "Health")) {
             val p = h.privileged
@@ -278,7 +293,30 @@ private fun SettingsSection(rt: GatewayRuntime) {
     var busy by remember(cur) { mutableStateOf(cur.busyPolicy) }
     var lease by remember(cur) { mutableStateOf(cur.registrarLeaseSec.toString()) }
     var regPassword by remember(cur) { mutableStateOf(cur.registrarPassword) }
+    var bridgeUrl by remember(cur) { mutableStateOf(cur.controlBridgeUrl) }
+    var bridgeDeviceId by remember(cur) { mutableStateOf(cur.controlBridgeDeviceId) }
+    var bridgeToken by remember(cur) { mutableStateOf(cur.controlBridgeToken) }
     val builtin = stack == SipStack.BUILTIN
+
+    Section(t("Voicx Control API", "Voicx Control API")) {
+        Text(t("Необязательное подключение к частному центру управления. Требуется HTTPS через VPN или TLS-прокси. Настройки SIP не меняются.",
+            "Optional connection to your private control bridge. HTTPS via VPN or TLS proxy is required. SIP settings are not changed."),
+            style = MaterialTheme.typography.bodySmall)
+        Field(t("عنوان الجسر HTTPS", "Bridge HTTPS URL"), bridgeUrl) { bridgeUrl = it }
+        Field(t("معرّف هذا الهاتف", "This phone's device ID"), bridgeDeviceId) { bridgeDeviceId = it }
+        OutlinedTextField(
+            value = bridgeToken, onValueChange = { bridgeToken = it },
+            label = { Text(t("رمز الجهاز (32 حرفاً على الأقل)", "Device token (at least 32 characters)")) },
+            visualTransformation = PasswordVisualTransformation(), singleLine = true, modifier = Modifier.fillMaxWidth(),
+        )
+        Text(t("يُخزّن الرمز مشفراً في Android Keystore. ترك عنوان الجسر فارغاً يعطّل إعداد الربط ويمسح بياناته المحفوظة.",
+            "The token is encrypted with Android Keystore. Leaving the bridge URL empty disables the connection settings and clears the saved credentials."),
+            style = MaterialTheme.typography.bodySmall)
+        Button(onClick = { rt.updateControlBridgeSettings(bridgeUrl, bridgeDeviceId, bridgeToken) }) {
+            Text(t("حفظ إعدادات Voicx", "Save Voicx settings"))
+        }
+    }
+
     Section(t("Настройки", "Settings")) {
         // Core mode: this phone is its own SIP server, or it registers to an external PBX.
         Toggle(t("Режим «устройство в себе» (встроенный SIP-сервер)", "Device-in-itself mode (built-in SIP server)"), serverMode, { serverMode = it }, info = "server_mode") {

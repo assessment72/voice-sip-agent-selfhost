@@ -5,6 +5,7 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.Service
+import android.os.BatteryManager
 import android.content.Context
 import android.content.BroadcastReceiver
 import android.content.Intent
@@ -15,22 +16,30 @@ import android.os.Build
 import android.os.PowerManager
 import android.telecom.TelecomManager
 import androidx.core.content.ContextCompat
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 
 /**
- * Keeps the process and SIP registration alive while takeover is on, with a status notification.
- * When takeover is off, keeps a reminder visible while this app still holds the dialer role.
+ * Persistent foreground host for the gateway. The service remains alive independently of the
+ * takeover switch; SIP/call bridging itself remains gated by GatewayRuntime.gatewayEnabled.
+ * Android force-stop and OEM task killers can still terminate any application.
  */
 class GatewayService : Service() {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
     private var statusJob: Job? = null
+    private var bridgeSettingsJob: Job? = null
+    private var bridgeHeartbeatJob: Job? = null
+    private var bridgeCommandJob: Job? = null
     private var foreground = false
     // Held while the gateway runs in the foreground, so Doze on an aggressive OEM (ZTE/Nubia,
     // Xiaomi, Transsion…) cannot suspend the SIP reader thread.  Without it the socket backs up
@@ -54,6 +63,11 @@ class GatewayService : Service() {
         ContextCompat.registerReceiver(this, roleReceiver,
             IntentFilter(TelecomManager.ACTION_DEFAULT_DIALER_CHANGED), ContextCompat.RECEIVER_EXPORTED)
         runtime.refreshCallAccess()
+        bridgeSettingsJob = scope.launch {
+            runtime.settingsFlow.map { Triple(it.controlBridgeUrl, it.controlBridgeDeviceId, it.controlBridgeToken) }
+                .distinctUntilChanged()
+                .collect { syncControlBridge(runtime.settings) }
+        }
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -73,10 +87,14 @@ class GatewayService : Service() {
             }
         }
         runtime.onForegroundStarted(runtimeToken)
+        syncControlBridge(runtime.settings)
         if (statusJob == null) {
             val nm = getSystemService(NotificationManager::class.java)
             statusJob = scope.launch {
-                runtime.health.map { it.needsForegroundService to summary(it) }.distinctUntilChanged().collect { (needed, text) ->
+                runtime.health.map {
+                    Triple(it.needsForegroundService, summary(it), it.takeover || it.session != null || it.calls.owned > 0)
+                }.distinctUntilChanged().collect { (needed, text, keepCpuAwake) ->
+                    if (keepCpuAwake) acquireWakeLock() else releaseWakeLock()
                     if (needed) nm.notify(NOTIFICATION_ID, build(text)) else stopGateway()
                 }
             }
@@ -93,12 +111,17 @@ class GatewayService : Service() {
             startForeground(NOTIFICATION_ID, build(summary(health)))
         }
         foreground = true
-        acquireWakeLock()
+        if (health.takeover || health.session != null || health.calls.owned > 0) acquireWakeLock()
+        else releaseWakeLock()
     }
 
     private fun stopGateway(startId: Int? = null) {
         statusJob?.cancel()
         statusJob = null
+        bridgeHeartbeatJob?.cancel()
+        bridgeHeartbeatJob = null
+        bridgeCommandJob?.cancel()
+        bridgeCommandJob = null
         stopForeground(STOP_FOREGROUND_REMOVE)
         foreground = false
         releaseWakeLock()
@@ -110,10 +133,123 @@ class GatewayService : Service() {
     override fun onDestroy() {
         GatewayRuntime.get(this).onForegroundStopped(runtimeToken)
         unregisterReceiver(roleReceiver)
+        bridgeSettingsJob?.cancel()
+        bridgeHeartbeatJob?.cancel()
+        bridgeCommandJob?.cancel()
         scope.cancel()
         stopForeground(STOP_FOREGROUND_REMOVE)
         releaseWakeLock()
         super.onDestroy()
+    }
+
+    /**
+     * Keeps the authenticated control-plane heartbeat and bounded command poller active.
+     * Only service.status/start/stop are accepted by executeControlCommand; no SIP call action
+     * or arbitrary command is exposed through this bridge.
+     */
+    private fun syncControlBridge(settings: GatewaySettings) {
+        val runtime = GatewayRuntime.get(this)
+        bridgeHeartbeatJob?.cancel()
+        bridgeHeartbeatJob = null
+        bridgeCommandJob?.cancel()
+        bridgeCommandJob = null
+        if (!foreground || settings.controlBridgeUrl.isBlank()) return
+        val client = runCatching {
+            ControlBridgeClient(settings.controlBridgeUrl, settings.controlBridgeDeviceId, settings.controlBridgeToken)
+        }.getOrElse {
+            AppLog.w("Voicx bridge configuration invalid: ${it.javaClass.simpleName}")
+            return
+        }
+        bridgeHeartbeatJob = scope.launch {
+            while (isActive && foreground) {
+                try {
+                    withContext(Dispatchers.IO) {
+                        val batteryManager = getSystemService(BatteryManager::class.java)
+                        val battery = batteryManager.getIntProperty(BatteryManager.BATTERY_PROPERTY_CAPACITY)
+                            .takeIf { it in 0..100 }
+                        val charging = batteryManager.isCharging
+                        client.heartbeat(
+                            battery = battery,
+                            charging = charging,
+                            serviceState = "running",
+                            appVersion = BuildConfig.VERSION_NAME,
+                        )
+                    }
+                } catch (e: Exception) {
+                    AppLog.w("Voicx heartbeat failed: ${e.javaClass.simpleName}")
+                }
+                delay(30_000)
+            }
+        }
+        bridgeCommandJob = scope.launch {
+            while (isActive && foreground) {
+                try {
+                    val commands = withContext(Dispatchers.IO) { client.pollCommands() }
+                    for (command in commands) {
+                        val commandId = command.optString("id")
+                        if (commandId.isBlank()) continue
+                        val execution = try {
+                            withContext(Dispatchers.IO) { client.reportResult(commandId, "running") }
+                            val result = executeControlCommand(runtime, command)
+                            "succeeded" to result
+                        } catch (e: CancellationException) {
+                            throw e
+                        } catch (e: Exception) {
+                            "failed" to org.json.JSONObject().put("error", e.javaClass.simpleName)
+                        }
+                        withContext(Dispatchers.IO) {
+                            client.reportResult(
+                                commandId,
+                                execution.first,
+                                result = execution.second,
+                                error = if (execution.first == "failed") execution.second.optString("error") else null,
+                            )
+                        }
+                    }
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    AppLog.w("Voicx command poll failed")
+                }
+                delay(8_000)
+            }
+        }
+    }
+
+    private suspend fun executeControlCommand(
+        runtime: GatewayRuntime,
+        command: org.json.JSONObject,
+    ): org.json.JSONObject {
+        return when (command.optString("type")) {
+            "service.status" -> {
+                val h = runtime.health.value
+                org.json.JSONObject()
+                    .put("serviceState", if (h.takeover) "running" else "stopped")
+                    .put("gatewayHost", "running")
+                    .put("sipReady", h.sip.ready)
+                    .put("sipDetail", h.sip.detail.take(160))
+                    .put("activeCall", h.session != null || h.calls.owned > 0)
+                    .put("takeoverPending", h.takeoverOffPending || h.takeoverOnPending)
+            }
+            "service.start" -> {
+                runtime.setTakeover(true)
+                delay(1_200)
+                val h = runtime.health.value
+                if (!h.takeover && !h.takeoverOnPending) error("gateway_start_not_applied")
+                org.json.JSONObject().put("serviceState", "running")
+                    .put("takeoverPending", h.takeoverOnPending)
+            }
+            "service.stop" -> {
+                runtime.setTakeover(false)
+                delay(1_200)
+                val h = runtime.health.value
+                if (h.takeover && !h.takeoverOffPending) error("gateway_stop_not_applied")
+                org.json.JSONObject().put("serviceState", if (h.takeoverOffPending) "stopping_after_call" else "stopped")
+                    .put("takeoverPending", h.takeoverOffPending)
+                    .put("gatewayHost", "running")
+            }
+            else -> error("unsupported_command")
+        }
     }
 
     private fun acquireWakeLock() {
