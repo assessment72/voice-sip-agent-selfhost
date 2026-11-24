@@ -61,6 +61,16 @@ Device requests use that device's own bearer token.
   `{"status":"succeeded","result":{"serviceState":"running"}}` or
   `{"status":"failed","error":"permission_denied"}`
 
+The Android source now includes an opt-in transport implementation at
+`app/src/main/kotlin/io/github/sparkcyf/voicesipagent/app/ControlBridgeClient.kt`.
+It supports authenticated heartbeat, command polling, and result reporting. It
+requires an HTTPS URL and is deliberately not started by `GatewayService` yet:
+there is no enrollment/settings UI, credential provisioning, or command-to-runtime
+adapter in this change. In particular, it does not execute service or audio commands.
+The bridge's built-in listener is plain HTTP, so use a private HTTPS reverse proxy
+or VPN endpoint with TLS termination for this Android client; do not weaken its
+HTTPS requirement.
+
 Heartbeat freshness window is 90 seconds. Device credentials are independent and can
 be revoked by removing/replacing that device's configured token and restarting the
 bridge. Android-side enrollment/agent integration is the next implementation step.
