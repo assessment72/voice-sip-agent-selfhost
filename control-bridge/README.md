@@ -74,6 +74,10 @@ bridge. Android-side enrollment/agent integration is the next implementation ste
 - The bridge has no internet-facing authentication proxy or TLS termination. Put it
   behind a private VPN/overlay or a separately configured HTTPS reverse proxy.
 
+## Smoke test
+
+Run the end-to-end local API smoke test with Node.js 20+: `npm test` (or `node smoke-test.mjs`). It checks admin/device authentication, heartbeat telemetry, command queue delivery/result reporting, and confirms that outbound SIP call requests remain disabled (HTTP 501).
+
 ## Persistence
 
 State is atomically written to a local JSON file with restrictive file permissions.
