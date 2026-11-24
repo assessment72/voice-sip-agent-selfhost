@@ -38,6 +38,7 @@ class GatewayService : Service() {
     private var statusJob: Job? = null
     private var bridgeSettingsJob: Job? = null
     private var bridgeHeartbeatJob: Job? = null
+    private var bridgeCommandJob: Job? = null
     private var foreground = false
     // Held while the gateway runs in the foreground, so Doze on an aggressive OEM (ZTE/Nubia,
     // Xiaomi, Transsion…) cannot suspend the SIP reader thread.  Without it the socket backs up
@@ -118,6 +119,8 @@ class GatewayService : Service() {
         statusJob = null
         bridgeHeartbeatJob?.cancel()
         bridgeHeartbeatJob = null
+        bridgeCommandJob?.cancel()
+        bridgeCommandJob = null
         stopForeground(STOP_FOREGROUND_REMOVE)
         foreground = false
         releaseWakeLock()
@@ -131,6 +134,7 @@ class GatewayService : Service() {
         unregisterReceiver(roleReceiver)
         bridgeSettingsJob?.cancel()
         bridgeHeartbeatJob?.cancel()
+        bridgeCommandJob?.cancel()
         scope.cancel()
         stopForeground(STOP_FOREGROUND_REMOVE)
         releaseWakeLock()
@@ -144,6 +148,8 @@ class GatewayService : Service() {
     private fun syncControlBridge(settings: GatewaySettings) {
         bridgeHeartbeatJob?.cancel()
         bridgeHeartbeatJob = null
+        bridgeCommandJob?.cancel()
+        bridgeCommandJob = null
         if (!foreground || settings.controlBridgeUrl.isBlank()) return
         val client = runCatching {
             ControlBridgeClient(settings.controlBridgeUrl, settings.controlBridgeDeviceId, settings.controlBridgeToken)
@@ -167,12 +173,77 @@ class GatewayService : Service() {
                         )
                     }
                 } catch (e: Exception) {
-                    // Do not log URLs, credentials, or response bodies.
                     AppLog.w("Voicx heartbeat failed: ${e.javaClass.simpleName}")
                 }
                 delay(30_000)
             }
         }
+        bridgeCommandJob = scope.launch {
+            while (isActive && foreground) {
+                try {
+                    val commands = withContext(Dispatchers.IO) { client.pollCommands() }
+                    for (command in commands) {
+                        val commandId = command.optString("id")
+                        if (commandId.isBlank()) continue
+                        val execution = try {
+                            withContext(Dispatchers.IO) { client.reportResult(commandId, "running") }
+                            val result = executeControlCommand(runtime, command)
+                            "succeeded" to result
+                        } catch (e: Exception) {
+                            "failed" to org.json.JSONObject().put("error", e.javaClass.simpleName)
+                        }
+                        withContext(Dispatchers.IO) {
+                            client.reportResult(
+                                commandId,
+                                execution.first,
+                                result = execution.second,
+                                error = if (execution.first == "failed") execution.second.optString("error") else null,
+                            )
+                        }
+                    }
+                } catch (e: Exception) {
+                    AppLog.w("Voicx command poll failed: ${e.javaClass.simpleName}")
+                }
+                delay(8_000)
+            }
+        }
+    }
+
+    private suspend fun executeControlCommand(
+        runtime: GatewayRuntime,
+        command: org.json.JSONObject,
+    ): org.json.JSONObject {
+        return when (command.optString("type")) {
+            "service.status" -> {
+                val h = runtime.health.value
+                org.json.JSONObject()
+                    .put("serviceState", if (h.takeover) "running" else "stopped")
+                    .put("gatewayHost", "running")
+                    .put("sipReady", h.sip.ready)
+                    .put("sipDetail", h.sip.detail.take(160))
+                    .put("activeCall", h.session != null || h.calls.owned > 0)
+                    .put("takeoverPending", h.takeoverOffPending || h.takeoverOnPending)
+            }
+            "service.start" -> {
+                runtime.setTakeover(true)
+                delay(1_200)
+                val h = runtime.health.value
+                if (!h.takeover && !h.takeoverOnPending) error("gateway_start_not_applied")
+                org.json.JSONObject().put("serviceState", "running")
+                    .put("takeoverPending", h.takeoverOnPending)
+            }
+            "service.stop" -> {
+                runtime.setTakeover(false)
+                delay(1_200)
+                val h = runtime.health.value
+                if (h.takeover && !h.takeoverOffPending) error("gateway_stop_not_applied")
+                org.json.JSONObject().put("serviceState", if (h.takeoverOffPending) "stopping_after_call" else "stopped")
+                    .put("takeoverPending", h.takeoverOffPending)
+                    .put("gatewayHost", "running")
+            }
+            else -> error("unsupported_command")
+        }
+    }
     }
 
     private fun acquireWakeLock() {
