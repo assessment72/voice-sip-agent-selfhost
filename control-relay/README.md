@@ -23,6 +23,16 @@ outbound authenticated WebSocket connection to the relay. Telegram does not conn
 4. Start: `python server.py`.
 5. Check `http://127.0.0.1:8765/health`.
 
+For an always-on Linux mini PC or home server, Docker is the recommended deployment:
+
+```bash
+docker compose up -d --build
+docker compose logs -f voicx-relay
+```
+
+Enable Docker at host startup (`sudo systemctl enable --now docker`) and keep the host powered
+and connected. `restart: unless-stopped` brings the relay back after host/container restarts.
+
 Keep `.env` private. Do not place the Telegram bot token in an APK, browser, or Git repository.
 The relay must be the only process polling this bot's updates.
 
