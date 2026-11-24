@@ -5,6 +5,7 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.Service
+import android.os.BatteryManager
 import android.content.Context
 import android.content.BroadcastReceiver
 import android.content.Intent
@@ -20,6 +21,9 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
@@ -31,6 +35,8 @@ import kotlinx.coroutines.launch
 class GatewayService : Service() {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
     private var statusJob: Job? = null
+    private var bridgeSettingsJob: Job? = null
+    private var bridgeHeartbeatJob: Job? = null
     private var foreground = false
     // Held while the gateway runs in the foreground, so Doze on an aggressive OEM (ZTE/Nubia,
     // Xiaomi, Transsion…) cannot suspend the SIP reader thread.  Without it the socket backs up
@@ -54,6 +60,11 @@ class GatewayService : Service() {
         ContextCompat.registerReceiver(this, roleReceiver,
             IntentFilter(TelecomManager.ACTION_DEFAULT_DIALER_CHANGED), ContextCompat.RECEIVER_EXPORTED)
         runtime.refreshCallAccess()
+        bridgeSettingsJob = scope.launch {
+            runtime.settingsFlow.map { Triple(it.controlBridgeUrl, it.controlBridgeDeviceId, it.controlBridgeToken) }
+                .distinctUntilChanged()
+                .collect { syncControlBridge(runtime.settings) }
+        }
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -73,6 +84,7 @@ class GatewayService : Service() {
             }
         }
         runtime.onForegroundStarted(runtimeToken)
+        syncControlBridge(runtime.settings)
         if (statusJob == null) {
             val nm = getSystemService(NotificationManager::class.java)
             statusJob = scope.launch {
@@ -99,6 +111,8 @@ class GatewayService : Service() {
     private fun stopGateway(startId: Int? = null) {
         statusJob?.cancel()
         statusJob = null
+        bridgeHeartbeatJob?.cancel()
+        bridgeHeartbeatJob = null
         stopForeground(STOP_FOREGROUND_REMOVE)
         foreground = false
         releaseWakeLock()
@@ -110,10 +124,50 @@ class GatewayService : Service() {
     override fun onDestroy() {
         GatewayRuntime.get(this).onForegroundStopped(runtimeToken)
         unregisterReceiver(roleReceiver)
+        bridgeSettingsJob?.cancel()
+        bridgeHeartbeatJob?.cancel()
         scope.cancel()
         stopForeground(STOP_FOREGROUND_REMOVE)
         releaseWakeLock()
         super.onDestroy()
+    }
+
+    /**
+     * Reports telemetry only. Command polling/execution is deliberately not connected until
+     * a reviewed Android runtime adapter exists for every allow-listed command.
+     */
+    private fun syncControlBridge(settings: GatewaySettings) {
+        bridgeHeartbeatJob?.cancel()
+        bridgeHeartbeatJob = null
+        if (!foreground || settings.controlBridgeUrl.isBlank()) return
+        val client = runCatching {
+            ControlBridgeClient(settings.controlBridgeUrl, settings.controlBridgeDeviceId, settings.controlBridgeToken)
+        }.getOrElse {
+            AppLog.w("Voicx bridge configuration invalid: ${it.javaClass.simpleName}")
+            return
+        }
+        bridgeHeartbeatJob = scope.launch {
+            while (isActive && foreground) {
+                try {
+                    withContext(Dispatchers.IO) {
+                        val batteryManager = getSystemService(BatteryManager::class.java)
+                        val battery = batteryManager.getIntProperty(BatteryManager.BATTERY_PROPERTY_CAPACITY)
+                            .takeIf { it in 0..100 }
+                        val charging = batteryManager.isCharging
+                        client.heartbeat(
+                            battery = battery,
+                            charging = charging,
+                            serviceState = "running",
+                            appVersion = BuildConfig.VERSION_NAME,
+                        )
+                    }
+                } catch (e: Exception) {
+                    // Do not log URLs, credentials, or response bodies.
+                    AppLog.w("Voicx heartbeat failed: ${e.javaClass.simpleName}")
+                }
+                delay(30_000)
+            }
+        }
     }
 
     private fun acquireWakeLock() {
