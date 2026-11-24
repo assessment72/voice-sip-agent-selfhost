@@ -147,6 +147,7 @@ class GatewayService : Service() {
      * a reviewed Android runtime adapter exists for every allow-listed command.
      */
     private fun syncControlBridge(settings: GatewaySettings) {
+        val runtime = GatewayRuntime.get(this)
         bridgeHeartbeatJob?.cancel()
         bridgeHeartbeatJob = null
         bridgeCommandJob?.cancel()
