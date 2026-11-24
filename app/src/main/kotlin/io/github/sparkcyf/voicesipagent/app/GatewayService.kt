@@ -16,6 +16,7 @@ import android.os.Build
 import android.os.PowerManager
 import android.telecom.TelecomManager
 import androidx.core.content.ContextCompat
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -189,6 +190,8 @@ class GatewayService : Service() {
                             withContext(Dispatchers.IO) { client.reportResult(commandId, "running") }
                             val result = executeControlCommand(runtime, command)
                             "succeeded" to result
+                        } catch (e: CancellationException) {
+                            throw e
                         } catch (e: Exception) {
                             "failed" to org.json.JSONObject().put("error", e.javaClass.simpleName)
                         }
@@ -201,8 +204,10 @@ class GatewayService : Service() {
                             )
                         }
                     }
+                } catch (e: CancellationException) {
+                    throw e
                 } catch (e: Exception) {
-                    AppLog.w("Voicx command poll failed: ${e.javaClass.simpleName}")
+                    AppLog.w("Voicx command poll failed")
                 }
                 delay(8_000)
             }
@@ -243,7 +248,6 @@ class GatewayService : Service() {
             }
             else -> error("unsupported_command")
         }
-    }
     }
 
     private fun acquireWakeLock() {
