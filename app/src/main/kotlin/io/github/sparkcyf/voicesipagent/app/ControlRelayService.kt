@@ -115,6 +115,7 @@ class ControlRelayService : Service() {
                 }
 
                 override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
+                    if (!opened.isCompleted) opened.completeExceptionally(IllegalStateException("relay closed before handshake"))
                     closed.complete(Unit)
                 }
 
