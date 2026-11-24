@@ -19,7 +19,7 @@ from typing import Any
 
 import httpx
 from dotenv import load_dotenv
-from fastapi import FastAPI, Header, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 
 load_dotenv()
 
@@ -130,8 +130,8 @@ async def handle_update(update: dict[str, Any]) -> None:
         await tg("sendMessage", {"chat_id": admin_id, "text":
             "Voicx SIP Control متصل. استخدم /devices لعرض الأجهزة، ثم /status DEVICE أو /start_device DEVICE أو /stop_device DEVICE."})
     elif text == "/devices":
-        if not devices:
-            await tg("sendMessage", {"chat_id": admin_id, "text": "لا توجد أجهزة متصلة الآن."})
+        if not DEVICE_TOKENS:
+            await tg("sendMessage", {"chat_id": admin_id, "text": "لا توجد أجهزة مسجلة في إعدادات الوسيط."})
             return
         rows = []
         for device_id in sorted(DEVICE_TOKENS):
@@ -204,9 +204,10 @@ async def health():
     return {"ok": True, "connected_devices": len(devices), "telegram_configured": bool(BOT_TOKEN and ADMIN_IDS)}
 
 @app.websocket("/ws/device/{device_id}")
-async def device_socket(websocket: WebSocket, device_id: str, authorization: str | None = Header(default=None)):
+async def device_socket(websocket: WebSocket, device_id: str):
     expected = DEVICE_TOKENS.get(device_id)
-    supplied = authorization.removeprefix("Bearer ").strip() if authorization else ""
+    authorization = websocket.headers.get("authorization", "")
+    supplied = authorization.removeprefix("Bearer ").strip()
     if not expected or not secrets.compare_digest(supplied, expected):
         await websocket.close(code=1008, reason="unauthorized")
         return
