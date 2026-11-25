@@ -87,7 +87,8 @@ def _claim_update(update_id: int) -> bool:
     kind, store, updates = _storage()
     now = int(time.time())
     if kind == "mongo":
-        updates.create_index("received_at", expireAfterSeconds=24 * 3600)
+        updates.create_index("received_at")
+        updates.delete_many({"received_at": {"$lt": now - 24 * 3600}})
         try:
             updates.insert_one({"_id": str(update_id), "received_at": now})
             return True
@@ -128,7 +129,8 @@ def _create_pending(user_id: int, chat_id: int, action_type: str, target: str, f
         "created_at": now, "updated_at": now,
     }
     if kind == "mongo":
-        store.create_index("created_at", expireAfterSeconds=7 * 24 * 3600)
+        store.create_index("created_at")
+        store.delete_many({"created_at": {"$lt": now - 7 * 24 * 3600}})
         store.insert_one(doc)
     else:
         try:
