@@ -139,6 +139,72 @@ function isTelegramAdmin(update) {
     TELEGRAM_ADMIN_IDS.has(String(sender?.id));
 }
 
+function isCrmTelegramAdmin(update) {
+  const message = update.message;
+  const sender = message?.from;
+  return !!message && message.chat?.type === "private" &&
+    String(message.chat.id) === String(sender?.id) &&
+    CRM_TELEGRAM_ADMIN_IDS.has(String(sender?.id));
+}
+
+function splitCrmFields(value, expected) {
+  const fields = String(value || "").split("|").map(x => x.trim());
+  if (fields.length < expected || fields.slice(0, expected).some(x => !x)) return null;
+  return fields;
+}
+
+async function handleTelegramCrmCommand(message, command, args) {
+  const chatId = message.chat.id;
+  if (!crmStore) {
+    await telegramMessage(chatId, "قاعدة CRM غير مهيأة. أضف إعدادات MongoDB على الخادم أولاً.");
+    return true;
+  }
+  if (command === "/crm_help") {
+    await telegramMessage(chatId,
+      "أوامر CRM:\\n/crm_add الاسم | الهاتف | الشركة | المدينة\\n/crm_search كلمة البحث\\n/crm_never العملاء الذين لم يتم التواصل معهم\\n/crm_due المتابعات المستحقة\\n/crm_log الهاتف | النتيجة | الملخص | موعد المتابعة ISO اختياري");
+    return true;
+  }
+  if (command === "/crm_add") {
+    const fields = splitCrmFields(args, 2);
+    if (!fields) {
+      await telegramMessage(chatId, "الصيغة: /crm_add الاسم | الهاتف | الشركة | المدينة");
+      return true;
+    }
+    const contact = await crmStore.addContact({ name: fields[0], phone: fields[1], company: fields[2] || "", city: fields[3] || "" });
+    await telegramMessage(chatId, "تمت إضافة العميل: " + contact.name + "\\nالهاتف: " + contact.phone + "\\nالمعرّف: " + contact.id);
+    return true;
+  }
+  if (command === "/crm_search" || command === "/crm_never") {
+    const rows = await crmStore.searchContacts(command === "/crm_never"
+      ? { neverContacted: true, limit: 20 } : { query: args, limit: 20 });
+    const lines = rows.map(x => "• " + x.name + " — " + x.phone + (x.company ? " — " + x.company : ""));
+    await telegramMessage(chatId, lines.length ? lines.join("\\n") : "لا توجد نتائج.");
+    return true;
+  }
+  if (command === "/crm_due") {
+    const rows = await crmStore.listFollowUps(true, 30);
+    const lines = rows.map(x => "• " + (x.contact?.name || "عميل غير معروف") + " — " + x.dueAt + " — " + x.title);
+    await telegramMessage(chatId, lines.length ? lines.join("\\n") : "لا توجد متابعات مستحقة حتى الآن.");
+    return true;
+  }
+  if (command === "/crm_log") {
+    const fields = splitCrmFields(args, 3);
+    if (!fields) {
+      await telegramMessage(chatId, "الصيغة: /crm_log الهاتف | النتيجة | الملخص | موعد المتابعة ISO اختياري");
+      return true;
+    }
+    const result = await crmStore.addInteraction({
+      phone: fields[0], channel: "call", outcome: fields[1], summary: fields[2],
+      nextFollowUpAt: fields[3] || null, source: "telegram"
+    });
+    await telegramMessage(chatId, result.contact
+      ? "تم تسجيل التفاعل للعميل " + result.contact.name
+      : "تم حفظ سجل الاتصال؛ لم يُربط بعميل مسجل. أضف العميل أو تحقق من الرقم.");
+    return true;
+  }
+  return false;
+}
+
 async function telegramQueueCommand(chatId, deviceId, type) {
   if (!configured.has(deviceId)) {
     await telegramMessage(chatId, "معرّف الجهاز غير موجود في إعدادات الوسيط.");
@@ -154,6 +220,11 @@ async function telegramQueueCommand(chatId, deviceId, type) {
 }
 
 async function handleTelegramUpdate(update) {
+  if (update.message && isCrmTelegramAdmin(update)) {
+    const raw = String(update.message.text || "").trim();
+    const match = raw.match(/^(\\/crm_[a-z_]+)(?:\\s+([\\s\\S]*))?$/i);
+    if (match && await handleTelegramCrmCommand(update.message, match[1].toLowerCase(), match[2] || "")) return;
+  }
   if (!isTelegramAdmin(update)) return;
   if (update.callback_query) {
     const callback = update.callback_query;
