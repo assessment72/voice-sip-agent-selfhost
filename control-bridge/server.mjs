@@ -223,7 +223,15 @@ async function handleTelegramUpdate(update) {
   if (update.message && isCrmTelegramAdmin(update)) {
     const raw = String(update.message.text || "").trim();
     const match = raw.match(/^(\/crm_[a-z_]+)(?:\s+([\s\S]*))?$/i);
-    if (match && await handleTelegramCrmCommand(update.message, match[1].toLowerCase(), match[2] || "")) return;
+    if (match) {
+      try {
+        if (await handleTelegramCrmCommand(update.message, match[1].toLowerCase(), match[2] || "")) return;
+      } catch (error) {
+        const reply = error?.status === 409 ? "هذا الرقم مسجل مسبقاً لعميل آخر." : "تعذر تنفيذ أمر CRM. تحقق من البيانات واتصال قاعدة البيانات.";
+        await telegramMessage(update.message.chat.id, reply);
+        return;
+      }
+    }
   }
   if (!isTelegramAdmin(update)) return;
   if (update.callback_query) {
