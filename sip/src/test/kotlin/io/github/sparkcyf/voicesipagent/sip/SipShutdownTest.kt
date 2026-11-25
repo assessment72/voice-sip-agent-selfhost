@@ -34,7 +34,20 @@ class SipShutdownTest {
                 assertFalse(ua.status.ready)
                 assertEquals("stopped", ua.status.detail)
                 assertEquals(0, lateTask.get())
-                DatagramSocket(port).use { assertEquals(port, it.localPort) }
+                // stop() has a bounded wait and schedules socket cleanup on the SIP
+                // executor. Poll for release instead of racing that queued cleanup task.
+                var rebound = false
+                repeat(80) {
+                    if (!rebound) {
+                        try {
+                            DatagramSocket(port).use { assertEquals(port, it.localPort) }
+                            rebound = true
+                        } catch (_: java.net.BindException) {
+                            Thread.sleep(25)
+                        }
+                    }
+                }
+                assertTrue("SIP UDP socket was not released after stop", rebound)
             } finally {
                 if (thread.get()?.isAlive == true) ua.stop(timeoutMs = 50)
             }
