@@ -2,7 +2,7 @@ name: Android build and tests
 
 on:
   pull_request:
-    branches: [main]
+    branches: [main, feat/sip-to-cellular-outbound]
   workflow_dispatch:
 
 permissions:

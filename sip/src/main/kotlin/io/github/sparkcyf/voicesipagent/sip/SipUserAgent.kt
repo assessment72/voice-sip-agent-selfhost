@@ -70,6 +70,8 @@ class SipUserAgent(
     private val authBanUntil = HashMap<String, Long>()          // source IP -> banned until (ms)
     private val authBanCount = HashMap<String, Int>()           // source IP -> consecutive ban level
     private val authBanLastMs = HashMap<String, Long>()         // source IP -> time of last ban (escalation decay)
+    private val authLastSeenMs = HashMap<String, Long>()        // bounds all source-IP tracking maps
+    private val maxTrackedAuthIps = 4096
 
     private val account get() = config.account
     // Identity used when we originate (device-in-itself mode has no configured account).
@@ -84,6 +86,8 @@ class SipUserAgent(
     private var peerExpiry: ScheduledFuture<*>? = null
     /** Full SIP URI (sip:user@ip:port) to reach the registered phone, or null if none. */
     internal fun serverPeerUri(): String? = peerContactUri
+    /** Current Linphone registration target for hosted cellular-to-SIP calls, if registered. */
+    fun hostedCallDestination(fallback: String?): String? = peerContactUri ?: fallback?.takeIf { it.isNotBlank() }
     /** Domain to use in locally generated URIs (our LAN IP when no account domain is set). */
     internal val selfDomain: String get() = localDomain
 
@@ -393,7 +397,13 @@ class SipUserAgent(
      * through, false when it was handled here (401 sent, or silently dropped as banned/over-limit).
      */
     private fun registrarAuthPassed(req: SipRequest, from: InetSocketAddress): Boolean {
-        if (config.registrarPassword.isEmpty()) return true
+        // Server mode must never accept an unauthenticated REGISTER: the Contact
+        // controls where hosted inbound SIP legs are delivered.
+        if (config.registrarPassword.isEmpty()) {
+            transport.send(buildResponse(req, 403, toTag = newTag()), from)
+            log.warn("REGISTER from ${from.address?.hostAddress ?: "unknown"} refused: registrar password is not configured")
+            return false
+        }
         val ip = from.address?.hostAddress ?: ""
         return when (val o = digestCheck(req, ip, "REGISTER")) {
             AuthOutcome.PASS -> true
@@ -450,6 +460,7 @@ class SipUserAgent(
      */
     private fun digestCheck(req: SipRequest, ip: String, method: String): AuthOutcome {
         val now = System.currentTimeMillis()
+        touchAuthIp(ip, now)
         authBanUntil[ip]?.let { until ->
             if (now < until) {
                 log.warn("$method from banned $ip dropped (${(until - now) / 1000}s left)")
@@ -482,13 +493,37 @@ class SipUserAgent(
         return AuthOutcome.Challenge(issueNonce(now))
     }
 
+    /**
+     * Keep brute-force tracking bounded even if an attacker rotates source IPs.
+     * Expired entries are pruned first; if the hard cap is reached, evict the least
+     * recently seen IP and all of its associated failure/ban state.
+     */
+    private fun touchAuthIp(ip: String, now: Long) {
+        val stale = authLastSeenMs.filterValues { now - it > authBanResetMs }.keys.toList()
+        for (key in stale) {
+            authLastSeenMs.remove(key)
+            authFailTimes.remove(key)
+            authBanUntil.remove(key)
+            authBanCount.remove(key)
+            authBanLastMs.remove(key)
+        }
+        if (!authLastSeenMs.containsKey(ip) && authLastSeenMs.size >= maxTrackedAuthIps) {
+            val oldest = authLastSeenMs.minByOrNull { it.value }?.key
+            if (oldest != null) {
+                authLastSeenMs.remove(oldest)
+                authFailTimes.remove(oldest)
+                authBanUntil.remove(oldest)
+                authBanCount.remove(oldest)
+                authBanLastMs.remove(oldest)
+            }
+        }
+        authLastSeenMs[ip] = now
+    }
+
     /** Record a failed auth from [ip]; returns the ban duration in ms if this pushed it over the limit
      *  (now banned), else 0.  Repeat offenders escalate per [authBanEscalation]; the level decays after
      *  [authBanResetMs] of good behaviour, which also keeps the maps bounded. */
     private fun registrarAuthFailed(ip: String, now: Long): Long {
-        val stale = authBanLastMs.filterValues { now - it > authBanResetMs }.keys.toList()
-        for (k in stale) { authBanLastMs.remove(k); authBanCount.remove(k) }
-
         val times = authFailTimes.getOrPut(ip) { ArrayDeque() }
         times.addLast(now)
         while (times.isNotEmpty() && now - times.first() > authFailWindowMs) times.removeFirst()

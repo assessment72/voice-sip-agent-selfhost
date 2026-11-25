@@ -13,11 +13,21 @@ import java.util.concurrent.TimeUnit
  * cadence drives both directions so the path stays in a single clock domain; otherwise an
  * internal 20 ms ticker is used.
  */
-class MediaBridge(private val a: MediaPort, private val b: MediaPort) {
+class MediaBridge(
+    private val a: MediaPort,
+    private val b: MediaPort,
+    private val aToBGain: Float = 1f,
+    private val bToAGain: Float = 1f,
+    private val muteAToB: Boolean = false,
+    private val muteBToA: Boolean = false,
+) {
     init {
         require(a.format == b.format) { "Media formats differ: ${a.format} / ${b.format}" }
     }
     private val master: MediaPort? = if (a.isClockSource) a else if (b.isClockSource) b else null
+    // Separate adaptive level controllers keep each call direction independent.
+    private val aToBProcessor = PcmSpeechProcessor()
+    private val bToAProcessor = PcmSpeechProcessor()
     private var ticker: ScheduledExecutorService? = null
 
     @Volatile var frames = 0L
@@ -49,8 +59,8 @@ class MediaBridge(private val a: MediaPort, private val b: MediaPort) {
         try {
             val fa = a.readFrame()
             val fb = b.readFrame()
-            b.writeFrame(fa)
-            a.writeFrame(fb)
+            b.writeFrame(if (muteAToB) a.format.silence() else aToBProcessor.process(fa, aToBGain))
+            a.writeFrame(if (muteBToA) b.format.silence() else bToAProcessor.process(fb, bToAGain))
             windowPeakA = maxOf(windowPeakA, VoiceFormat.peak(fa))
             windowPeakB = maxOf(windowPeakB, VoiceFormat.peak(fb))
             if (++frames % 50 == 0L) {

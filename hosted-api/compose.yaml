@@ -1,0 +1,46 @@
+services:
+  hosted-api:
+    build: .
+    init: true
+    restart: unless-stopped
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    env_file: .env
+    environment:
+      DATABASE_PATH: /data/calls.sqlite3
+    volumes:
+      - hosted-call-data:/data
+    expose:
+      - "8080"
+    networks:
+      - call-control
+
+  caddy:
+    image: caddy:2
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    depends_on:
+      hosted-api:
+        condition: service_healthy
+    networks:
+      - call-control
+
+volumes:
+  hosted-call-data:
+  caddy-data:
+  caddy-config:
+
+networks:
+  call-control:

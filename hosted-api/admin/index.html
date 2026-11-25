@@ -1,0 +1,212 @@
+<!doctype html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="theme-color" content="#0b1220">
+<title>Voicx SIP — لوحة التحكم</title>
+<style>
+:root{color-scheme:dark;--bg:#0b1220;--panel:#121c2e;--line:#26364d;--muted:#9fb0c5;--text:#edf4fc;--blue:#4da3ff;--green:#27c58a;--amber:#f4b942;--red:#f16b75}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:15px system-ui,-apple-system,"Segoe UI",sans-serif}main{max-width:1440px;margin:auto;padding:22px}
+header{display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap}h1{font-size:25px;margin:0 0 5px}h2{font-size:18px;margin:0 0 14px}h3{font-size:15px;margin:0 0 10px}p,.muted{color:var(--muted)}p{margin:0 0 18px}.panel{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:16px;margin:14px 0}.grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px}.grid3{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px}.metric{padding:14px;border-radius:12px;background:#17263a}.metric small{display:block;color:var(--muted)}.metric strong{font-size:27px;display:block;margin-top:5px}
+input,select,button{font:inherit;border-radius:9px;padding:10px 12px;border:1px solid var(--line);background:#0d1727;color:var(--text)}input,select{width:100%;min-width:0}button{cursor:pointer;background:#17375a;border-color:#275a8c}button.secondary{background:#202e40}button.danger{background:#4a202b;border-color:#7a3442}button:disabled{opacity:.5;cursor:wait}.row{display:flex;gap:10px;align-items:end;flex-wrap:wrap}.field{flex:1;min-width:180px}.field label{display:block;color:var(--muted);font-size:13px;margin-bottom:6px}.scroll{overflow:auto}table{width:100%;border-collapse:collapse;min-width:740px}th,td{text-align:right;padding:11px;border-bottom:1px solid var(--line);font-size:13px;vertical-align:middle}th{color:var(--muted);font-weight:600}.pill{padding:4px 8px;border-radius:20px;font-size:12px;background:#24354b}.online,.ok{color:var(--green)}.unstable{color:var(--amber)}.offline,.error{color:var(--red)}.error,.ok{margin-top:10px}.actions{display:flex;gap:6px;flex-wrap:wrap}.actions button{padding:6px 9px;font-size:12px}.hidden{display:none!important}.notice{border:1px solid #6b5425;background:#302817;color:#f5d48c;border-radius:10px;padding:10px 12px;font-size:13px;margin-top:10px}.secret{direction:ltr;text-align:left;word-break:break-all}.top-actions{display:flex;gap:8px;align-items:center}.section-head{display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap}.small{font-size:12px}.token-result{border:1px dashed #42678b;padding:12px;border-radius:10px;margin-top:12px}.latency{background:#17263a;border-radius:10px;padding:12px}.latency b{display:block;font-size:19px;margin-top:4px}
+@media(max-width:760px){main{padding:12px}.grid{grid-template-columns:repeat(2,minmax(0,1fr))}.grid3{grid-template-columns:1fr}.panel{padding:12px}h1{font-size:21px}.row .field{min-width:100%}}
+</style>
+</head>
+<body>
+<main>
+<header><div><h1>Voicx SIP — لوحة التحكم</h1><p>إدارة المؤسسة والفروع والأجهزة والمكالمات ومراقبة الخدمة</p></div><div class="top-actions"><span id="connection" class="pill">غير متصل</span><button id="logout" class="secondary hidden">قطع الاتصال</button></div></header>
+
+<section class="panel" id="bootstrapPanel">
+<h2>إنشاء مؤسسة جديدة</h2>
+<p class="small">يتطلب رمز التهيئة الموجود في إعدادات الخادم. لن يُحفظ الرمز في المتصفح، ويُعرض رمز المؤسسة مرة واحدة فقط.</p>
+<div class="row">
+ <div class="field"><label for="bootstrapToken">رمز التهيئة ORG_BOOTSTRAP_TOKEN</label><input id="bootstrapToken" type="password" autocomplete="off" placeholder="أدخل رمز التهيئة"></div>
+ <div class="field"><label for="orgName">اسم المؤسسة</label><input id="orgName" placeholder="مؤسسة Voicx SIP"></div>
+ <div class="field"><label for="orgSlug">معرّف مختصر (slug)</label><input id="orgSlug" placeholder="voicx-sip"></div>
+ <div class="field"><label for="ownerId">معرّف المالك</label><input id="ownerId" value="owner-1"></div>
+ <button id="bootstrap">إنشاء المؤسسة</button>
+</div>
+<div id="bootstrapResult"></div>
+</section>
+
+<section class="panel" id="connectPanel">
+<h2>الاتصال بالمؤسسة</h2>
+<div class="row">
+ <div class="field"><label for="org">معرّف المؤسسة</label><input id="org" autocomplete="off" placeholder="Organization ID"></div>
+ <div class="field"><label for="token">رمز المؤسسة (Bearer API token)</label><input id="token" type="password" autocomplete="off" placeholder="رمز المالك أو المسؤول"></div>
+ <button id="connect">اتصال</button>
+</div>
+<div id="message" role="status" aria-live="polite" class="muted" style="margin-top:10px">الرمز يبقى في ذاكرة الصفحة فقط ولا يُحفظ في التخزين المحلي.</div>
+</section>
+
+<section id="dashboard" class="hidden">
+<div class="grid">
+ <div class="metric"><small>الأجهزة المتصلة</small><strong id="online">—</strong></div>
+ <div class="metric"><small>غير مستقرة</small><strong id="unstable">—</strong></div>
+ <div class="metric"><small>غير متصلة</small><strong id="offline">—</strong></div>
+ <div class="metric"><small>المكالمات المسجلة</small><strong id="calls">—</strong></div>
+</div>
+
+<section class="panel">
+<div class="section-head"><h2>بدء مكالمة صادرة عبر الشريحة</h2><span class="pill">SIM أولاً ثم SIP</span></div>
+<div class="row">
+ <div class="field"><label for="phoneNumber">رقم الهاتف الدولي</label><input id="phoneNumber" inputmode="tel" placeholder="+9677XXXXXXXX"></div>
+ <button id="createCall">إرسال طلب المكالمة</button>
+</div>
+<div class="notice">تنبيه: هذا الزر يضع مكالمة حقيقية في طابور الجهاز المتصل. لا تضغطه إلا بعد التأكد من الرقم والشريحة والرصيد؛ قد تُحتسب رسوم اتصال. لا تُجرى مكالمة تلقائياً عند فتح اللوحة.</div>
+</section>
+
+<section class="panel">
+<h2>إصدار رمز تسجيل جهاز</h2>
+<div class="row">
+ <div class="field"><label for="enrollLabel">وصف الجهاز</label><input id="enrollLabel" value="تسجيل جهاز جديد"></div>
+ <div class="field"><label for="enrollExpiry">مدة الصلاحية</label><select id="enrollExpiry"><option value="900">15 دقيقة</option><option value="3600" selected>ساعة</option><option value="86400">24 ساعة</option></select></div>
+ <div class="field"><label for="enrollUses">عدد مرات الاستخدام</label><select id="enrollUses"><option value="1" selected>مرة واحدة</option><option value="2">مرتان</option><option value="5">5 مرات</option></select></div>
+ <button id="issueEnrollment">إصدار الرمز</button>
+</div><div id="enrollmentResult"></div>
+</section>
+
+<section class="panel">
+<div class="section-head"><h2>الفروع</h2><button class="secondary" id="refresh">تحديث البيانات</button></div>
+<div class="row"><div class="field"><label for="branchName">اسم الفرع</label><input id="branchName" placeholder="الفرع الرئيسي"></div><div class="field"><label for="branchCode">رمز الفرع (اختياري)</label><input id="branchCode" placeholder="BR-01"></div><button id="addBranch">إضافة فرع</button></div>
+<div id="branchList" class="row" style="margin-top:12px"></div>
+</section>
+
+<section class="panel">
+<div class="section-head"><h2>الأجهزة المسجلة</h2><span class="muted small">تحديث تلقائي كل 30 ثانية</span></div>
+<div class="scroll"><table><thead><tr><th>الجهاز</th><th>الفرع</th><th>الحالة</th><th>آخر ظهور</th><th>البطارية</th><th>SIP</th><th>الشريحة</th><th>إجراءات</th></tr></thead><tbody id="devices"></tbody></table></div>
+</section>
+
+<section class="panel"><h2>المكالمات</h2><div class="scroll"><table><thead><tr><th>المعرّف</th><th>الحالة</th><th>الجهاز</th><th>الإنشاء</th><th>آخر تحديث</th><th>السبب</th><th>تفاصيل</th></tr></thead><tbody id="callRows"></tbody></table></div></section>
+
+<section class="panel"><h2>مؤشرات زمن الاتصال</h2><div class="grid3" id="latency"></div><p class="small muted">تظهر المؤشرات بعد توفر عينات فعلية. لا تعتبر القيم الفارغة صفراً.</p></section>
+
+<section class="panel"><h2>النشاط الأخير للأجهزة</h2><div class="scroll"><table><thead><tr><th>الجهاز</th><th>الحدث</th><th>الخطورة</th><th>الرمز</th><th>وقت الاستلام</th></tr></thead><tbody id="activityRows"></tbody></table></div></section>
+
+<section class="panel"><h2>سجل تدقيق الإدارة</h2><div class="scroll"><table><thead><tr><th>المنفذ</th><th>الإجراء</th><th>الهدف</th><th>المعرّف</th><th>الوقت</th></tr></thead><tbody id="auditRows"></tbody></table></div></section>
+</section>
+<script>
+(()=> {
+ let orgId="", token="", refreshTimer=null;
+ const el=id=>document.getElementById(id);
+ const msg=(text,kind="muted")=>{el("message").className=kind;el("message").textContent=text};
+ const headers=()=>({"Authorization":"Bearer "+token,"X-Organization-ID":orgId,"Content-Type":"application/json"});
+ function describeApiError(value){
+  if(typeof value==="string") return value;
+  if(Array.isArray(value)) return value.map(item=>{
+   if(typeof item==="string") return item;
+   const loc=Array.isArray(item?.loc)?item.loc.filter(x=>x!=="body"&&x!=="query"&&x!=="header").join("."):"";
+   const message=item?.msg||item?.message||"خطأ في البيانات";
+   return loc?loc+": "+message:message;
+  }).join("؛ ");
+  if(value&&typeof value==="object"){
+   if(typeof value.message==="string") return value.message;
+   if(typeof value.error==="string") return value.error;
+   if(typeof value.detail==="string"||Array.isArray(value.detail)) return describeApiError(value.detail);
+   try{return JSON.stringify(value)}catch{return "استجابة خطأ غير معروفة"}
+  }
+  return value==null?"":String(value);
+ }
+ async function request(path,options={},auth=true){
+  const h=auth?headers():{"Content-Type":"application/json"};
+  const response=await fetch(path,{...options,headers:{...h,...(options.headers||{})}});
+  const raw=await response.text();
+  let body={};
+  if(raw){try{body=JSON.parse(raw)}catch{body={detail:raw.slice(0,500)}}}
+  if(!response.ok){
+   const detail=describeApiError(body.detail??body.error??body.message);
+   throw new Error(detail||("HTTP "+response.status));
+  }
+  return body;
+ }
+ const age=value=>value==null?"لم يتصل":value<60?"منذ "+value+" ث":"منذ "+Math.floor(value/60)+" د";
+ const date=value=>value?new Date(value*1000).toLocaleString():"—";
+ function oneTimeResult(container,title,value,warning){
+  const box=el(container);box.replaceChildren();
+  const wrap=document.createElement("div");wrap.className="token-result";
+  const heading=document.createElement("b");heading.textContent=title;wrap.appendChild(heading);
+  const val=document.createElement("p");val.className="secret";val.textContent=value;wrap.appendChild(val);
+  const copy=document.createElement("button");copy.textContent="نسخ الرمز";copy.onclick=async()=>{try{await navigator.clipboard.writeText(value);copy.textContent="تم النسخ"}catch{copy.textContent="تعذر النسخ"}};wrap.appendChild(copy);
+  const note=document.createElement("p");note.className="small muted";note.textContent=warning+" احفظه الآن؛ لن يُعرض مرة أخرى.";wrap.appendChild(note);box.appendChild(wrap);
+ }
+ async function bootstrap(){
+  const secret=el("bootstrapToken").value.trim(),name=el("orgName").value.trim(),slug=el("orgSlug").value.trim(),ownerUserId=el("ownerId").value.trim();
+  if(!secret||!name||!slug||!ownerUserId){msg("أكمل بيانات إنشاء المؤسسة ورمز التهيئة.","error");return}
+  const button=el("bootstrap");button.disabled=true;
+  try{
+   const data=await request("/v1/organizations/bootstrap",{method:"POST",headers:{Authorization:"Bearer "+secret},body:JSON.stringify({name,slug,ownerUserId})},false);
+   el("bootstrapToken").value="";
+   oneTimeResult("bootstrapResult","رمز المؤسسة — يُعرض مرة واحدة",data.apiToken,data.tokenWarning||"احفظ الرمز في مدير أسرار آمن.");
+   el("org").value=data.organizationId;el("token").value=data.apiToken;
+   msg("تم إنشاء المؤسسة. تم تعبئة بيانات الاتصال؛ اضغط اتصال لفتح لوحة التحكم.","ok");
+  }catch(e){msg("تعذر إنشاء المؤسسة: "+e.message,"error")}finally{button.disabled=false}
+ }
+ async function sendCommand(deviceId,commandType,button){
+  button.disabled=true;try{await request("/v1/admin/device-commands",{method:"POST",body:JSON.stringify({deviceId,commandType})});msg("تم تسجيل الأمر في قائمة الانتظار؛ ينتظر الجهاز استلامه.","ok")}
+  catch(e){msg("تعذر تنفيذ الأمر: "+e.message,"error")}finally{button.disabled=false}
+ }
+ async function revokeDevice(deviceId,button){
+  if(!confirm("سيتم إلغاء اعتماد هذا الجهاز وإبطال رمز دخوله. هل تريد المتابعة؟"))return;
+  button.disabled=true;try{await request("/v1/admin/devices/"+encodeURIComponent(deviceId)+"/revoke",{method:"POST"});msg("تم إلغاء اعتماد الجهاز.","ok");await refresh()}
+  catch(e){msg("تعذر إلغاء الجهاز: "+e.message,"error")}finally{button.disabled=false}
+ }
+ function deviceRow(d){
+  const tr=document.createElement("tr");
+  [d.display_name+" · "+d.external_device_id,d.branch_name||"—",d.presence,age(d.lastSeenAgeSeconds),d.battery_level==null?"—":d.battery_level+"%",d.sip_status,d.sim_status].forEach((v,i)=>{const td=document.createElement("td");td.textContent=v??"—";if(i===2)td.className=d.presence;tr.appendChild(td)});
+  const td=document.createElement("td"),actions=document.createElement("div");actions.className="actions";
+  [["refresh_status","تحديث"],["pause_calls","إيقاف"],["resume_calls","استئناف"]].forEach(([type,label])=>{const b=document.createElement("button");b.textContent=label;b.onclick=()=>sendCommand(d.id,type,b);actions.appendChild(b)});
+  if(d.status==="active"){const b=document.createElement("button");b.className="danger";b.textContent="إلغاء الجهاز";b.onclick=()=>revokeDevice(d.id,b);actions.appendChild(b)}
+  td.appendChild(actions);tr.appendChild(td);return tr;
+ }
+ async function showCall(callId){
+  try{const data=await request("/v1/admin/calls/"+encodeURIComponent(callId));alert("المكالمة: "+data.id+"\nالحالة: "+data.state+"\nالجهاز: "+(data.device_id||"بانتظار جهاز")+"\nالسبب: "+(data.reason_code||"—"))}
+  catch(e){msg("تعذر جلب تفاصيل المكالمة: "+e.message,"error")}
+ }
+ async function refresh(){
+  const results=await Promise.all([
+   request("/v1/admin/devices"),request("/v1/admin/calls?limit=100"),request("/v1/admin/activity?limit=50"),
+   request("/v1/admin/branches"),request("/v1/admin/metrics/latency"),request("/v1/admin/audit?limit=50")
+  ]);
+  const [deviceData,callData,activityData,branchData,latencyData,auditData]=results;
+  const devices=deviceData.devices||[],calls=callData.calls||[],events=activityData.events||[],branches=branchData.branches||[];
+  el("online").textContent=devices.filter(x=>x.presence==="online").length;
+  el("unstable").textContent=devices.filter(x=>x.presence==="unstable").length;
+  el("offline").textContent=devices.filter(x=>x.presence==="offline").length;
+  el("calls").textContent=calls.length;
+  el("branchList").replaceChildren(...branches.map(b=>{const tag=document.createElement("span");tag.className="pill";tag.textContent=b.name+(b.code?" · "+b.code:"");return tag}));
+  el("devices").replaceChildren(...devices.map(deviceRow));
+  el("callRows").replaceChildren(...calls.map(c=>{const tr=document.createElement("tr");[c.id,c.state,c.device_id||"بانتظار جهاز",date(c.created_at),date(c.updated_at),c.reason_code||"—"].forEach(v=>{const td=document.createElement("td");td.textContent=v??"—";tr.appendChild(td)});const td=document.createElement("td"),b=document.createElement("button");b.className="secondary";b.textContent="عرض";b.onclick=()=>showCall(c.id);td.appendChild(b);tr.appendChild(td);return tr}));
+  el("activityRows").replaceChildren(...events.map(e=>{const tr=document.createElement("tr");[e.display_name,e.event_type,e.severity,e.event_code,date(e.received_at)].forEach(v=>{const td=document.createElement("td");td.textContent=v??"—";tr.appendChild(td)});return tr}));
+  el("auditRows").replaceChildren(...(auditData.events||[]).map(e=>{const tr=document.createElement("tr");[e.actor_user_id,e.action,e.target_type,e.target_id,date(e.created_at)].forEach(v=>{const td=document.createElement("td");td.textContent=v??"—";tr.appendChild(td)});return tr}));
+  const labels={queue_to_cellular_ringing:"الانتظار حتى رنين الشريحة",queue_to_bridged:"من الطلب حتى ربط الصوت",cellular_answer_to_sip:"من رد الشريحة حتى SIP"};
+  el("latency").replaceChildren(...Object.entries(labels).map(([key,label])=>{const card=document.createElement("div");card.className="latency";const title=document.createElement("span");title.className="small muted";title.textContent=label;const value=document.createElement("b");const sample=latencyData[key]||{};value.textContent=sample.averageMs==null?"لا توجد عينات":Math.round(sample.averageMs)+" ms";const detail=document.createElement("small");detail.className="muted";detail.textContent="العينات: "+(sample.samples||0)+" · P95: "+(sample.p95Ms==null?"—":Math.round(sample.p95Ms)+" ms");card.append(title,value,detail);return card}));
+  el("dashboard").classList.remove("hidden");el("connection").textContent="متصل";el("connection").className="pill online";msg("تم تحديث بيانات المؤسسة.","ok");
+ }
+ async function connect(){
+  orgId=el("org").value.trim();token=el("token").value.trim();if(!orgId||!token){msg("أدخل معرّف المؤسسة ورمزها.","error");return}
+  const button=el("connect");button.disabled=true;
+  try{await refresh();el("logout").classList.remove("hidden");el("connectPanel").classList.add("hidden");if(refreshTimer)clearInterval(refreshTimer);refreshTimer=setInterval(()=>refresh().catch(e=>msg("تعذر التحديث التلقائي: "+e.message,"error")),30000)}
+  catch(e){msg("فشل الاتصال: "+e.message,"error");el("dashboard").classList.add("hidden");el("connection").textContent="فشل الاتصال"}
+  finally{button.disabled=false}
+ }
+ async function createCall(){
+  const phoneNumber=el("phoneNumber").value.trim();if(!/^\+[1-9]\d{7,14}$/.test(phoneNumber)){msg("أدخل الرقم بالصيغة الدولية، مثال +9677XXXXXXXX.","error");return}
+  if(!confirm("سيتم إرسال طلب مكالمة حقيقية إلى "+phoneNumber+". قد تُحتسب رسوم من شركة الاتصالات. متابعة؟"))return;
+  const button=el("createCall");button.disabled=true;
+  try{const data=await request("/v1/organizations/"+encodeURIComponent(orgId)+"/calls",{method:"POST",headers:{"Idempotency-Key":crypto.randomUUID()},body:JSON.stringify({phoneNumber})});msg("تم وضع المكالمة في الطابور. المعرّف: "+data.id,"ok");el("phoneNumber").value="";await refresh()}
+  catch(e){msg("تعذر إنشاء المكالمة: "+e.message,"error")}finally{button.disabled=false}
+ }
+ async function issueEnrollment(){
+  const label=el("enrollLabel").value.trim()||"New device";
+  const button=el("issueEnrollment");button.disabled=true;
+  try{const data=await request("/v1/organizations/"+encodeURIComponent(orgId)+"/enrollment-tokens",{method:"POST",body:JSON.stringify({label,expiresInSeconds:Number(el("enrollExpiry").value),maxUses:Number(el("enrollUses").value)})});oneTimeResult("enrollmentResult","رمز تسجيل الجهاز",data.enrollmentToken,data.tokenWarning||"شارك الرمز مع الجهاز المقصود فقط.")}
+  catch(e){msg("تعذر إصدار رمز التسجيل: "+e.message,"error")}finally{button.disabled=false}
+ }
+ el("bootstrap").onclick=bootstrap;el("connect").onclick=connect;el("refresh").onclick=()=>refresh().catch(e=>msg("تعذر التحديث: "+e.message,"error"));
+ el("createCall").onclick=createCall;el("issueEnrollment").onclick=issueEnrollment;
+ el("addBranch").onclick=async()=>{const name=el("branchName").value.trim(),code=el("branchCode").value.trim();if(!name){msg("اكتب اسم الفرع أولاً.","error");return}try{await request("/v1/organizations/"+encodeURIComponent(orgId)+"/branches",{method:"POST",body:JSON.stringify({name,code:code||null})});el("branchName").value="";el("branchCode").value="";await refresh();msg("تم إنشاء الفرع.","ok")}catch(e){msg("تعذر إنشاء الفرع: "+e.message,"error")}};
+ el("logout").onclick=()=>{token="";orgId="";if(refreshTimer)clearInterval(refreshTimer);el("token").value="";el("org").value="";el("dashboard").classList.add("hidden");el("connectPanel").classList.remove("hidden");el("logout").classList.add("hidden");el("connection").textContent="غير متصل";el("connection").className="pill";msg("تم قطع الاتصال ومسح الرمز من ذاكرة الصفحة.")};
+ window.addEventListener("beforeunload",()=>{token="";});
+})();
+</script>
+</body></html>

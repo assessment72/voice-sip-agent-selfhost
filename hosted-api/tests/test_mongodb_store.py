@@ -1,0 +1,164 @@
+from __future__ import annotations
+
+import pytest
+
+import mongodb_store
+
+
+class FakeCollection:
+    def __init__(self):
+        self.index_batches = []
+
+    def create_indexes(self, indexes):
+        self.index_batches.append(indexes)
+        return [index.document["name"] for index in indexes]
+
+
+class FakeRateCollection:
+    def __init__(self):
+        self.rows = {}
+
+    def find_one_and_update(self, identity, update, upsert=False, return_document=None):
+        key = (identity["principal"], identity["window_start"])
+        if key not in self.rows:
+            if not upsert:
+                return None
+            self.rows[key] = {"principal": key[0], "window_start": key[1],
+                              "count": 0, **update.get("$setOnInsert", {})}
+        self.rows[key]["count"] += update["$inc"]["count"]
+        return dict(self.rows[key])
+
+
+class FakeDatabase:
+    def __init__(self):
+        self.collections = {}
+
+    def __getitem__(self, name):
+        return self.collections.setdefault(name, FakeCollection())
+
+    def command(self, name):
+        assert name == "ping"
+        return {"ok": 1}
+
+
+def test_ensure_indexes_creates_expected_collections_and_is_repeatable():
+    db = FakeDatabase()
+
+    mongodb_store.ensure_indexes(db)
+    first_counts = {name: len(col.index_batches) for name, col in db.collections.items()}
+    mongodb_store.ensure_indexes(db)
+
+    assert len(db.collections) >= 13
+    assert all(count == 1 for count in first_counts.values())
+    assert all(len(col.index_batches) == 2 for col in db.collections.values())
+
+
+def test_call_idempotency_and_active_slot_indexes_are_organization_scoped():
+    db = FakeDatabase()
+    mongodb_store.ensure_indexes(db)
+
+    indexes = db["calls"].index_batches[0]
+    idem = next(index for index in indexes
+                if index.document["name"] == "uq_org_principal_idempotency")
+    assert idem.document["unique"] is True
+    assert list(idem.document["key"].items()) == [
+        ("organization_id", 1), ("principal", 1), ("idempotency_key", 1)
+    ]
+
+    active = next(index for index in indexes
+                   if index.document["name"] == "uq_org_single_active_call_slot")
+    assert active.document["unique"] is True
+    assert list(active.document["key"].items()) == [
+        ("organization_id", 1), ("active_slot", 1)
+    ]
+    assert active.document["partialFilterExpression"] == {
+        "active_slot": {"$exists": True}
+    }
+
+
+def test_branch_code_uniqueness_only_applies_to_string_codes():
+    db = FakeDatabase()
+    mongodb_store.ensure_indexes(db)
+
+    indexes = db["branches"].index_batches[0]
+    branch_code = next(index for index in indexes
+                       if index.document["name"] == "uq_branch_org_code")
+    assert branch_code.document["unique"] is True
+    assert branch_code.document["partialFilterExpression"] == {
+        "code": {"$type": "string"}
+    }
+
+
+def test_shared_rate_limiter_atomically_increments_window(monkeypatch):
+    fake = FakeRateCollection()
+    monkeypatch.setattr(mongodb_store, "collection", lambda name: fake)
+    allowed, count = mongodb_store.consume_rate_limit(
+        key_hash="hashed-client-key", window_start=120, limit=2, expires_at=300
+    )
+    assert (allowed, count) == (True, 1)
+    assert mongodb_store.consume_rate_limit(
+        key_hash="hashed-client-key", window_start=120, limit=2, expires_at=300
+    ) == (True, 2)
+    assert mongodb_store.consume_rate_limit(
+        key_hash="hashed-client-key", window_start=120, limit=2, expires_at=300
+    ) == (False, 3)
+    assert len(fake.rows) == 1
+    from datetime import datetime
+    assert isinstance(fake.rows[("hashed-client-key", 120)]["expires_at"], datetime)
+
+
+def test_client_requires_uri(monkeypatch):
+    mongodb_store.get_client.cache_clear()
+    monkeypatch.delenv("MONGODB_URI", raising=False)
+    with pytest.raises(mongodb_store.MongoConfigurationError):
+        mongodb_store.get_client()
+    mongodb_store.get_client.cache_clear()
+
+
+def test_database_requires_name(monkeypatch):
+    mongodb_store.get_client.cache_clear()
+    monkeypatch.setenv("MONGODB_URI", "mongodb://localhost:27017")
+    monkeypatch.delenv("MONGODB_DATABASE", raising=False)
+    with pytest.raises(mongodb_store.MongoConfigurationError):
+        mongodb_store.get_database()
+    mongodb_store.get_client.cache_clear()
+
+
+def test_health_snapshot_fails_closed_when_unconfigured(monkeypatch):
+    mongodb_store.get_client.cache_clear()
+    monkeypatch.delenv("MONGODB_URI", raising=False)
+    monkeypatch.delenv("MONGODB_DATABASE", raising=False)
+    assert mongodb_store.health_snapshot() == {
+        "status": "unavailable",
+        "backend": "mongodb",
+    }
+    mongodb_store.get_client.cache_clear()
+
+
+
+def test_preview_test_uri_and_database_are_selected_without_production_fallback(monkeypatch):
+    from types import SimpleNamespace
+
+    calls = []
+    fake_database = object()
+    fake_client = SimpleNamespace(__getitem__=lambda self, name: fake_database)
+
+    class FakeClient:
+        def __init__(self, uri, **kwargs):
+            calls.append((uri, kwargs))
+        def __getitem__(self, name):
+            assert name == "voice_sip_agent_ci"
+            return fake_database
+
+    monkeypatch.setattr(mongodb_store, "MongoClient", FakeClient)
+    monkeypatch.delenv("MONGODB_URI", raising=False)
+    monkeypatch.delenv("MONGODB_DATABASE", raising=False)
+    monkeypatch.setenv("MONGODB_TEST_URI", "mongodb://preview-test")
+    monkeypatch.setenv("MONGODB_TEST_DATABASE", "voice_sip_agent_ci")
+    monkeypatch.setenv("VERCEL_ENV", "preview")
+    mongodb_store.get_client.cache_clear()
+    try:
+        assert mongodb_store.get_database() is fake_database
+        assert calls[0][0] == "mongodb://preview-test"
+    finally:
+        mongodb_store.get_client.cache_clear()

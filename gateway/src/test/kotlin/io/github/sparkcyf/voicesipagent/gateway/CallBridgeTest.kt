@@ -34,6 +34,99 @@ class CallBridgeTest {
     /** Waits for the bridge thread to drain, including tasks posted by the tasks it ran. */
     private fun settle() = repeat(3) { bridge.drain() }
 
+
+    @Test
+    fun hostedCallWaitsForCellularAnswerBeforeCreatingSipLegAndBridgesBothWays() {
+        assertTrue(bridge.originateCellularThenSip("+967777405578", "sip:linphone@example.test"))
+        settle()
+        val cellularLeg = cell.dialed.single()
+        assertEquals("+967777405578", cellularLeg.target)
+        assertTrue("SIP leg must not start while cellular is ringing", sip.dialed.isEmpty())
+
+        cellularLeg.remoteAnswered()
+        settle()
+        val sipLeg = sip.dialed.single()
+        assertEquals("sip:linphone@example.test", sipLeg.target)
+
+        sipLeg.remoteAnswered()
+        settle()
+        val cellPort = FakePort(isClockSource = true, fill = 11)
+        val sipPort = FakePort(isClockSource = false, fill = 22)
+        cellularLeg.mediaUp(cellPort)
+        sipLeg.mediaUp(sipPort)
+        settle()
+        assertNotNull(bridge.session?.media)
+        cellPort.clock!!.onFrame()
+        assertEquals(11.toShort(), sipPort.written.single()[0])
+        assertEquals(22.toShort(), cellPort.written.single()[0])
+
+        cellularLeg.remoteEnded(HangupCause.NORMAL)
+        settle()
+        assertEquals(LegState.ENDED, sipLeg.state)
+        assertNull(bridge.session)
+    }
+
+    @Test
+    fun hostedOriginateAndQueuedInboundCallCannotOwnBridgeAtTheSameTime() {
+        val incoming = cell.incoming("13800001234")
+        val hostedAccepted = bridge.originateCellularThenSip(
+            "+967777405578", "sip:linphone@example.test"
+        )
+        settle()
+
+        if (hostedAccepted) {
+            // The hosted reservation won the executor race; the inbound leg is rejected.
+            assertEquals(HangupCause.BUSY, incoming.endCause)
+            assertEquals("+967777405578", cell.dialed.single().target)
+            assertTrue("the rejected inbound leg must not create a SIP leg", sip.dialed.isEmpty())
+            assertEquals("hosted-outbound", bridge.session?.origin)
+        } else {
+            // The inbound leg acquired the bridge first; hosted originate must fail synchronously.
+            assertTrue("the inbound cellular call owns the bridge", bridge.session != null)
+            assertEquals("cellular", bridge.session?.origin)
+            assertTrue(cell.dialed.isEmpty())
+            assertEquals(1, sip.dialed.size)
+            assertTrue(incoming.endCause != HangupCause.BUSY)
+        }
+    }
+
+    @Test
+    fun oldHostedDurationGuardCannotEndANewerBridgeSession() {
+        var hostedSessionId: Int? = null
+        assertTrue(
+            bridge.originateCellularThenSip("+967777405578", "sip:linphone@example.test") {
+                hostedSessionId = it
+            }
+        )
+        settle()
+        val hostedCellularLeg = cell.dialed.single()
+        val oldId = hostedSessionId ?: error("hosted session callback was not invoked")
+        hostedCellularLeg.remoteEnded(HangupCause.NO_ANSWER)
+        settle()
+        assertNull(bridge.session)
+
+        val laterInbound = cell.incoming("13800009999")
+        settle()
+        val laterSessionId = bridge.session?.id ?: error("later inbound session was not created")
+        assertTrue(laterSessionId != oldId)
+
+        bridge.endSession(oldId, HangupCause.NORMAL)
+        settle()
+        assertEquals("the stale timer must not terminate the newer call", laterSessionId, bridge.session?.id)
+        assertTrue("new inbound leg remains active", laterInbound.state != LegState.ENDED)
+    }
+
+    @Test
+    fun hostedCallCellularNoAnswerNeverCreatesSipLeg() {
+        assertTrue(bridge.originateCellularThenSip("+967777405578", "sip:linphone@example.test"))
+        settle()
+        val cellularLeg = cell.dialed.single()
+        cellularLeg.remoteEnded(HangupCause.NO_ANSWER)
+        settle()
+        assertTrue(sip.dialed.isEmpty())
+        assertNull(bridge.session)
+    }
+
     @Test
     fun cellularInboundToSipFullCall() {
         val a = cell.incoming("13800001234")

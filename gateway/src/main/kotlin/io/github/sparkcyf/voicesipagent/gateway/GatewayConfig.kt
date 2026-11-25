@@ -22,6 +22,12 @@ data class GatewayConfig(
     val busyPolicy: BusyPolicy = BusyPolicy.REJECT,
     /** Outbound cellular numbers must start with one of these; empty means any. */
     val allowedDialPrefixes: List<String> = emptyList(),
+    /** Mixer gain for audio flowing from the cellular leg to the SIP leg. */
+    val cellularToSipGain: Float = 1f,
+    /** Mixer gain for audio flowing from the SIP leg to the cellular leg. */
+    val sipToCellularGain: Float = 1f,
+    val muteCellularToSip: Boolean = false,
+    val muteSipToCellular: Boolean = false,
 )
 
 /** Vetoes numbers we must never dial (emergency numbers etc.). Returns null if allowed. */

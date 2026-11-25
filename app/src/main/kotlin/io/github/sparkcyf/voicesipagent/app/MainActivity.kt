@@ -1,5 +1,10 @@
 package io.github.sparkcyf.voicesipagent.app
 
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.Context
+import android.content.Intent
+import android.os.BatteryManager
 import android.os.Bundle
 import android.os.Build
 import androidx.activity.compose.setContent
@@ -26,6 +31,7 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Slider
 import androidx.compose.material3.SegmentedButton
 import androidx.compose.material3.SegmentedButtonDefaults
 import androidx.compose.material3.SingleChoiceSegmentedButtonRow
@@ -42,6 +48,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.ui.unit.LayoutDirection
@@ -82,6 +89,12 @@ private fun Screen(rt: GatewayRuntime, modifier: Modifier, requestDialer: () -> 
     val h by rt.health.collectAsState()
     val log by AppLog.tail.collectAsState()
     val cur by rt.settingsFlow.collectAsState()
+    val context = LocalContext.current
+    val battery = remember {
+        (context.getSystemService(Context.BATTERY_SERVICE) as BatteryManager)
+            .getIntProperty(BatteryManager.BATTERY_PROPERTY_CAPACITY)
+            .takeIf { it in 0..100 }
+    }
     currentUiLang = UiLang.of(cur.uiLanguage)
     CompositionLocalProvider(LocalLayoutDirection provides
         if (currentUiLang == UiLang.AR) LayoutDirection.Rtl else LayoutDirection.Ltr) {
@@ -127,6 +140,7 @@ private fun Screen(rt: GatewayRuntime, modifier: Modifier, requestDialer: () -> 
             Check(t("Доступ к звуку вызова", "Call audio access"), h.audioReady)
             Check(t("Исключён из экономии батареи", "Doze allowlisted"), p?.get(HealthKeys.DOZE_ALLOWLISTED) == true)
             Check(t("Регистрация SIP", "SIP registration"), h.sip.ready, h.sip.detail)
+            Text(t("البطارية: ${battery?.let { "$it%" } ?: "غير معروف"}", "Battery: ${battery?.let { "$it%" } ?: "unknown"}"))
             Text(h.readinessDetail, style = MaterialTheme.typography.bodySmall)
             if (h.effectiveCallAccess == CallAccess.DIALER && !h.holdsDialer) {
                 Text(t("Режим звонилки по умолчанию мостит звонки. Для ручного набора верни обычную звонилку.",
@@ -157,11 +171,67 @@ private fun Screen(rt: GatewayRuntime, modifier: Modifier, requestDialer: () -> 
         Section(t("Звонок", "Call")) {
             Text(h.calls.summary)
             Text(h.session ?: t("Нет активной сессии", "No active session"))
+            Section(t("حالة الصوت", "Audio direction")) {
+                Text(t("الاستقبال: ${audioLabel(h.audioDirection.receive, true)}", "Receive: ${audioLabel(h.audioDirection.receive, false)}"))
+                Text(t("الإرسال: ${audioLabel(h.audioDirection.send, true)}", "Send: ${audioLabel(h.audioDirection.send, false)}"))
+                if (h.audioDirection.detail.isNotBlank()) {
+                    Text(h.audioDirection.detail, style = MaterialTheme.typography.bodySmall)
+                }
+                Text(
+                    t("مستقر هنا تعني أن إطارات PCM مرّت في الاتجاه؛ تحقق من السماع الفعلي للطرفين للتأكد من جودة الصوت.",
+                        "Stable means PCM frames were observed in that direction; verify both sides can hear each other for end-to-end audio quality."),
+                    style = MaterialTheme.typography.bodySmall,
+                )
+            }
+        }
+        Section(t("ميكسر الصوت", "Audio mixer")) {
+            Text(t("خلوي → SIP: ${cur.cellularToSipGain}%", "Cellular → SIP: ${cur.cellularToSipGain}%"))
+            Slider(
+                value = cur.cellularToSipGain.toFloat(),
+                onValueChange = { rt.applySettings(cur.copy(cellularToSipGain = it.toInt().coerceIn(0, 200))) },
+                valueRange = 0f..200f,
+                steps = 19,
+            )
+            Toggle(t("كتم الإرسال إلى SIP", "Mute cellular → SIP"), cur.muteCellularToSip,
+                { rt.applySettings(cur.copy(muteCellularToSip = it)) }) {
+                t("يمنع صوت SIM من الوصول إلى SIP.", "Stops cellular audio from reaching SIP.")
+            }
+            Text(t("SIP → خلوي: ${cur.sipToCellularGain}%", "SIP → Cellular: ${cur.sipToCellularGain}%"))
+            Slider(
+                value = cur.sipToCellularGain.toFloat(),
+                onValueChange = { rt.applySettings(cur.copy(sipToCellularGain = it.toInt().coerceIn(0, 200))) },
+                valueRange = 0f..200f,
+                steps = 19,
+            )
+            Toggle(t("كتم ميكروفون SIM", "Mute SIM microphone"), cur.muteSipToCellular,
+                { rt.applySettings(cur.copy(muteSipToCellular = it)) }, info = "mute_sim_mic") {
+                t("يوقف إرسال صوت SIP إلى جهة SIM فقط؛ لا ينهي المكالمة ولا يمنع وصول صوت SIM إلى SIP.",
+                    "Mutes only SIP audio sent into the SIM call; it does not end the call or block SIM audio sent to SIP.")
+            }
+            Text(t("تُطبَّق إعدادات الميكسر من المكالمة التالية. 100% هو المستوى الطبيعي، و200% أقصى تضخيم مع منع التشبع.",
+                "Mixer settings apply from the next call. 100% is unity gain; 200% is the maximum with clipping protection."),
+                style = MaterialTheme.typography.bodySmall)
         }
         SettingsSection(rt)
         Section(t("Журнал", "Log")) {
             Text(log.takeLast(60).reversed().joinToString("\n"), fontFamily = FontFamily.Monospace,
                 fontSize = 11.sp, lineHeight = 14.sp)
+            FlowRow(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                OutlinedButton(onClick = {
+                    val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                    clipboard.setPrimaryClip(ClipData.newPlainText("Voice SIP Agent log", log.joinToString("\n")))
+                }) { Text(t("نسخ السجل", "Copy log")) }
+                OutlinedButton(onClick = {
+                    context.startActivity(Intent.createChooser(Intent(Intent.ACTION_SEND).apply {
+                        type = "text/plain"
+                        putExtra(Intent.EXTRA_SUBJECT, "Voice SIP Agent log")
+                        putExtra(Intent.EXTRA_TEXT, log.joinToString("\n"))
+                    }, t("تصدير السجل", "Export log")))
+                }) { Text(t("تصدير السجل", "Export log")) }
+            }
         }
         var advanced by remember { mutableStateOf(false) }
         OutlinedButton(onClick = { advanced = !advanced }) { Text(if (advanced) t("Скрыть доп. настройки", "Hide advanced settings") else t("Дополнительные настройки", "Advanced settings")) }
@@ -223,6 +293,12 @@ private fun Screen(rt: GatewayRuntime, modifier: Modifier, requestDialer: () -> 
     }
 }
 
+private fun audioLabel(value: String, arabic: Boolean): String = when (value) {
+    "stable" -> if (arabic) "مستقر" else "stable"
+    "no frames" -> if (arabic) "لا توجد إطارات" else "no frames"
+    else -> if (arabic) "قيد القياس" else "not measured"
+}
+
 /**
  * Optional, voluntary donation link (DonationAlerts). The app stays free (GPL-2.0-or-later);
  * this changes nothing.
@@ -280,6 +356,11 @@ private fun SettingsSection(rt: GatewayRuntime) {
     var password by remember(cur) { mutableStateOf(cur.password) }
     var target by remember(cur) { mutableStateOf(cur.inboundTarget) }
     var prefixes by remember(cur) { mutableStateOf(cur.allowedPrefixes) }
+    var hostedApiUrl by remember(cur) { mutableStateOf(cur.hostedApiUrl) }
+    var hostedDeviceToken by remember(cur) { mutableStateOf(cur.hostedDeviceToken) }
+    var enrollmentToken by remember(cur) { mutableStateOf("") }
+    var hostedDeviceName by remember(cur) { mutableStateOf("${Build.MANUFACTURER} ${Build.MODEL}".trim()) }
+    val hostedMessage by rt.hostedDeviceMessage.collectAsState()
     var domain by remember(cur) { mutableStateOf(cur.domain) }
     var stack by remember(cur) { mutableStateOf(cur.sipStack) }
     var transport by remember(cur) { mutableStateOf(SipTransport.of(cur.sipTransport) ?: SipTransport.UDP) }
@@ -339,6 +420,31 @@ private fun SettingsSection(rt: GatewayRuntime) {
         )
         Field(t("Куда переводить входящие (пусто = логин)", "Cellular inbound -> SIP target (blank = username)"), target, info = "inbound_target") { target = it }
         Field(t("Префиксы для исходящих (через запятую, пусто = любой)", "Allowed dial-out prefixes (comma separated, empty = any)"), prefixes, info = "prefixes") { prefixes = it }
+        LabelWithInfo(t("Hosted Call API", "Hosted Call API"), "hosted_api")
+        Field(t("عنوان API المستضاف (HTTPS)", "Hosted API base URL (HTTPS)"), hostedApiUrl) { hostedApiUrl = it }
+        Field(t("اسم هذا الجهاز", "This device name"), hostedDeviceName) { hostedDeviceName = it }
+        OutlinedTextField(
+            value = enrollmentToken, onValueChange = { enrollmentToken = it },
+            label = { Text(t("رمز تسجيل الجهاز من لوحة المؤسسة", "Organization device enrollment token")) },
+            visualTransformation = PasswordVisualTransformation(), singleLine = true, modifier = Modifier.fillMaxWidth(),
+        )
+        Button(
+            onClick = { rt.enrollHostedDevice(hostedApiUrl, enrollmentToken, hostedDeviceName) },
+            enabled = hostedApiUrl.startsWith("https://", ignoreCase = true) && enrollmentToken.isNotBlank(),
+        ) { Text(t("تسجيل هذا الجهاز بالمؤسسة", "Enroll this device with organization")) }
+        if (cur.hostedDeviceId.isNotBlank()) {
+            Text(t("معرّف الجهاز: ", "Device ID: ") + cur.hostedDeviceId, style = MaterialTheme.typography.bodySmall)
+            Text(t("معرّف المؤسسة: ", "Organization ID: ") + cur.hostedOrganizationId, style = MaterialTheme.typography.bodySmall)
+        }
+        if (hostedMessage.isNotBlank()) Text(hostedMessage, style = MaterialTheme.typography.bodySmall)
+        OutlinedTextField(
+            value = hostedDeviceToken, onValueChange = { hostedDeviceToken = it },
+            label = { Text(t("رمز الجهاز API", "Device API token")) },
+            visualTransformation = PasswordVisualTransformation(), singleLine = true, modifier = Modifier.fillMaxWidth(),
+        )
+        Text(t("اترك العنوان فارغاً لتعطيل استقبال طلبات الاتصال. استخدم HTTPS ورمز جهاز مستقل عن بيانات SIP. يتم حفظ الرمز مشفراً في Android Keystore.",
+            "Leave the URL blank to disable hosted jobs. Use HTTPS and a device token separate from SIP credentials. The token is encrypted with Android Keystore."),
+            style = MaterialTheme.typography.bodySmall)
         Choice(t("Второй звонок при занятости", "Second call while busy"), BusyPolicy.entries, busy,
             { when (it) { BusyPolicy.REJECT -> t("Отклонять", "Reject"); BusyPolicy.IGNORE -> t("Отдать звонилке", "Leave to phone") } }, info = "busy") {
             busy = it
@@ -352,6 +458,7 @@ private fun SettingsSection(rt: GatewayRuntime) {
                     registrarPassword = regPassword,
                     server = server, port = port.toIntOrNull() ?: transport.defaultPort, username = user, authUsername = authUser, password = password,
                     inboundTarget = target, allowedPrefixes = prefixes, domain = domain,
+                    hostedApiUrl = hostedApiUrl, hostedDeviceToken = hostedDeviceToken,
                     sipStack = stack, sipTransport = transport.id, srtp = srtp.id, busyPolicy = busy,
                 ),
             )

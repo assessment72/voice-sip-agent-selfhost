@@ -1,0 +1,50 @@
+name: Hosted Call API tests
+
+on:
+  pull_request:
+    paths:
+      - "hosted-api/**"
+      - ".github/workflows/hosted-api-ci.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    env:
+      HAS_ATLAS_TEST: ${{ secrets.MONGODB_TEST_URI != '' && secrets.MONGODB_TEST_DATABASE != '' }}
+    defaults:
+      run:
+        working-directory: hosted-api
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r requirements-dev.txt
+      - run: pytest -q
+      - name: Live Atlas repository integration test
+        if: ${{ env.HAS_ATLAS_TEST == 'true' }}
+        env:
+          MONGODB_TEST_URI: ${{ secrets.MONGODB_TEST_URI }}
+          MONGODB_TEST_DATABASE: ${{ secrets.MONGODB_TEST_DATABASE }}
+        run: pytest -q tests/test_mongodb_atlas_integration.py
+      - name: Build production container image
+        run: docker build --pull -t hosted-call-api:ci .
+      - name: Smoke-test container startup and health endpoints
+        shell: bash
+        run: |
+          docker run -d --rm --name hosted-api-smoke \
+            -p 127.0.0.1:18080:8080 \
+            -e DATABASE_PATH=/tmp/hosted-api-smoke.sqlite3 \
+            hosted-call-api:ci
+          trap 'docker stop hosted-api-smoke >/dev/null 2>&1 || true' EXIT
+          for attempt in {1..30}; do
+            if curl --fail --silent http://127.0.0.1:18080/health >/dev/null; then
+              break
+            fi
+            sleep 2
+          done
+          curl --fail --show-error http://127.0.0.1:18080/health
+          curl --fail --show-error http://127.0.0.1:18080/health/database

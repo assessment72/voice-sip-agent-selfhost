@@ -2,9 +2,11 @@ package io.github.sparkcyf.voicesipagent.app
 
 import android.content.Context
 import android.net.ConnectivityManager
+import android.net.NetworkCapabilities
 import android.net.LinkProperties
 import android.net.Network
 import android.os.Bundle
+import android.os.BatteryManager
 import android.os.Build
 import android.telecom.TelecomManager
 import android.content.ComponentName
@@ -12,6 +14,7 @@ import android.content.pm.PackageManager
 import android.app.role.RoleManager
 import android.Manifest
 import io.github.sparkcyf.voicesipagent.gateway.BridgeSession
+import io.github.sparkcyf.voicesipagent.gateway.BridgeListener
 import io.github.sparkcyf.voicesipagent.gateway.CallBridge
 import io.github.sparkcyf.voicesipagent.gateway.EchoEndpoint
 import io.github.sparkcyf.voicesipagent.gateway.GatewayConfig
@@ -41,6 +44,12 @@ import java.util.concurrent.TimeUnit
 import java.util.concurrent.ScheduledFuture
 import java.util.concurrent.ScheduledThreadPoolExecutor
 
+data class AudioDirectionState(
+    val receive: String = "not measured",
+    val send: String = "not measured",
+    val detail: String = "",
+)
+
 data class HealthState(
     val shizuku: ShizukuConnector.State = ShizukuConnector.State.SHIZUKU_NOT_RUNNING,
     val shizukuDetail: String = "",
@@ -64,6 +73,7 @@ data class HealthState(
     val cellularReady: Boolean = false,
     val readinessDetail: String = "Checking gateway setup",
     val calls: CallSnapshot = CallSnapshot(),
+    val audioDirection: AudioDirectionState = AudioDirectionState(),
     val settingsPending: Boolean = false,
     val dialerChangePending: Boolean = false,
     val dialerChangeRunning: Boolean = false,
@@ -109,9 +119,25 @@ class GatewayRuntime private constructor(context: Context) {
     private fun audioFormat() = PcmFormat.NARROWBAND
 
     val cellular = CellularEndpoint(app,
-        PrivilegedAudioOpener(shizuku, { settings.audioMethod }, { settings.muteEarpiece }, ::audioFormat),
+        PrivilegedAudioOpener(
+            shizuku, { settings.audioMethod }, { settings.muteEarpiece }, ::audioFormat,
+            onAudioDirection = ::onAudioDirection,
+        ),
         logger = { AppLog.i(it) },
     )
+
+    private fun onAudioDirection(framesIn: Long, framesOut: Long, method: String) {
+        val receive = if (framesIn > 0) "stable" else "no frames"
+        val send = if (framesOut > 0) "stable" else "no frames"
+        _health.update {
+            it.copy(audioDirection = AudioDirectionState(
+                receive = receive,
+                send = send,
+                detail = "PCM frames: receive=$framesIn send=$framesOut method=$method",
+            ))
+        }
+        AppLog.i("audio direction: receive=$receive send=$send framesIn=$framesIn framesOut=$framesOut method=$method")
+    }
     /** Built-in SIP user agent. */
     private var sip: CallEndpoint? = null
     private var bridge: CallBridge? = null
@@ -128,6 +154,30 @@ class GatewayRuntime private constructor(context: Context) {
     private var pendingDialerChange: DialerChange? = null
     private var dialerRetry: ScheduledFuture<*>? = null
     private var healthCheck: ScheduledFuture<*>? = null
+    private var hostedPoll: ScheduledFuture<*>? = null
+    // Network waits and state writes are isolated from the gateway/call-control executor.
+    private val hostedPollWorker = ScheduledThreadPoolExecutor(1) { task ->
+        Thread(task, "hosted-call-poll").apply { isDaemon = true }
+    }.apply { removeOnCancelPolicy = true }
+    private val hostedStateWorker = ScheduledThreadPoolExecutor(1) { task ->
+        Thread(task, "hosted-call-state").apply { isDaemon = true }
+    }.apply { removeOnCancelPolicy = true }
+    private val hostedHeartbeatWorker = ScheduledThreadPoolExecutor(1) { task ->
+        Thread(task, "hosted-device-heartbeat").apply { isDaemon = true }
+    }.apply { removeOnCancelPolicy = true }
+    // Persist state transitions before network delivery so process death cannot discard them.
+    private val hostedStateQueue = HostedStateUpdateQueue(app)
+    private var hostedHeartbeatTask: ScheduledFuture<*>? = null
+    @Volatile private var lastHostedNetworkType: String? = null
+    private val _hostedDeviceMessage = MutableStateFlow("")
+    val hostedDeviceMessage: StateFlow<String> = _hostedDeviceMessage
+    private val hostedPollingEnabled = java.util.concurrent.atomic.AtomicBoolean(false)
+    // Closes the handoff race between the network poller and the gateway executor.
+    private val hostedJobInFlight = java.util.concurrent.atomic.AtomicBoolean(false)
+    @Volatile private var hostedCallId: String? = null
+    private var hostedLastState: String? = null
+    private var hostedListener: BridgeListener? = null
+    private var hostedCallTimer: ScheduledFuture<*>? = null
     @Volatile private var networkCallback: ConnectivityManager.NetworkCallback? = null
     private val dialerHandoffStore = DialerHandoffStore(app)
     private val dialerHandoff = DialerHandoff(app.packageName, dialerHandoffStore, object : DialerHandoff.Backend {
@@ -250,11 +300,26 @@ class GatewayRuntime private constructor(context: Context) {
         // Telecom or Shizuku restarts can disrupt call access. Recheck health and repair companion
         // setup while idle if access is unavailable; a missing override alone does not trigger setup.
         healthCheck = worker.scheduleWithFixedDelay(::periodicCheck, 60, 60, TimeUnit.SECONDS)
+        hostedPollingEnabled.set(true)
+        hostedStateWorker.execute { drainHostedStateQueue() }
+        hostedPoll = hostedPollWorker.scheduleWithFixedDelay(::pollHostedCalls, 0, 1, TimeUnit.SECONDS)
+        if (hostedHeartbeatTask == null) {
+            hostedHeartbeatTask = hostedHeartbeatWorker.scheduleWithFixedDelay(
+                ::sendHostedHeartbeat, 0, 30, TimeUnit.SECONDS,
+            )
+        }
     }
 
     private fun stopBackgroundTasks() {
         healthCheck?.cancel(false)
         healthCheck = null
+        hostedPollingEnabled.set(false)
+        hostedJobInFlight.set(false)
+        hostedPoll?.cancel(true)
+        hostedPoll = null
+        hostedHeartbeatTask?.cancel(false)
+        hostedHeartbeatTask = null
+        cancelHostedTracking("agent_stopped")
         dialerRetry?.cancel(false)
         dialerRetry = null
         val callback = networkCallback
@@ -264,6 +329,297 @@ class GatewayRuntime private constructor(context: Context) {
         }.onFailure { AppLog.w("network callback cleanup failed", it) }
         setupPending = false
         worker.allowCoreThreadTimeOut(true)
+    }
+
+
+    /**
+     * Exchange a one-time organization enrollment token for this installation's own device
+     * credential. The credential is persisted only through SettingsStore's Android Keystore seal.
+     * Existing SIP account settings are not modified or restarted.
+     */
+    fun enrollHostedDevice(baseUrl: String, enrollmentToken: String, displayName: String) = worker.execute {
+        val cleanUrl = baseUrl.trim()
+        val cleanEnrollment = enrollmentToken.trim()
+        if (!cleanUrl.startsWith("https://", ignoreCase = true) || cleanEnrollment.isBlank()) {
+            _hostedDeviceMessage.value = "أدخل رابط HTTPS ورمز تسجيل صالحاً"
+            return@execute
+        }
+        if (settings.hostedDeviceToken.isNotBlank() && !hostedStateQueue.isEmpty()) {
+            _hostedDeviceMessage.value = "توجد تحديثات مكالمات معلّقة؛ انتظر مزامنتها قبل إعادة تسجيل الجهاز"
+            return@execute
+        }
+        _hostedDeviceMessage.value = "جارٍ تسجيل الجهاز..."
+        try {
+            val externalId = settingsStore.getOrCreateHostedExternalDeviceId()
+            val packageInfo = app.packageManager.getPackageInfo(app.packageName, 0)
+            val version = packageInfo.versionName ?: "unknown"
+            val registration = HostedCallApiClient(cleanUrl).enroll(
+                enrollmentToken = cleanEnrollment,
+                externalDeviceId = externalId,
+                displayName = displayName.trim().ifBlank { Build.MODEL.ifBlank { "Android device" } },
+                appId = app.packageName,
+                appVersion = version,
+                androidVersion = Build.VERSION.RELEASE ?: "unknown",
+                manufacturer = Build.MANUFACTURER ?: "unknown",
+                model = Build.MODEL ?: "unknown",
+            )
+            val updated = settings.copy(
+                hostedApiUrl = cleanUrl,
+                hostedDeviceToken = registration.deviceToken,
+                hostedDeviceId = registration.deviceId,
+                hostedOrganizationId = registration.organizationId,
+            )
+            settingsStore.save(updated)
+            _settings.value = updated
+            runCatching { HostedCallApiClient(cleanUrl, registration.deviceToken).reportEvent("device", "info", "device_enrolled") }
+            _hostedDeviceMessage.value = "تم تسجيل الجهاز بنجاح · ${registration.deviceId}"
+            AppLog.i("hosted device enrolled")
+        } catch (e: Exception) {
+            _hostedDeviceMessage.value = "تعذر تسجيل الجهاز: ${e.javaClass.simpleName}"
+            AppLog.w("hosted device enrollment failed: ${e.javaClass.simpleName}")
+        }
+    }
+
+    // ------------------------------------------------------------ hosted outbound call control
+
+    /**
+     * Polls only over an outbound HTTPS connection. The handset never opens a listening socket.
+     * The hosted device token is stored encrypted by SettingsStore and is distinct from SIP auth.
+     */
+
+    private fun sendHostedHeartbeat() {
+        val base = settings.hostedApiUrl.trim()
+        val token = settings.hostedDeviceToken
+        if (base.isBlank() || token.isBlank() || !hostedPollingEnabled.get()) return
+        try {
+            val batteryManager = app.getSystemService(Context.BATTERY_SERVICE) as BatteryManager
+            val battery = batteryManager.getIntProperty(BatteryManager.BATTERY_PROPERTY_CAPACITY)
+                .takeIf { it in 0..100 }
+            val connectivity = app.getSystemService(ConnectivityManager::class.java)
+            val capabilities = connectivity.getNetworkCapabilities(connectivity.activeNetwork)
+            val networkType = when {
+                capabilities == null -> "none"
+                capabilities.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) -> "wifi"
+                capabilities.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) -> "cellular"
+                capabilities.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET) -> "ethernet"
+                else -> "unknown"
+            }
+            val internet = capabilities?.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) == true
+            val client = HostedCallApiClient(base, token)
+            val previousNetwork = lastHostedNetworkType
+            if (previousNetwork != null && previousNetwork != networkType) {
+                runCatching { client.reportEvent("network", "warning", "network_changed_to_$networkType") }
+            }
+            lastHostedNetworkType = networkType
+            client.heartbeat(
+                batteryLevel = battery,
+                networkType = networkType,
+                internetAvailable = internet,
+                sipStatus = if (sip?.status?.ready == true) "registered" else "unregistered",
+                simStatus = if (cellular.status.ready) "ready" else "unknown",
+                agentStatus = if (hostedCallId != null) "busy" else "idle",
+                activeCall = hostedCallId != null,
+            )
+        } catch (e: Exception) {
+            AppLog.w("hosted heartbeat failed: ${e.javaClass.simpleName}")
+        }
+    }
+
+    private fun pollHostedCalls() {
+        if (!hostedPollingEnabled.get() || !gatewayEnabled || hostedCallId != null || hostedJobInFlight.get()) return
+        val base = settings.hostedApiUrl.trim()
+        val token = settings.hostedDeviceToken
+        if (base.isBlank() || token.isBlank()) return
+        try {
+            val client = HostedCallApiClient(base, token)
+            // The 20-second wait runs only on hostedPollWorker, never on the gateway executor.
+            val job = client.nextJob(waitSeconds = 20) ?: return
+            if (!hostedJobInFlight.compareAndSet(false, true)) return
+            try {
+                worker.execute { handleHostedJob(client, job) }
+            } catch (e: Exception) {
+                hostedJobInFlight.set(false)
+                throw e
+            }
+        } catch (e: Exception) {
+            AppLog.w("hosted API long poll failed: ${e.javaClass.simpleName}")
+        }
+    }
+
+    private fun handleHostedJob(client: HostedCallApiClient, job: HostedCallJob) {
+        if (!gatewayEnabled || hostedCallId != null) {
+            hostedJobInFlight.set(false)
+            return
+        }
+        hostedCallId = job.id
+        hostedLastState = null
+        if (job.expiresAt <= System.currentTimeMillis() / 1000L) {
+            reportHostedState(client, job.id, "failed", "job_expired")
+            hostedCallId = null
+            hostedJobInFlight.set(false)
+            return
+        }
+        if (cellular.isEmergencyNumber(job.phoneNumber)) {
+            reportHostedState(client, job.id, "failed", "emergency_number")
+            hostedCallId = null
+            hostedJobInFlight.set(false)
+            return
+        }
+        val sipAgent = sip as? SipUserAgent
+        val fallback = settings.inboundTarget.ifBlank { settings.username }
+        val sipTarget = sipAgent?.hostedCallDestination(fallback)
+        val activeBridge = bridge
+        if (sipTarget.isNullOrBlank() || activeBridge == null || activeBridge.session != null || !cellular.status.ready || sip?.status?.ready != true) {
+            reportHostedState(client, job.id, "failed", "gateway_not_ready")
+            hostedCallId = null
+            hostedJobInFlight.set(false)
+            return
+        }
+        val listener = BridgeListener { session ->
+            if (session.origin == "hosted-outbound") {
+                worker.execute { onHostedSessionChanged(client, job.id, activeBridge, hostedListener, session) }
+            }
+        }
+        hostedListener = listener
+        activeBridge.addListener(listener)
+        if (!activeBridge.originateCellularThenSip(job.phoneNumber, sipTarget) { sessionId ->
+                // Bind the duration guard to this exact bridge session. A later unrelated
+                // inbound call must never be ended by an old hosted-call timer.
+                worker.execute {
+                    if (hostedCallId == job.id) {
+                        hostedCallTimer?.cancel(false)
+                        hostedCallTimer = worker.schedule(
+                            { activeBridge.endSession(sessionId, HangupCause.NORMAL) },
+                            30, TimeUnit.MINUTES,
+                        )
+                    }
+                }
+            }) {
+            activeBridge.removeListener(listener)
+            hostedListener = null
+            reportHostedState(client, job.id, "failed", "bridge_busy")
+            hostedCallId = null
+            hostedJobInFlight.set(false)
+            return
+        }
+        reportHostedState(client, job.id, "ringing_cellular")
+    }
+
+    private fun onHostedSessionChanged(
+        client: HostedCallApiClient,
+        callId: String,
+        activeBridge: CallBridge,
+        listenerRef: BridgeListener?,
+        session: BridgeSession,
+    ) {
+        if (hostedCallId != callId || session.origin != "hosted-outbound") return
+        if (session.inbound.state == LegState.CONNECTED) reportHostedState(client, callId, "cellular_answered")
+        if (session.outbound != null) reportHostedState(client, callId, "calling_sip")
+        if (session.media != null) reportHostedState(client, callId, "bridged")
+        if (session.endedAtMs != null) {
+            val success = session.connectedAtMs != null && session.mediaWasBridged
+            reportHostedState(client, callId, if (success) "ended" else "failed",
+                if (success) null else "call_leg_or_media_failed")
+            listenerRef?.let(activeBridge::removeListener)
+            hostedCallTimer?.cancel(false)
+            hostedCallTimer = null
+            hostedListener = null
+            hostedCallId = null
+            hostedLastState = null
+            hostedJobInFlight.set(false)
+        }
+    }
+
+    private fun reportHostedState(
+        client: HostedCallApiClient,
+        callId: String,
+        state: String,
+        reason: String? = null,
+    ) {
+        if (hostedLastState == state) return
+        if (enqueueHostedState(client, callId, state, reason)) {
+            hostedLastState = state
+        }
+    }
+
+    /**
+     * Persist every state transition before scheduling delivery. Delivery is at-least-once:
+     * a process can die after server acceptance but before the local acknowledgement is committed.
+     * A full/corrupt outbox must not advance the in-memory state; retry after the worker has had a
+     * chance to drain older entries, rather than silently losing this transition.
+     */
+    private fun enqueueHostedState(
+        client: HostedCallApiClient,
+        callId: String,
+        state: String,
+        reason: String? = null,
+    ): Boolean {
+        if (!hostedStateQueue.enqueue(callId, state, reason)) {
+            AppLog.w("hosted call state queue rejected an update; retrying after 30 seconds")
+            hostedStateWorker.schedule(
+                { enqueueHostedState(client, callId, state, reason) },
+                30,
+                TimeUnit.SECONDS,
+            )
+            return false
+        }
+        hostedStateWorker.execute { drainHostedStateQueue(client) }
+        return true
+    }
+
+    private fun drainHostedStateQueue(
+        client: HostedCallApiClient = HostedCallApiClient(settings.hostedApiUrl, settings.hostedDeviceToken),
+    ) {
+        if (settings.hostedApiUrl.isBlank() || settings.hostedDeviceToken.isBlank()) return
+        val delaysMs = longArrayOf(500, 1_000, 2_000, 4_000, 8_000)
+        while (true) {
+            val item = hostedStateQueue.peek() ?: return
+            var delivered = false
+            for (attempt in 0..delaysMs.size) {
+                try {
+                    client.updateState(item.callId, item.state, item.reason)
+                    delivered = true
+                    break
+                } catch (e: Exception) {
+                    if (attempt == delaysMs.size) {
+                        AppLog.w("hosted state remains queued after retries: ${e.javaClass.simpleName}")
+                    } else {
+                        try {
+                            Thread.sleep(delaysMs[attempt])
+                        } catch (_: InterruptedException) {
+                            Thread.currentThread().interrupt()
+                            return
+                        }
+                    }
+                }
+            }
+            if (!delivered) {
+                // Keep the head item and preserve order; a later attempt resumes from disk.
+                hostedStateWorker.schedule({ drainHostedStateQueue() }, 30, TimeUnit.SECONDS)
+                return
+            }
+            if (!hostedStateQueue.remove(item.id)) {
+                AppLog.w("hosted state acknowledgement could not be committed; update may replay")
+                return
+            }
+        }
+    }
+
+    private fun cancelHostedTracking(reason: String) {
+        val callId = hostedCallId ?: return
+        enqueueHostedState(
+            HostedCallApiClient(settings.hostedApiUrl, settings.hostedDeviceToken),
+            callId,
+            "failed",
+            reason,
+        )
+        hostedListener?.let { listener -> bridge?.removeListener(listener) }
+        hostedCallTimer?.cancel(false)
+        hostedCallTimer = null
+        hostedListener = null
+        hostedCallId = null
+        hostedLastState = null
+        hostedJobInFlight.set(false)
     }
 
     // ------------------------------------------------------------ privileged setup / health
@@ -636,6 +992,10 @@ class GatewayRuntime private constructor(context: Context) {
                 cellularInboundTarget = inboundTarget,
                 busyPolicy = s.busyPolicy,
                 allowedDialPrefixes = s.allowedPrefixes.split(',').map { it.trim() }.filter { it.isNotEmpty() },
+                cellularToSipGain = s.cellularToSipGain / 100f,
+                sipToCellularGain = s.sipToCellularGain / 100f,
+                muteCellularToSip = s.muteCellularToSip,
+                muteSipToCellular = s.muteSipToCellular,
             ),
             dialPolicyForA = { n -> if (cellular.isEmergencyNumber(n)) HangupCause.FORBIDDEN else null },
             log = { AppLog.i("bridge: $it") },

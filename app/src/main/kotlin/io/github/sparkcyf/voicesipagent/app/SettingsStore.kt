@@ -20,6 +20,12 @@ data class GatewaySettings(
     val keepDefaultDialer: Boolean = false,
     /** Mute local call output while bridged. Telecom manages microphone mute independently. */
     val muteEarpiece: Boolean = true,
+    /** Mixer gain for cellular audio sent to SIP, in percent. */
+    val cellularToSipGain: Int = 100,
+    /** Mixer gain for SIP audio sent to cellular, in percent. */
+    val sipToCellularGain: Int = 100,
+    val muteCellularToSip: Boolean = false,
+    val muteSipToCellular: Boolean = false,
     val server: String = "",
     val port: Int = 5060,
     /** udp | tcp | tls; the built-in stack only supports udp. */
@@ -46,6 +52,14 @@ data class GatewaySettings(
     val inboundTarget: String = "",
     /** Comma-separated; empty = any number may be dialed out. */
     val allowedPrefixes: String = "",
+    /** HTTPS control-plane URL for hosted outbound calls; blank disables polling. */
+    val hostedApiUrl: String = "",
+    /** Per-device bearer credential, sealed with Android Keystore. */
+    val hostedDeviceToken: String = "",
+    /** Server-issued device identity; not a credential. */
+    val hostedDeviceId: String = "",
+    /** Organization assigned by enrollment; not a credential. */
+    val hostedOrganizationId: String = "",
     val busyPolicy: BusyPolicy = BusyPolicy.REJECT,
     val audioMethod: Int = AudioMethod.AUTO,
     val callAccess: Int = CallAccess.AUTO,
@@ -96,6 +110,10 @@ class SettingsStore(context: Context) {
         takeover = prefs.getBoolean("takeover", true),
         keepDefaultDialer = prefs.getBoolean("keep_default_dialer", false),
         muteEarpiece = prefs.getBoolean("mute_earpiece", true),
+        cellularToSipGain = prefs.getInt("cellular_to_sip_gain", 100).coerceIn(0, 200),
+        sipToCellularGain = prefs.getInt("sip_to_cellular_gain", 100).coerceIn(0, 200),
+        muteCellularToSip = prefs.getBoolean("mute_cellular_to_sip", false),
+        muteSipToCellular = prefs.getBoolean("mute_sip_to_cellular", false),
         server = prefs.getString("server", "")!!,
         port = prefs.getInt("port", 5060),
         sipTransport = prefs.getString("sip_transport", "udp")!!,
@@ -110,6 +128,10 @@ class SettingsStore(context: Context) {
         registrarPassword = prefs.getString("registrar_password_sealed", null)?.let(::unseal).orEmpty(),
         inboundTarget = prefs.getString("inbound_target", "")!!,
         allowedPrefixes = prefs.getString("allowed_prefixes", "")!!,
+        hostedApiUrl = prefs.getString("hosted_api_url", "")!!,
+        hostedDeviceToken = prefs.getString("hosted_device_token_sealed", null)?.let { unsealWithAlias(it, HOSTED_KEY_ALIAS) }.orEmpty(),
+        hostedDeviceId = prefs.getString("hosted_device_id", "").orEmpty(),
+        hostedOrganizationId = prefs.getString("hosted_organization_id", "").orEmpty(),
         busyPolicy = runCatching { BusyPolicy.valueOf(prefs.getString("busy_policy", "REJECT")!!) }.getOrDefault(BusyPolicy.REJECT),
         audioMethod = prefs.getInt("audio_method", AudioMethod.AUTO).takeIf { it in 0..2 } ?: AudioMethod.AUTO,
         callAccess = prefs.getInt("call_access", CallAccess.AUTO).takeIf { it in 0..2 } ?: CallAccess.AUTO,
@@ -125,6 +147,10 @@ class SettingsStore(context: Context) {
             .putBoolean("takeover", s.takeover)
             .putBoolean("keep_default_dialer", s.keepDefaultDialer)
             .putBoolean("mute_earpiece", s.muteEarpiece)
+            .putInt("cellular_to_sip_gain", s.cellularToSipGain.coerceIn(0, 200))
+            .putInt("sip_to_cellular_gain", s.sipToCellularGain.coerceIn(0, 200))
+            .putBoolean("mute_cellular_to_sip", s.muteCellularToSip)
+            .putBoolean("mute_sip_to_cellular", s.muteSipToCellular)
             .putString("server", s.server.trim())
             .putInt("port", s.port)
             .putString("sip_transport", s.sipTransport.trim().lowercase())
@@ -139,6 +165,10 @@ class SettingsStore(context: Context) {
             .putString("registrar_password_sealed", seal(s.registrarPassword))
             .putString("inbound_target", s.inboundTarget.trim())
             .putString("allowed_prefixes", s.allowedPrefixes.trim())
+            .putString("hosted_api_url", s.hostedApiUrl.trim())
+            .putString("hosted_device_token_sealed", sealWithAlias(s.hostedDeviceToken, HOSTED_KEY_ALIAS))
+            .putString("hosted_device_id", s.hostedDeviceId)
+            .putString("hosted_organization_id", s.hostedOrganizationId)
             .putString("busy_policy", s.busyPolicy.name)
             .putInt("audio_method", s.audioMethod)
             .putInt("call_access", s.callAccess)
@@ -148,12 +178,20 @@ class SettingsStore(context: Context) {
             .apply()
     }
 
-    private fun key(): SecretKey {
+    /** Stable non-secret ID used by this installation when enrolling with an organization. */
+    fun getOrCreateHostedExternalDeviceId(): String {
+        prefs.getString("hosted_external_device_id", null)?.let { return it }
+        val created = java.util.UUID.randomUUID().toString()
+        prefs.edit().putString("hosted_external_device_id", created).commit()
+        return prefs.getString("hosted_external_device_id", created) ?: created
+    }
+
+    private fun key(alias: String = KEY_ALIAS): SecretKey {
         val ks = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
-        (ks.getKey(KEY_ALIAS, null) as? SecretKey)?.let { return it }
+        (ks.getKey(alias, null) as? SecretKey)?.let { return it }
         val gen = KeyGenerator.getInstance(KeyProperties.KEY_ALGORITHM_AES, "AndroidKeyStore")
         gen.init(
-            KeyGenParameterSpec.Builder(KEY_ALIAS, KeyProperties.PURPOSE_ENCRYPT or KeyProperties.PURPOSE_DECRYPT)
+            KeyGenParameterSpec.Builder(alias, KeyProperties.PURPOSE_ENCRYPT or KeyProperties.PURPOSE_DECRYPT)
                 .setBlockModes(KeyProperties.BLOCK_MODE_GCM)
                 .setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_NONE)
                 .build(),
@@ -161,24 +199,29 @@ class SettingsStore(context: Context) {
         return gen.generateKey()
     }
 
-    private fun seal(plain: String): String {
+    private fun seal(plain: String): String = sealWithAlias(plain, KEY_ALIAS)
+
+    private fun unseal(sealed: String): String? = unsealWithAlias(sealed, KEY_ALIAS)
+
+    private fun sealWithAlias(plain: String, alias: String): String {
         val c = Cipher.getInstance("AES/GCM/NoPadding")
-        c.init(Cipher.ENCRYPT_MODE, key())
+        c.init(Cipher.ENCRYPT_MODE, key(alias))
         val out = c.iv + c.doFinal(plain.toByteArray())
         return Base64.encodeToString(out, Base64.NO_WRAP)
     }
 
-    private fun unseal(sealed: String): String? = try {
+    private fun unsealWithAlias(sealed: String, alias: String): String? = try {
         val raw = Base64.decode(sealed, Base64.NO_WRAP)
         val c = Cipher.getInstance("AES/GCM/NoPadding")
-        c.init(Cipher.DECRYPT_MODE, key(), GCMParameterSpec(128, raw, 0, 12))
+        c.init(Cipher.DECRYPT_MODE, key(alias), GCMParameterSpec(128, raw, 0, 12))
         String(c.doFinal(raw, 12, raw.size - 12))
     } catch (e: Exception) {
-        AppLog.w("stored SIP password unreadable; re-enter it", e)
+        AppLog.w("stored encrypted setting unreadable; re-enter it", e)
         null
     }
 
     companion object {
         private const val KEY_ALIAS = "sip-password"
+        private const val HOSTED_KEY_ALIAS = "hosted-api-device-token"
     }
 }
