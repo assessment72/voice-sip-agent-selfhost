@@ -85,20 +85,8 @@ jobs:
             if [[ -z "${!name:-}" ]]; then missing+=("$name"); fi
           done
 
-          if (( ${#missing[@]} == 4 )); then
-            echo "::warning::Custom keystore secrets are unavailable to this workflow. Keeping the Gradle-generated installable debug APK signed with the temporary runner debug key."
-            echo "mode=runner-debug-key" >> "$GITHUB_OUTPUT"
-            {
-              echo "### APK signing"
-              echo "- Custom repository keystore: not available to this workflow."
-              echo "- APK remains signed with the temporary GitHub runner debug key."
-              echo "- To use your persistent key, add all four values under **Settings → Secrets and variables → Actions → Repository secrets**."
-            } >> "$GITHUB_STEP_SUMMARY"
-            exit 0
-          fi
-
           if (( ${#missing[@]} > 0 )); then
-            printf 'Incomplete signing configuration. Missing secrets: %s\n' "${missing[*]}" >&2
+            printf 'Signing secrets are missing: %s. Refusing to produce an APK that cannot update the installed app. Add all four values as repository Actions secrets.\n' "${missing[*]}" >&2
             exit 1
           fi
 
