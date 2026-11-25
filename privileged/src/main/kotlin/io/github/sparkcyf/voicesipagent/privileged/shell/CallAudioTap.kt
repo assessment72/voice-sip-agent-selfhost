@@ -334,11 +334,15 @@ internal class CallAudioTap(
         runCatching(onClosed).onFailure { Log.w(TAG, "onClosed failed: $it") }
     }
 
-    fun stats() = "method=$usedMethod rate=$rate frameBytes=$frameBytes down=$downFrames up=$upFrames downPeak=$downPeak upPeak=$upPeak " +
+    fun stats() = "method=$usedMethod rate=$rate frameBytes=$frameBytes down=$downFrames up=$upFrames " +
+        "downPeak=$downPeak(${peakDbfs(downPeak)}dBFS) upPeak=$upPeak(${peakDbfs(upPeak)}dBFS) " +
         "downVoiced=$downVoiced upVoiced=$upVoiced" +
         " backendFailures=$backendFailures preferred=${finalPreferredDeviceType ?: if (::track.isInitialized) runCatching { track.preferredDevice?.type }.getOrNull() else null}" +
         " routed=${finalRoutedDeviceType ?: if (::track.isInitialized) runCatching { track.routedDevice?.type }.getOrNull() else null}" +
         (error?.let { " error=$it" } ?: "")
+
+    private fun peakDbfs(value: Int): String = String.format(java.util.Locale.US, "%.2f",
+        20.0 * kotlin.math.log10(value.coerceAtLeast(1).toDouble() / 32768.0))
 
     private fun peak(b: ByteArray, size: Int = b.size): Int {
         var p = 0
