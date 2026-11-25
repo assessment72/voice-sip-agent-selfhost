@@ -300,6 +300,7 @@ ${context.salesInfo}
             @Volatile var firstOutputPlayedAt: Long? = null
             private var turnSpeechStartedAt: Long? = null
             private var lastSpeechAt: Long? = null
+            private var speechEndSignaled = false
             private var noiseFloorRms = 80.0
             private var currentTurnFirstOutputAt: Long? = null
             private val turnResponseLatencies = mutableListOf<Long>()
@@ -320,6 +321,12 @@ ${context.salesInfo}
                 if (isSpeechLike(frame)) {
                     if (turnSpeechStartedAt == null) turnSpeechStartedAt = now
                     lastSpeechAt = now
+                    speechEndSignaled = false
+                } else if (turnSpeechStartedAt != null && lastSpeechAt != null && !speechEndSignaled &&
+                    now - lastSpeechAt!! >= 600) {
+                    // Hybrid VAD: preserve automatic server VAD, but finalize promptly after
+                    // a locally detected speech end instead of waiting for the full server window.
+                    speechEndSignaled = client?.sendAudioStreamEnd() == true
                 }
                 inputAttempts++
                 if (client?.sendPcm8(frame) == true) {
@@ -364,6 +371,7 @@ ${context.salesInfo}
                 }
                 turnSpeechStartedAt = null
                 lastSpeechAt = null
+                speechEndSignaled = false
             }
             @Synchronized fun responseStats(): Triple<Int, Long?, Long?> {
                 val values = turnResponseLatencies.toList()

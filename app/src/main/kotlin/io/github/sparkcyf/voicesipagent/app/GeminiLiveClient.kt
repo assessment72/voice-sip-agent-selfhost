@@ -188,6 +188,14 @@ internal class GeminiLiveClient(
         return queued
     }
 
+    /** Hybrid VAD: finalize the current audio turn without disabling server-side VAD. */
+    fun sendAudioStreamEnd(): Boolean {
+        val message = JSONObject().put("realtimeInput", JSONObject().put("audioStreamEnd", true))
+        val queued = socket?.send(message.toString()) == true
+        AppLog.i("Gemini Live audio stream end queued=$queued")
+        return queued
+    }
+
     fun close(reason: String = "stopped") {
         closed = true
         setupTimeout?.cancel(false)
