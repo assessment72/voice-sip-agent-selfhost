@@ -2,6 +2,7 @@ import http from "node:http";
 import { randomUUID, createHash, timingSafeEqual } from "node:crypto";
 import { mkdir, readFile, writeFile, rename } from "node:fs/promises";
 import path from "node:path";
+import { handleCrmRoute } from "./crm-routes.mjs";
 
 const PORT = Number(process.env.PORT || 8787);
 const HOST = process.env.HOST || "127.0.0.1";
@@ -362,6 +363,10 @@ const server = http.createServer(async (req, res) => {
       if (!authAdmin(req)) return json(res, 401, { error: "unauthorized" });
       return json(res, 501, { error: "outbound_calling_not_implemented", message: "No SIP call is started by this API yet." });
     }
+
+    if (await handleCrmRoute(req, res, url, {
+      state, save, audit, authAdmin, body
+    })) return;
 
     return json(res, 404, { error: "not_found" });
   } catch (e) {
