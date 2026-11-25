@@ -17,6 +17,7 @@ import io.github.sparkcyf.voicesipagent.gateway.MediaBridge
 import java.util.concurrent.ArrayBlockingQueue
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.atomic.AtomicBoolean
+import kotlin.math.sqrt
 
 internal data class AiCallReport(
     val number: String?, val name: String?, val role: String?, val company: String?,
@@ -37,6 +38,8 @@ internal data class AiCallReport(
     val turnResponseCount: Int = 0,
     val lastTurnResponseMs: Long? = null,
     val averageTurnResponseMs: Long? = null,
+    val lastTurnSpeechDurationMs: Long? = null,
+    val averageTurnSpeechDurationMs: Long? = null,
 ) {
     fun telegramText() = buildString {
         appendLine("تقرير مكالمة الذكاء الاصطناعي")
@@ -58,7 +61,8 @@ internal data class AiCallReport(
         appendLine("زمن وصول أول صوت Gemini بعد آخر إطار دخل: ${responseMs?.let { "$it مللي ثانية" } ?: "غير متاح"}")
         appendLine("زمن وضع أول صوت في الطابور: ${queuedMs?.let { "$it مللي ثانية" } ?: "غير متاح"}")
         appendLine("زمن أول تشغيل بعد آخر إطار دخل: ${playbackMs?.let { "$it مللي ثانية" } ?: "غير متاح"}")
-        if (turnResponseCount > 0) appendLine("زمن الرد لكل جولة: ${lastTurnResponseMs} مللي ثانية؛ المتوسط: ${averageTurnResponseMs} مللي ثانية؛ عدد الجولات: $turnResponseCount")
+        if (turnResponseCount > 0) appendLine("زمن استجابة Gemini بعد نهاية كلام العميل: ${lastTurnResponseMs} مللي ثانية؛ المتوسط: ${averageTurnResponseMs} مللي ثانية؛ عدد الجولات: $turnResponseCount")
+        if (lastTurnSpeechDurationMs != null) appendLine("مدة كلام العميل في آخر جولة: ${lastTurnSpeechDurationMs} مللي ثانية؛ المتوسط: ${averageTurnSpeechDurationMs} مللي ثانية")
         if (turnCompleteAt != null) appendLine("إشارة اكتمال دور Gemini: مسجلة (لا تمثل بالضرورة نهاية كلام الطرف الآخر)")
         if (inputText.isNotBlank()) appendLine("آخر كلام الطرف الآخر: ${inputText.take(500)}")
         if (outputText.isNotBlank()) appendLine("آخر رد Gemini: ${outputText.take(500)}")
@@ -266,12 +270,13 @@ ${context.salesInfo}
             publishMedia(null)
             transition(LegState.ENDED, cause)
             val turnStats = port.responseStats()
+            val speechStats = port.speechStats()
             report(AiCallReport(remote.number, context.name.ifBlank { remote.displayName }, context.role, context.company,
                 started, System.currentTimeMillis(), cause, port.inputFrames, port.outputFrames, inputText, outputText,
                 failureDetail, port.inputAttempts, port.inputSendFailures, port.outputAudioChunks, port.outputAudioBytes,
                 port.outputDroppedFrames, port.outputQueuePeak, port.lastInputSentAt, port.firstOutputAt,
                 port.firstOutputQueuedAt, port.firstOutputPlayedAt, turnCompleteAt,
-                turnStats.first, turnStats.second, turnStats.third))
+                turnStats.first, turnStats.second, turnStats.third, speechStats.first, speechStats.second))
             onEnd()
         }
         override fun sendDtmf(digit: Char, durationMs: Int) {}
@@ -293,9 +298,12 @@ ${context.salesInfo}
             @Volatile var firstOutputAt: Long? = null
             @Volatile var firstOutputQueuedAt: Long? = null
             @Volatile var firstOutputPlayedAt: Long? = null
-            private var turnInputStartedAt: Long? = null
+            private var turnSpeechStartedAt: Long? = null
+            private var lastSpeechAt: Long? = null
+            private var noiseFloorRms = 80.0
             private var currentTurnFirstOutputAt: Long? = null
             private val turnResponseLatencies = mutableListOf<Long>()
+            private val turnSpeechDurations = mutableListOf<Long>()
             override val format = PcmFormat.NARROWBAND
             override val isClockSource = false
             override fun setClockListener(listener: FrameClockListener?) {}
@@ -308,7 +316,11 @@ ${context.salesInfo}
                     val queued = client?.sendClientText("ابدأ بتحية قصيرة وطبيعية باللهجة اليمنية الخفيفة. عرّف بنفسك كمساعد مبيعات للديزل دون اختراع اسم شركة، واسأل بلطف إن كان الوقت مناسباً لدقيقة واحدة. إذا قال الشخص إنه مشغول فلا تبدأ الأسئلة؛ اعرض وقتاً مناسباً للمتابعة أو أنهِ المكالمة باحترام، ثم توقف واستمع.") == true
                     AppLog.i("Gemini Live call opening turn started=$queued")
                 }
-                if (turnInputStartedAt == null) turnInputStartedAt = SystemClock.elapsedRealtime()
+                val now = SystemClock.elapsedRealtime()
+                if (isSpeechLike(frame)) {
+                    if (turnSpeechStartedAt == null) turnSpeechStartedAt = now
+                    lastSpeechAt = now
+                }
                 inputAttempts++
                 if (client?.sendPcm8(frame) == true) {
                     inputFrames++
@@ -320,7 +332,7 @@ ${context.salesInfo}
                 if (firstOutputAt == null) firstOutputAt = now
                 if (currentTurnFirstOutputAt == null) {
                     currentTurnFirstOutputAt = now
-                    turnInputStartedAt?.let { startedAt -> turnResponseLatencies += (now - startedAt).coerceAtLeast(0) }
+                    lastSpeechAt?.let { speechEndAt -> turnResponseLatencies += (now - speechEndAt).coerceAtLeast(0) }
                 }
                 outputAudioChunks++
                 outputAudioBytes += bytes24k.size
@@ -338,16 +350,44 @@ ${context.salesInfo}
                 output.clear()
                 outputBuffer.reset()
                 currentTurnFirstOutputAt = null
-                turnInputStartedAt = SystemClock.elapsedRealtime()
+                val now = SystemClock.elapsedRealtime()
+                if (turnSpeechStartedAt == null) turnSpeechStartedAt = now
+                lastSpeechAt = now
                 AppLog.i("Gemini Live output interrupted by caller speech")
             }
             @Synchronized fun completeTurn() {
                 currentTurnFirstOutputAt = null
-                turnInputStartedAt = null
+                val startedAt = turnSpeechStartedAt
+                val speechEndAt = lastSpeechAt
+                if (startedAt != null && speechEndAt != null) {
+                    turnSpeechDurations += (speechEndAt - startedAt + 20).coerceAtLeast(0)
+                }
+                turnSpeechStartedAt = null
+                lastSpeechAt = null
             }
             @Synchronized fun responseStats(): Triple<Int, Long?, Long?> {
                 val values = turnResponseLatencies.toList()
                 return Triple(values.size, values.lastOrNull(), values.average().takeIf { values.isNotEmpty() }?.toLong())
+            }
+            @Synchronized fun speechStats(): Pair<Long?, Long?> {
+                val values = turnSpeechDurations.toList()
+                return Pair(values.lastOrNull(), values.average().takeIf { values.isNotEmpty() }?.toLong())
+            }
+
+            private fun isSpeechLike(frame: ShortArray): Boolean {
+                if (frame.isEmpty()) return false
+                var sumSquares = 0.0
+                var peak = 0
+                for (sample in frame) {
+                    val amplitude = kotlin.math.abs(sample.toInt())
+                    sumSquares += amplitude.toDouble() * amplitude
+                    if (amplitude > peak) peak = amplitude
+                }
+                val rms = sqrt(sumSquares / frame.size)
+                val threshold = maxOf(220.0, noiseFloorRms * 2.8)
+                val speech = rms >= threshold && peak >= 420
+                if (!speech) noiseFloorRms = noiseFloorRms * 0.98 + rms * 0.02
+                return speech
             }
         }
     }
