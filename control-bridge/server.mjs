@@ -491,6 +491,7 @@ const server = http.createServer(async (req, res) => {
   try {
     const url = new URL(req.url, "http://localhost");
     const p = url.pathname;
+    let m;
 
     if (req.method === "GET" && p === "/health") return json(res, 200, { ok: true, service: "voicx-control-bridge" });
 
@@ -562,7 +563,7 @@ const server = http.createServer(async (req, res) => {
       return json(res, 201, result);
     }
 
-    let m = routeMatch(p, /^\/api\/v1\/devices\/([^/]+)\/heartbeat$/);
+    m = routeMatch(p, /^\/api\/v1\/devices\/([^/]+)\/heartbeat$/);
     if (req.method === "POST" && m) {
       const id = decodeURIComponent(m[1]);
       if (!authDevice(req, id)) return json(res, 401, { error: "unauthorized" });
