@@ -57,6 +57,9 @@ export async function handleMongoCrmRoute(req, res, url, ctx) {
     if (resource === "interactions" && !itemId && method === "POST") {
       return send(res, 201, await ctx.crmStore.addInteraction(body)), true;
     }
+    if (resource === "calls" && !itemId && method === "POST") {
+      return send(res, 201, await ctx.crmStore.recordCall(body)), true;
+    }
     if (resource === "follow-ups" && method === "GET") {
       return send(res, 200, { followUps: await ctx.crmStore.listFollowUps(url.searchParams.get("today") === "true") }), true;
     }
