@@ -220,6 +220,8 @@ class CallBridge(
                 val previous = s.handoffPrevious
                 s.handoffPrevious = null
                 s.handoffPending = false
+                s.answerTimer?.cancel(false)
+                s.answerTimer = null
                 s.media?.stop()
                 s.media = null
                 s.mediaTimer?.cancel(false)
