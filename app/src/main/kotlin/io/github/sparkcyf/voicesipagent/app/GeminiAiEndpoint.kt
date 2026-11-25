@@ -85,6 +85,10 @@ internal class GeminiAiEndpoint(
     @Volatile private var active: AiLeg? = null
     @Volatile private var context = CallContext()
     @Volatile private var directBridge: MediaBridge? = null
+    @Volatile private var directCellLeg: CallLeg? = null
+    @Volatile private var directAiLeg: CallLeg? = null
+    @Volatile private var directHumanLeg: CallLeg? = null
+    @Volatile private var directHandoffCommitted = false
     @Volatile var onHandoffRequested: (() -> Boolean)? = null
     @Volatile var onHangupRequested: (() -> Unit)? = null
 
@@ -151,11 +155,28 @@ internal class GeminiAiEndpoint(
     fun startOutbound(cellular: CallEndpoint, number: String, caller: Party) {
         val cell = cellular.dial(number, caller)
         val ai = dial(number, caller)
+        directBridge?.stop()
+        directBridge = null
+        directCellLeg = cell
+        directAiLeg = ai
+        directHumanLeg = null
+        directHandoffCommitted = false
         val watcher = object : CallLeg.Listener {
             override fun onStateChanged(leg: CallLeg, state: LegState) {
                 if (state == LegState.ENDED) {
-                    if (leg === cell) ai.hangup(leg.endCause ?: HangupCause.NORMAL)
-                    else if (leg === ai) cell.hangup(leg.endCause ?: HangupCause.NORMAL)
+                    when (leg) {
+                        cell -> {
+                            ai.hangup(leg.endCause ?: HangupCause.NORMAL)
+                            directHumanLeg?.takeIf { it.state != LegState.ENDED }?.hangup(HangupCause.CANCELLED)
+                            clearDirectCall(cell)
+                        }
+                        ai -> {
+                            if (directHumanLeg?.state != LegState.CONNECTED) {
+                                directHumanLeg?.takeIf { it.state != LegState.ENDED }?.hangup(HangupCause.CANCELLED)
+                                cell.hangup(leg.endCause ?: HangupCause.NORMAL)
+                            }
+                        }
+                    }
                 }
                 connectIfReady(cell, ai)
             }
@@ -165,7 +186,39 @@ internal class GeminiAiEndpoint(
         ai.addListener(watcher)
     }
 
+    /** Starts an attended employee handoff for a SIM call originated by Telegram /call. */
+    @Synchronized
+    fun handoffDirectTo(endpoint: CallEndpoint, target: String): Boolean {
+        val cell = directCellLeg ?: return false
+        val ai = directAiLeg ?: return false
+        if (target.isBlank() || directHumanLeg != null || directHandoffCommitted ||
+            cell.state != LegState.CONNECTED || ai.state != LegState.CONNECTED) return false
+        val human = endpoint.dial(target.trim(), cell.remote)
+        if (human.state == LegState.ENDED) return false
+        directHumanLeg = human
+        human.addListener(object : CallLeg.Listener {
+            override fun onStateChanged(leg: CallLeg, state: LegState) {
+                if (state == LegState.ENDED) {
+                    if (directHandoffCommitted) {
+                        cell.hangup(leg.endCause ?: HangupCause.NORMAL)
+                        clearDirectCall(cell)
+                    } else if (directHumanLeg === human) {
+                        directHumanLeg = null
+                        ai.notifyHandoffFailed()
+                    }
+                } else {
+                    connectDirectHandoffIfReady(cell, ai, human)
+                }
+            }
+            override fun onMediaChanged(leg: CallLeg, media: MediaPort?) =
+                connectDirectHandoffIfReady(cell, ai, human)
+        })
+        connectDirectHandoffIfReady(cell, ai, human)
+        return true
+    }
+
     private fun connectIfReady(cell: CallLeg, ai: CallLeg) {
+        if (directHandoffCommitted) return
         if (cell.state == LegState.ENDED || ai.state == LegState.ENDED) {
             directBridge?.stop(); directBridge = null
             return
@@ -174,6 +227,28 @@ internal class GeminiAiEndpoint(
             cell.media != null && ai.media != null) {
             directBridge = MediaBridge(cell.media!!, ai.media!!).also { it.start() }
         }
+    }
+
+    private fun connectDirectHandoffIfReady(cell: CallLeg, ai: CallLeg, human: CallLeg) {
+        if (directCellLeg !== cell || directAiLeg !== ai || directHumanLeg !== human || directHandoffCommitted) return
+        if (cell.state == LegState.CONNECTED && human.state == LegState.CONNECTED &&
+            cell.media != null && human.media != null) {
+            directHandoffCommitted = true
+            directBridge?.stop()
+            directBridge = MediaBridge(cell.media!!, human.media!!).also { it.start() }
+            ai.hangup(HangupCause.CANCELLED)
+            AppLog.i("Gemini direct call handed off to SIP employee")
+        }
+    }
+
+    private fun clearDirectCall(cell: CallLeg) {
+        if (directCellLeg !== cell) return
+        directBridge?.stop()
+        directBridge = null
+        directCellLeg = null
+        directAiLeg = null
+        directHumanLeg = null
+        directHandoffCommitted = false
     }
 
     private class AiLeg(
@@ -321,6 +396,10 @@ ${context.salesInfo}
                 turnStats.first, turnStats.second, turnStats.third, speechStats.first, speechStats.second))
             onEnd()
         }
+        fun notifyHandoffFailed() {
+            client?.sendClientText("اعتذر للعميل: الموظف غير متاح حالياً. سأكمل مساعدتك أو يمكنك طلب إنهاء المكالمة.")
+        }
+
         override fun sendDtmf(digit: Char, durationMs: Int) {}
 
         private inner class AiPort : MediaPort {
