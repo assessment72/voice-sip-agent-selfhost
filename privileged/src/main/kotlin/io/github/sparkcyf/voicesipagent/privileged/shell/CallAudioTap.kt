@@ -44,6 +44,8 @@ internal class CallAudioTap(
     private var modeThread: Thread? = null
     private val audioManager by lazy { ShellEnv.audioManager(ctx) }
     private var backendFailures = ""
+    @Volatile private var finalPreferredDeviceType: Int? = null
+    @Volatile private var finalRoutedDeviceType: Int? = null
 
     @Volatile var usedMethod = "none"; private set
     @Volatile var downFrames = 0L; private set
@@ -314,6 +316,12 @@ internal class CallAudioTap(
         closed = true
         running = false
         try { Os.shutdown(local, OsConstants.SHUT_RDWR) } catch (_: Throwable) {}
+        // Snapshot routing before release: AudioTrack.routedDevice commonly becomes null after
+        // release(), which made post-close diagnostics look like a failed route even when it worked.
+        if (::track.isInitialized) {
+            finalPreferredDeviceType = runCatching { track.preferredDevice?.type }.getOrNull()
+            finalRoutedDeviceType = runCatching { track.routedDevice?.type }.getOrNull()
+        }
         try { record.stop() } catch (_: Throwable) {}
         try { track.pause(); track.flush(); track.stop() } catch (_: Throwable) {}
         try { record.release() } catch (_: Throwable) {}
@@ -328,8 +336,8 @@ internal class CallAudioTap(
 
     fun stats() = "method=$usedMethod rate=$rate frameBytes=$frameBytes down=$downFrames up=$upFrames downPeak=$downPeak upPeak=$upPeak " +
         "downVoiced=$downVoiced upVoiced=$upVoiced" +
-        " backendFailures=$backendFailures preferred=${if (::track.isInitialized) runCatching { track.preferredDevice?.type }.getOrNull() else null}" +
-        " routed=${if (::track.isInitialized) runCatching { track.routedDevice?.type }.getOrNull() else null}" +
+        " backendFailures=$backendFailures preferred=${finalPreferredDeviceType ?: if (::track.isInitialized) runCatching { track.preferredDevice?.type }.getOrNull() else null}" +
+        " routed=${finalRoutedDeviceType ?: if (::track.isInitialized) runCatching { track.routedDevice?.type }.getOrNull() else null}" +
         (error?.let { " error=$it" } ?: "")
 
     private fun peak(b: ByteArray, size: Int = b.size): Int {
