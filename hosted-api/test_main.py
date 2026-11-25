@@ -515,3 +515,41 @@ def test_whatsapp_number_allowlist_fails_closed(tmp_path, monkeypatch):
     with pytest.raises(HTTPException) as error:
         main.normalize_whatsapp_number("+967777405578")
     assert error.value.status_code == 403
+
+
+def test_evolution_webhook_authentication_dedup_and_inbound_persistence(tmp_path, monkeypatch):
+    client = setup_client(tmp_path, monkeypatch)
+    monkeypatch.setattr(main, "mongodb_enabled", lambda: False)
+    monkeypatch.setattr(main, "REQUIRE_DISTRIBUTED_RATE_LIMIT", False)
+    monkeypatch.setattr(main, "_rate_limit_check", lambda *args, **kwargs: (True, 1))
+    monkeypatch.setenv("EVOLUTION_WEBHOOK_SECRET_BAILEYS", "test-hook-secret")
+    monkeypatch.setenv("EVOLUTION_INSTANCE_ORG_MAP", '{"wa-web":"org-hook"}')
+    payload = {
+        "event": "messages.upsert",
+        "instance": "wa-web",
+        "data": {
+            "key": {"id": "wamid-in-1", "remoteJid": "967777405578@s.whatsapp.net", "fromMe": False},
+            "message": {"conversation": "Hello from customer"},
+            "messageType": "conversation",
+        },
+    }
+    denied = client.post("/v1/webhooks/evolution/baileys", json=payload)
+    assert denied.status_code == 401
+    headers_value = {"X-Evolution-Webhook-Secret": "test-hook-secret"}
+    first = client.post("/v1/webhooks/evolution/baileys", json=payload, headers=headers_value)
+    replay = client.post("/v1/webhooks/evolution/baileys", json=payload, headers=headers_value)
+    assert first.status_code == 202
+    assert first.json()["accepted"] is True
+    assert first.json()["n8nForwarded"] is False
+    assert replay.status_code == 202
+    assert replay.json()["duplicate"] is True
+    with main.db() as connection:
+        assert connection.execute(
+            "SELECT COUNT(*) FROM whatsapp_events WHERE organization_id='org-hook'"
+        ).fetchone()[0] == 1
+        row = connection.execute(
+            "SELECT direction,status,message FROM whatsapp_messages WHERE provider_message_id='wamid-in-1'"
+        ).fetchone()
+    assert row["direction"] == "inbound"
+    assert row["status"] == "received"
+    assert row["message"] == "Hello from customer"
