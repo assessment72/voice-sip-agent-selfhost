@@ -22,6 +22,10 @@ internal data class AiCallReport(
     val startedAt: Long, val endedAt: Long, val cause: HangupCause?,
     val inputFrames: Long, val outputFrames: Long, val inputText: String, val outputText: String,
     val failureDetail: String = "",
+    val inputAttempts: Long = inputFrames,
+    val inputSendFailures: Long = 0,
+    val outputAudioChunks: Long = 0,
+    val outputAudioBytes: Long = 0,
 ) {
     fun telegramText() = buildString {
         appendLine("تقرير مكالمة الذكاء الاصطناعي")
@@ -32,8 +36,8 @@ internal data class AiCallReport(
         appendLine("المدة: ${((endedAt - startedAt).coerceAtLeast(0) / 1000)} ثانية")
         appendLine("النتيجة: ${cause ?: HangupCause.NORMAL}")
         if (failureDetail.isNotBlank()) appendLine("تفصيل الاتصال: ${failureDetail.take(240)}")
-        appendLine("التقاط وإرسال الصوت: ${inputFrames > 0} (${inputFrames} إطار)")
-        appendLine("استقبال صوت Gemini: ${outputFrames > 0} (${outputFrames} إطار)")
+        appendLine("التقاط وإرسال الصوت: ${inputFrames > 0} (${inputFrames} إطار قُبل من ${inputAttempts}؛ فشل الإرسال: ${inputSendFailures})")
+        appendLine("استقبال صوت Gemini: ${outputFrames > 0} (${outputAudioChunks} دفعة، ${outputAudioBytes} بايت؛ ${outputFrames} إطار مشغّل)")
         if (inputText.isNotBlank()) appendLine("آخر كلام الطرف الآخر: ${inputText.take(500)}")
         if (outputText.isNotBlank()) appendLine("آخر رد Gemini: ${outputText.take(500)}")
     }.take(3900)
@@ -147,6 +151,7 @@ internal class GeminiAiEndpoint(
         @Volatile private var failureDetail = ""
         private var inputText = ""
         private var outputText = ""
+		private val openingTurnStarted = AtomicBoolean(false)
 		private val prompt = """أنت سكرتير أعمال ومساعد مبيعات متخصص في تسويق توريد الديزل والوقود للشركات والمشاريع ومحطات الوقود والمصانع والمقاولين.
 
 أسلوبك: تحدث بالعربية باللهجة اليمنية الطبيعية والمفهومة، بنبرة مهنية وودودة، وردود قصيرة ومباشرة. لا تكن آلياً ولا تكرر العبارات، ولا تضغط على العميل. افهم احتياجه قبل عرض أي خطوة.
@@ -203,7 +208,9 @@ ${context.salesInfo}
             client?.close()
             publishMedia(null)
             transition(LegState.ENDED, cause)
-            report(AiCallReport(remote.number, context.name.ifBlank { remote.displayName }, context.role, context.company, started, System.currentTimeMillis(), cause, port.inputFrames, port.outputFrames, inputText, outputText, failureDetail))
+            report(AiCallReport(remote.number, context.name.ifBlank { remote.displayName }, context.role, context.company,
+                started, System.currentTimeMillis(), cause, port.inputFrames, port.outputFrames, inputText, outputText,
+                failureDetail, port.inputAttempts, port.inputSendFailures, port.outputAudioChunks, port.outputAudioBytes))
             onEnd()
         }
         override fun sendDtmf(digit: Char, durationMs: Int) {}
@@ -212,13 +219,26 @@ ${context.salesInfo}
             private val output = ArrayBlockingQueue<ShortArray>(100)
             private val outputBuffer = GeminiPcmOutputBuffer(PcmFormat.NARROWBAND.frameSamples)
             @Volatile var inputFrames = 0L
+            @Volatile var inputAttempts = 0L
+            @Volatile var inputSendFailures = 0L
             @Volatile var outputFrames = 0L
+            @Volatile var outputAudioChunks = 0L
+            @Volatile var outputAudioBytes = 0L
             override val format = PcmFormat.NARROWBAND
             override val isClockSource = false
             override fun setClockListener(listener: FrameClockListener?) {}
             override fun readFrame(): ShortArray = output.poll()?.also { outputFrames++ } ?: format.silence()
-            override fun writeFrame(frame: ShortArray) { inputFrames++; client?.sendPcm8(frame) }
+            override fun writeFrame(frame: ShortArray) {
+                if (openingTurnStarted.compareAndSet(false, true)) {
+                    val queued = client?.sendClientText("ابدأ المكالمة الآن بتحية قصيرة باللهجة اليمنية. عرّف بنفسك كمساعد مبيعات للديزل دون اختراع اسم شركة، وتحقق بلطف أن الوقت مناسب للحديث، ثم توقف وانتظر رد العميل.") == true
+                    AppLog.i("Gemini Live call opening turn started=$queued")
+                }
+                inputAttempts++
+                if (client?.sendPcm8(frame) == true) inputFrames++ else inputSendFailures++
+            }
             fun addOutput(bytes24k: ByteArray) {
+                outputAudioChunks++
+                outputAudioBytes += bytes24k.size
                 for (frame in outputBuffer.append(bytes24k)) {
                     if (!output.offer(frame)) output.poll()?.let { output.offer(frame) }
                 }

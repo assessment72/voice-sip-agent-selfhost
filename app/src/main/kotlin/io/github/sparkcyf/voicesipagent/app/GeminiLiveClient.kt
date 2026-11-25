@@ -144,8 +144,20 @@ internal class GeminiLiveClient(
         .replace(Regex("(?i)AIza[A-Za-z0-9_-]{20,}"), "[REDACTED_API_KEY]")
         .replace(Regex("https?://\\S+"), "[URL]")
 
+    /** Starts the first spoken turn; setupComplete alone does not ask the model to respond. */
+    fun sendClientText(text: String): Boolean {
+        val message = JSONObject().put("clientContent", JSONObject()
+            .put("turns", org.json.JSONArray().put(JSONObject()
+                .put("role", "user")
+                .put("parts", org.json.JSONArray().put(JSONObject().put("text", text)))))
+            .put("turnComplete", true))
+        val queued = socket?.send(message.toString()) == true
+        AppLog.i("Gemini Live opening clientContent queued=$queued")
+        return queued
+    }
+
     /** Sends one 20 ms, 8 kHz PCM frame interpolated to Gemini's 16 kHz input rate. */
-    fun sendPcm8(frame: ShortArray) {
+    fun sendPcm8(frame: ShortArray): Boolean {
         val bytes = ByteArray(frame.size * 4)
         var p = 0
         for (i in frame.indices) {
@@ -160,7 +172,9 @@ internal class GeminiLiveClient(
         val audio = JSONObject()
             .put("data", Base64.encodeToString(bytes, Base64.NO_WRAP))
             .put("mimeType", "audio/pcm;rate=16000")
-        socket?.send(JSONObject().put("realtimeInput", JSONObject().put("audio", audio)).toString())
+        val queued = socket?.send(JSONObject().put("realtimeInput", JSONObject().put("audio", audio)).toString()) == true
+        if (!queued) AppLog.w("Gemini Live rejected an outgoing audio frame")
+        return queued
     }
 
     fun close(reason: String = "stopped") {
