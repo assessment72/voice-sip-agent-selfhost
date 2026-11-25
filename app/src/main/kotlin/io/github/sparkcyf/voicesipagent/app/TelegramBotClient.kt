@@ -13,6 +13,7 @@ internal class TelegramBotClient(
     token: String,
     private val connectTimeoutMs: Int = 8_000,
     private val readTimeoutMs: Int = 35_000,
+    private val connectionFactory: (URL) -> HttpURLConnection = { it.openConnection() as HttpURLConnection },
 ) {
     private val endpoint: String
     @Volatile private var activePoll: HttpURLConnection? = null
@@ -96,7 +97,7 @@ internal class TelegramBotClient(
     }
 
     private fun request(method: String, path: String, body: JSONObject? = null, isPoll: Boolean = false): JSONObject {
-        val connection = (URL(endpoint + path).openConnection() as HttpURLConnection).apply {
+        val connection = connectionFactory(URL(endpoint + path)).apply {
             requestMethod = method
             connectTimeout = connectTimeoutMs
             readTimeout = readTimeoutMs
@@ -115,13 +116,20 @@ internal class TelegramBotClient(
             val code = connection.responseCode
             val stream = if (code in 200..299) connection.inputStream else connection.errorStream
             val responseText = stream?.bufferedReader(Charsets.UTF_8)?.use { it.readText() }.orEmpty()
-            if (code !in 200..299) throw IllegalStateException("Telegram API HTTP $code")
-            val response = JSONObject(responseText)
-            if (!response.optBoolean("ok")) {
-                val errorCode = response.optInt("error_code", 0)
+            val response = runCatching { JSONObject(responseText) }.getOrNull()
+            if (code !in 200..299) {
+                val errorCode = response?.optInt("error_code", code) ?: code
+                val description = response?.optString("description")?.takeIf { it.isNotBlank() }?.take(180)
+                throw IllegalStateException(
+                    "Telegram API HTTP $code (error $errorCode)${description?.let { ": $it" } ?: ""}",
+                )
+            }
+            val parsed = response ?: throw IllegalStateException("Telegram API returned invalid JSON")
+            if (!parsed.optBoolean("ok")) {
+                val errorCode = parsed.optInt("error_code", 0)
                 throw IllegalStateException("Telegram API rejected request ($errorCode)")
             }
-            return response
+            return parsed
         } finally {
             if (isPoll && activePoll === connection) activePoll = null
             connection.disconnect()
