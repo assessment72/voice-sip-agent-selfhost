@@ -237,9 +237,25 @@ internal class CallAudioTap(
         val buf = ByteArray(frameBytes)
         try {
             var offset = 0
+            var consecutiveEmptyReads = 0
             while (running) {
                 val n = record.read(buf, offset, frameBytes - offset, AudioRecord.READ_BLOCKING)
-                if (n <= 0) { error = "record read $n at $rate Hz"; break }
+                if (n == 0) {
+                    // Some vendor AudioRecord implementations transiently return zero during
+                    // call-route handover even with READ_BLOCKING. Do not tear down a live SIP-SIM
+                    // bridge for an empty read; retry while the tap is still owned and active.
+                    consecutiveEmptyReads++
+                    if (consecutiveEmptyReads == 1 || consecutiveEmptyReads % 200 == 0) {
+                        Log.w(TAG, "record returned 0 bytes at $rate Hz (consecutive=$consecutiveEmptyReads)")
+                    }
+                    SystemClock.sleep(5)
+                    continue
+                }
+                if (n < 0) {
+                    if (running) error = "record read error $n at $rate Hz"
+                    break
+                }
+                consecutiveEmptyReads = 0
                 offset += n
                 if (offset < frameBytes) continue
                 offset = 0
