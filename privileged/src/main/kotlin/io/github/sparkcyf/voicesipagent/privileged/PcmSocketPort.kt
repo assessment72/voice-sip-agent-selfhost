@@ -28,6 +28,8 @@ class PcmSocketPort(
 
     @Volatile var framesIn = 0L; private set
     @Volatile var framesOut = 0L; private set
+    @Volatile var framesDropped = 0L; private set
+    @Volatile var queuePeak = 0; private set
 
     private val reader = Thread(::readLoop, "pcm-socket-rx").apply {
         priority = Thread.MAX_PRIORITY
@@ -68,7 +70,11 @@ class PcmSocketPort(
                 if (n <= 0) break
                 check(n == format.frameBytes) { "PCM packet size $n, expected ${format.frameBytes}" }
                 val frame = format.decodeLe(buf)
-                if (!queue.offer(frame)) { queue.poll(); queue.offer(frame) }
+                if (!queue.offer(frame)) {
+                    queue.poll()
+                    if (queue.offer(frame)) framesDropped++
+                }
+                queuePeak = maxOf(queuePeak, queue.size)
                 framesIn++
                 listener?.onFrame()
             }
