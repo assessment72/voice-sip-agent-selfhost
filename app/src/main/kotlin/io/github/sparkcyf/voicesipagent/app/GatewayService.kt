@@ -139,8 +139,12 @@ class GatewayService : Service() {
         // Interrupt blocking getUpdates before cancelling its coroutine. HttpURLConnection
         // is not cancellation-aware while running on Dispatchers.IO.
         telegramClient?.cancelPoll()
+        telegramClient?.cancelPoll()
         telegramCommandJob?.cancel()
         telegramCommandJob = null
+        telegramClient = null
+        telegramConfigToken = null
+        telegramConfigUserId = 0L
         stopForeground(STOP_FOREGROUND_REMOVE)
         foreground = false
         releaseWakeLock()
