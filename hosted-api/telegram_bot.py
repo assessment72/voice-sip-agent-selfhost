@@ -13,6 +13,7 @@ from urllib.request import Request, urlopen
 from urllib.error import HTTPError, URLError
 
 from fastapi import APIRouter, Header, HTTPException, Request as FastAPIRequest
+from pymongo.errors import DuplicateKeyError
 
 router = APIRouter()
 ACTION_COMMANDS = {"/whatsapp": "whatsapp", "/sms": "sms", "/call": "call", "/publish": "publish"}
@@ -89,7 +90,7 @@ def _claim_update(update_id: int) -> bool:
         try:
             updates.insert_one({"_id": str(update_id), "received_at": now})
             return True
-        except Exception:
+        except DuplicateKeyError:
             return False
     try:
         store.execute("INSERT INTO telegram_updates(update_id,received_at) VALUES(?,?)", (update_id, now))
