@@ -105,7 +105,7 @@ internal class GeminiLiveClient(
         })
     }
 
-    private fun handle(message: JSONObject) {
+    internal fun handle(message: JSONObject) {
         if (message.has("setupComplete")) {
             setupComplete = true
             setupTimeout?.cancel(false)
