@@ -128,9 +128,58 @@ class GatewayRuntime private constructor(context: Context) {
         apiKey = { settings.geminiApiKey },
         model = { settings.geminiModel },
         salesContext = { salesAdminStore.assistantContext() },
-        report = { onAiReport?.invoke(it.telegramMessages()) },
+        report = { call ->
+            onAiReport?.invoke(call.telegramMessages())
+            reportCallToCrm(
+                phone = call.number,
+                name = call.name,
+                company = call.company,
+                outcome = call.cause?.name ?: "NORMAL",
+                summary = buildString {
+                    append("Gemini call: ")
+                    append(call.cause?.name ?: "NORMAL")
+                    if (call.failureDetail.isNotBlank()) append("; ").append(call.failureDetail.take(300))
+                    if (call.inputText.isNotBlank()) append("; customer: ").append(call.inputText.take(350))
+                    if (call.outputText.isNotBlank()) append("; Gemini: ").append(call.outputText.take(350))
+                },
+                endedAtMs = call.endedAt,
+                durationSeconds = ((call.endedAt - call.startedAt).coerceAtLeast(0) / 1000L),
+                idempotencyKey = "gemini-${call.startedAt}-${call.endedAt}",
+            )
+        },
     )
     @Volatile var onAiReport: ((List<String>) -> Unit)? = null
+
+    private fun reportCallToCrm(
+        phone: String?,
+        name: String?,
+        company: String?,
+        outcome: String,
+        summary: String,
+        endedAtMs: Long,
+        durationSeconds: Long,
+        idempotencyKey: String,
+    ) {
+        if (phone.isNullOrBlank()) return
+        val current = settings
+        if (current.controlBridgeUrl.isBlank() || current.controlBridgeDeviceId.isBlank() ||
+            current.controlBridgeToken.length < 32) return
+        worker.execute {
+            runCatching {
+                ControlBridgeClient(current.controlBridgeUrl, current.controlBridgeDeviceId, current.controlBridgeToken)
+                    .reportCall(
+                        phone = phone,
+                        name = name,
+                        company = company,
+                        outcome = outcome,
+                        summary = summary,
+                        occurredAt = java.time.Instant.ofEpochMilli(endedAtMs).toString(),
+                        durationSeconds = durationSeconds,
+                        idempotencyKey = idempotencyKey,
+                    )
+            }.onFailure { AppLog.w("CRM call report failed: ${it.javaClass.simpleName}") }
+        }
+    }
     /** Built-in SIP user agent. */
     @Volatile private var sip: CallEndpoint? = null
     @Volatile private var bridge: CallBridge? = null
@@ -836,6 +885,16 @@ class GatewayRuntime private constructor(context: Context) {
                     batteryStatus = ::batteryStatus,
                     onFinished = { record -> worker.execute {
                         TelegramCallHistory(app).add(record)
+                        reportCallToCrm(
+                            phone = record.number,
+                            name = null,
+                            company = null,
+                            outcome = record.result,
+                            summary = "SIM call; audio: " + record.audioStatus + "; battery: " + record.batteryStatus,
+                            endedAtMs = record.endedAtMs,
+                            durationSeconds = record.durationSeconds,
+                            idempotencyKey = "sim-" + record.id,
+                        )
                         if (telegramSimCall === callRef) telegramSimCall = null
                     } },
                 )
