@@ -3,7 +3,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 DATABASE_PATH=/data/calls.sqlit
 WORKDIR /srv/hosted-api
 COPY requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt
-COPY main.py mongodb_store.py mongodb_calls.py sms_provider.py ./
+COPY main.py mongodb_store.py mongodb_calls.py sms_provider.py evolution_provider.py ./
 COPY migrations ./migrations
 COPY admin ./admin
 RUN useradd --system --uid 10001 app && mkdir -p /data && chown -R app:app /srv/hosted-api /data
