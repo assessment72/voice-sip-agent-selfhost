@@ -125,7 +125,7 @@ internal class GeminiLiveClient(
             for (i in 0 until parts.length()) {
                 val inline = parts.optJSONObject(i)?.optJSONObject("inlineData") ?: continue
                 val data = inline.optString("data")
-                if (data.isNotBlank()) onAudio24k(Base64.decode(data, Base64.DEFAULT))
+                if (data.isNotBlank()) onAudio24k(java.util.Base64.getDecoder().decode(data))
             }
         }
         if (content.optBoolean("turnComplete", false)) onTurnComplete()
