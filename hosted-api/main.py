@@ -18,6 +18,7 @@ from fastapi.responses import HTMLResponse, JSONResponse
 from pymongo.errors import DuplicateKeyError
 from sms_provider import SmsProviderError, SmsProviderNotConfigured, send_adasms
 from evolution_provider import (EvolutionError, EvolutionNotConfigured, send_evolution_text, verify_webhook_secret, organization_for_instance, forward_n8n_event)
+from telegram_bot import router as telegram_router
 from pydantic import BaseModel, Field
 
 DB = os.getenv("DATABASE_PATH", "./calls.sqlite3")
@@ -159,6 +160,7 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="Hosted Call API", version="1.0.0", lifespan=lifespan)
+app.include_router(telegram_router)
 
 
 def _consume_local_rate_limit(key_hash: str, window_start: int, limit: int) -> tuple[bool, int]:
