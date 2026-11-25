@@ -101,6 +101,19 @@ def _claim_update(update_id: int) -> bool:
         store.close()
 
 
+
+def _release_update(update_id: int) -> None:
+    kind, store, updates = _storage()
+    if kind == "mongo":
+        updates.delete_one({"_id": str(update_id)})
+        return
+    try:
+        store.execute("DELETE FROM telegram_updates WHERE update_id=?", (update_id,))
+        store.commit()
+    finally:
+        store.close()
+
+
 def _create_pending(user_id: int, chat_id: int, action_type: str, target: str, fingerprint: str) -> str:
     action_id = uuid.uuid4().hex
     now = int(time.time())
@@ -282,6 +295,7 @@ async def telegram_webhook(
         elif isinstance(update.get("callback_query"), dict):
             _handle_callback(update["callback_query"])
     except RuntimeError as exc:
+        _release_update(update["update_id"])
         if str(exc) == "telegram_bot_not_configured":
             raise HTTPException(status_code=503, detail="telegram_bot_not_configured")
         raise HTTPException(status_code=502, detail="telegram_delivery_failed")
