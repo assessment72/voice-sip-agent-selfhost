@@ -5,6 +5,7 @@ import path from "node:path";
 import { handleCrmRoute } from "./crm-routes.mjs";
 import { handleMongoCrmRoute } from "./mongo-crm-routes.mjs";
 import { createMongoCrmStore } from "./mongo-crm-store.mjs";
+import { sendAdasmsSms } from "./adasms-sms.mjs";
 
 const PORT = Number(process.env.PORT || 8787);
 const HOST = process.env.HOST || "127.0.0.1";
@@ -19,6 +20,7 @@ const HOSTED_SMS_API_URL = (process.env.VOICX_HOSTED_API_URL || "").replace(/\/+
 const HOSTED_SMS_ORGANIZATION_ID = process.env.VOICX_SMS_ORGANIZATION_ID || "";
 const HOSTED_SMS_ORGANIZATION_TOKEN = process.env.VOICX_SMS_ORGANIZATION_TOKEN || "";
 const HOSTED_SMS_DEPLOYMENT_BYPASS = process.env.VOICX_HOSTED_API_BYPASS_TOKEN || "";
+const ADASMS_API_KEY = process.env.ADASMS_API_KEY || "";
 const MAX_BODY = 16 * 1024;
 const COMMAND_TTL_MS = 60_000;
 const DEVICE_ID = /^[a-zA-Z0-9_-]{1,64}$/;
@@ -188,6 +190,60 @@ async function hostedSmsRequest(method, route, payload = undefined, idempotencyK
   return data;
 }
 
+async function handleTelegramAdasmsCommand(message, command, args) {
+  const chatId = message.chat.id;
+  if (!crmStore) {
+    await telegramMessage(chatId, "قاعدة MongoDB غير مهيأة؛ لم يتم إرسال أي رسالة.");
+    return true;
+  }
+  if (command === "/adasms_help") {
+    await telegramMessage(chatId, "أوامر Adasms:\\n/adasms_send الرقم | نص الرسالة | موافق\\n/adasms_history [عدد]\\nيتطلب تأكيد موافقة المستلم، ويتم حفظ سجل العملية في قاعدة بيانات CRM.");
+    return true;
+  }
+  if (command === "/adasms_send") {
+    const fields = String(args || "").split("|").map(x => x.trim());
+    if (fields.length !== 3 || !fields[0] || !fields[1] ||
+        !["موافق", "نعم", "CONFIRM"].includes(fields[2].toUpperCase() === "CONFIRM" ? "CONFIRM" : fields[2])) {
+      await telegramMessage(chatId, "الصيغة: /adasms_send +9677xxxxxxx | نص الرسالة | موافق");
+      return true;
+    }
+    if (fields[1].length > 1000) {
+      await telegramMessage(chatId, "نص الرسالة يتجاوز الحد المسموح (1000 حرف).");
+      return true;
+    }
+    const consent = await crmStore.checkSmsPermission(fields[0]);
+    if (!consent.allowed) {
+      await telegramMessage(chatId, "تم منع الإرسال: العميل مسجل كرافض للتواصل أو غير مسموح بمراسلته.");
+      return true;
+    }
+    const record = await crmStore.createSmsRecord({
+      phone: fields[0], message: fields[1], source: "telegram",
+      consentConfirmed: true, idempotencyKey: randomUUID()
+    });
+    if (record.duplicate) {
+      await telegramMessage(chatId, "هذا الطلب مسجل مسبقاً ولم تتم إعادة إرساله.");
+      return true;
+    }
+    try {
+      const provider = await sendAdasmsSms({ phone: record.sms.phone, message: fields[1], apiKey: ADASMS_API_KEY });
+      const saved = await crmStore.updateSmsRecord(record.sms.id, { status: "accepted", providerResponse: provider });
+      await telegramMessage(chatId, "قبل مزود Adasms طلب الرسالة.\\nالرقم: " + saved.phoneMasked + "\\nمعرّف السجل: " + saved.id);
+    } catch (error) {
+      await crmStore.updateSmsRecord(record.sms.id, { status: "failed", errorCode: error.code || "provider_error" });
+      throw error;
+    }
+    return true;
+  }
+  if (command === "/adasms_history") {
+    const limit = Math.max(1, Math.min(50, Number.parseInt(args || "10", 10) || 10));
+    const rows = await crmStore.listSmsRecords(limit);
+    const lines = rows.map(x => "• " + x.phoneMasked + " — " + x.status + " — " + x.createdAt);
+    await telegramMessage(chatId, lines.length ? lines.join("\\n") : "لا توجد رسائل Adasms مسجلة.");
+    return true;
+  }
+  return false;
+}
+
 async function handleTelegramSmsCommand(message, command, args) {
   const chatId = message.chat.id;
   if (command === "/sms_help") {
@@ -303,6 +359,21 @@ async function telegramQueueCommand(chatId, deviceId, type) {
 
 async function handleTelegramUpdate(update) {
   if (update.message && isSmsTelegramAdmin(update)) {
+    const adasmsRaw = String(update.message.text || "").trim();
+    const adasmsMatch = adasmsRaw.match(/^(\\/adasms_(?:help|send|history))(?:\\s+([\\s\\S]*))?$/i);
+    if (adasmsMatch) {
+      try {
+        if (await handleTelegramAdasmsCommand(update.message, adasmsMatch[1].toLowerCase(), adasmsMatch[2] || "")) return;
+      } catch (error) {
+        const message = error?.code === "adasms_not_configured"
+          ? "مفتاح Adasms غير مضبوط في إعدادات Vercel."
+          : error?.code === "recipient_consent_required"
+            ? "يلزم تأكيد موافقة المستلم."
+            : "تعذر تنفيذ طلب Adasms. راجع سجل الرسائل قبل أي محاولة جديدة.";
+        await telegramMessage(update.message.chat.id, message);
+        return;
+      }
+    }
     const raw = String(update.message.text || "").trim();
     const match = raw.match(/^(\/sms_(?:help|send|history))(?:\s+([\s\S]*))?$/i);
     if (match) {
@@ -422,6 +493,29 @@ const server = http.createServer(async (req, res) => {
     const p = url.pathname;
 
     if (req.method === "GET" && p === "/health") return json(res, 200, { ok: true, service: "voicx-control-bridge" });
+
+    if (req.method === "POST" && p === "/api/v1/sms/adasms/send") {
+      if (!authAdmin(req)) return json(res, 401, { error: "unauthorized" });
+      if (!crmStore) return json(res, 503, { error: "crm_database_not_configured" });
+      const b = await body(req);
+      if (b.consentConfirmed !== true) return json(res, 400, { error: "recipient_consent_required" });
+      if (typeof b.phone !== "string" || typeof b.message !== "string" || !b.phone.trim() || !b.message.trim() || b.message.length > 1000) {
+        return json(res, 400, { error: "invalid_sms_payload" });
+      }
+      const consent = await crmStore.checkSmsPermission(b.phone);
+      if (!consent.allowed) return json(res, 403, { error: "recipient_suppressed" });
+      const key = typeof req.headers["idempotency-key"] === "string" ? req.headers["idempotency-key"].slice(0, 120) : randomUUID();
+      const record = await crmStore.createSmsRecord({ phone: b.phone, message: b.message, source: "backend_api", consentConfirmed: true, idempotencyKey: key });
+      if (record.duplicate) return json(res, 200, { sms: record.sms, duplicate: true, resent: false });
+      try {
+        const provider = await sendAdasmsSms({ phone: record.sms.phone, message: b.message, apiKey: ADASMS_API_KEY });
+        const saved = await crmStore.updateSmsRecord(record.sms.id, { status: "accepted", providerResponse: provider });
+        return json(res, 202, { sms: saved, providerAccepted: true });
+      } catch (error) {
+        await crmStore.updateSmsRecord(record.sms.id, { status: "failed", errorCode: error.code || "provider_error" });
+        throw error;
+      }
+    }
 
     if (req.method === "GET" && p === "/api/v1/devices") {
       if (!authAdmin(req)) return json(res, 401, { error: "unauthorized" });
