@@ -130,3 +130,10 @@ The device endpoint `POST /v1/device/sms/send` uses the enrolled device token an
 Each request requires recipient consent and an `Idempotency-Key`. Delivery attempts are recorded in the tenant-scoped MongoDB `sms_messages` collection (or the local SQLite test database). The API stores status, masked phone in responses, provider message ID, timestamps, source, and actor. A repeated key with the same payload does not send a second SMS; reusing it with a different payload returns HTTP 409. Failed sends are not retried automatically; use a new key only after checking the provider and message history.
 
 Check the organization message history with `GET /v1/admin/sms?limit=50`, using the same organization bearer token and `X-Organization-ID` header. No test sends or real outbound SMS are performed by the automated tests.
+
+
+## WhatsApp (Evolution API + n8n Cloud)
+
+The isolated Evolution adapter and webhook contract are documented in [docs/evolution-n8n-whatsapp.md](../docs/evolution-n8n-whatsapp.md). Vercel hosts this FastAPI bridge only; the persistent Evolution API server must run on a separate container-capable host. Baileys and official Cloud API use separate Evolution instances. Outbound sends remain disabled unless `EVOLUTION_SEND_ENABLED=true`, require explicit consent confirmation, a destination allow-list, and an idempotency key. No real messages are sent by CI.
+
+Configure the Evolution API URL/key, both instance names, per-channel webhook secrets, instance-to-organization map, and n8n Cloud webhook URL/token as Vercel Secrets. Never commit those values. Import `n8n/whatsapp-events.workflow.json` into n8n Cloud, configure its Header Auth credential, and keep the workflow inactive until reviewed and explicitly activated.
