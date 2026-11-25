@@ -222,7 +222,7 @@ async function telegramQueueCommand(chatId, deviceId, type) {
 async function handleTelegramUpdate(update) {
   if (update.message && isCrmTelegramAdmin(update)) {
     const raw = String(update.message.text || "").trim();
-    const match = raw.match(/^(\\/crm_[a-z_]+)(?:\\s+([\\s\\S]*))?$/i);
+    const match = raw.match(/^(\/crm_[a-z_]+)(?:\s+([\s\S]*))?$/i);
     if (match && await handleTelegramCrmCommand(update.message, match[1].toLowerCase(), match[2] || "")) return;
   }
   if (!isTelegramAdmin(update)) return;
