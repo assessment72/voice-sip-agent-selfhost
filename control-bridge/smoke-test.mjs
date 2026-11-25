@@ -107,6 +107,32 @@ try {
   assert.equal(marketing.contacts, 1);
   assert.equal(marketing.sms, 1);
 
+  r = await request("/api/v1/crm/contacts/" + contact.id + "/messages", admin);
+  assert.equal(r.status, 200, "contact message history route");
+  assert.ok(Array.isArray((await r.json()).messages));
+
+  r = await request("/api/v1/crm/campaigns", admin, {
+    method: "POST", body: JSON.stringify({ name: "Winter follow-up", channel: "sms", message: "Hello {{name}}", status: "draft" })
+  });
+  assert.equal(r.status, 201, "campaign creation");
+
+  r = await request("/api/v1/crm/templates", admin, {
+    method: "POST", body: JSON.stringify({ name: "Welcome", channel: "whatsapp", message: "Welcome {{name}}", enabled: true })
+  });
+  assert.equal(r.status, 201, "message template creation");
+
+  r = await request("/api/v1/crm/dashboard", admin);
+  assert.equal(r.status, 200, "marketing dashboard");
+  const dashboard = await r.json();
+  assert.equal(dashboard.contacts, 1);
+  assert.ok(Array.isArray(dashboard.dueToday));
+
+  r = await request("/api/v1/crm/reports/generate", admin, {
+    method: "POST", body: JSON.stringify({ periodStart: new Date(Date.now() - 86400000).toISOString(), periodEnd: new Date(Date.now() + 1000).toISOString() })
+  });
+  assert.equal(r.status, 201, "marketing report generation");
+  assert.ok((await r.json()).report.metrics);
+
   r = await request("/api/v1/crm/publications/haraj", admin, {
     method: "POST", body: JSON.stringify({ title: "Listing", content: "Draft content" })
   });
