@@ -494,7 +494,7 @@ const server = http.createServer(async (req, res) => {
 
     if (req.method === "GET" && p === "/health") return json(res, 200, { ok: true, service: "voicx-control-bridge" });
 
-    m = routeMatch(p, /^\\/api\\/v1\\/devices\\/([^/]+)\\/sms\\/adasms\\/send$/);
+    m = routeMatch(p, /^\/api\/v1\/devices\/([^/]+)\/sms\/adasms\/send$/);
     if (req.method === "POST" && m) {
       const deviceId = decodeURIComponent(m[1]);
       if (!authDevice(req, deviceId)) return json(res, 401, { error: "unauthorized" });
