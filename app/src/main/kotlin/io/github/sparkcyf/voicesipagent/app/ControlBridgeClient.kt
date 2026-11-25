@@ -63,6 +63,31 @@ internal class ControlBridgeClient(
         return request("POST", "/api/v1/devices/$deviceId/commands/$commandId/result", body)
     }
 
+    /** Sends a completed call summary using this device's scoped credential. */
+    fun reportCall(
+        phone: String,
+        name: String?,
+        company: String?,
+        outcome: String,
+        summary: String,
+        occurredAt: String,
+        durationSeconds: Long,
+        idempotencyKey: String,
+    ): JSONObject {
+        require(phone.isNotBlank()) { "Phone is required" }
+        require(idempotencyKey.length in 8..128) { "Invalid idempotency key" }
+        val body = JSONObject()
+            .put("phone", phone.take(40))
+            .put("outcome", outcome.take(80))
+            .put("summary", summary.take(1800))
+            .put("occurredAt", occurredAt)
+            .put("durationSeconds", durationSeconds.coerceIn(0, 86_400))
+            .put("idempotencyKey", idempotencyKey)
+        if (!name.isNullOrBlank()) body.put("name", name.take(160))
+        if (!company.isNullOrBlank()) body.put("company", company.take(160))
+        return request("POST", "/api/v1/devices/$deviceId/calls/report", body)
+    }
+
     private fun request(method: String, path: String, body: JSONObject? = null): JSONObject {
         val connection = (URL(base + path).openConnection() as HttpURLConnection).apply {
             requestMethod = method
