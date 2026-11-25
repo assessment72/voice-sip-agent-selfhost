@@ -470,3 +470,48 @@ def test_adasms_mongodb_records_are_tenant_scoped_and_idempotent(monkeypatch):
     assert records.count_documents({"organization_id": "org-a"}) == 1
     assert records.count_documents({"organization_id": "org-b"}) == 1
     assert len(sends) == 2
+
+
+def test_whatsapp_send_requires_consent_and_is_idempotent(tmp_path, monkeypatch):
+    setup_client(tmp_path, monkeypatch)
+    monkeypatch.setattr(main, "mongodb_enabled", lambda: False)
+    monkeypatch.setattr(main, "send_evolution_text",
+                        lambda channel, phone, message: {"httpStatus": 201, "providerMessageId": "wamid-1"})
+    body = main.SendWhatsApp(phone="+967777405578", message="hello",
+                             channel="baileys", consentConfirmed=True)
+    first = main._send_whatsapp_for_organization(
+        organization_id="org-wa", actor_id="owner-wa", body=body,
+        idempotency_key="whatsapp-idempotency-0001",
+    )
+    replay = main._send_whatsapp_for_organization(
+        organization_id="org-wa", actor_id="owner-wa", body=body,
+        idempotency_key="whatsapp-idempotency-0001",
+    )
+    assert first["status"] == "sent"
+    assert replay["duplicate"] is True
+    with main.db() as connection:
+        assert connection.execute(
+            "SELECT COUNT(*) FROM whatsapp_messages WHERE organization_id='org-wa'"
+        ).fetchone()[0] == 1
+
+
+def test_whatsapp_send_rejects_missing_consent(tmp_path, monkeypatch):
+    setup_client(tmp_path, monkeypatch)
+    monkeypatch.setattr(main, "mongodb_enabled", lambda: False)
+    body = main.SendWhatsApp(phone="+967777405578", message="hello",
+                             channel="cloud_api", consentConfirmed=False)
+    with pytest.raises(HTTPException) as error:
+        main._send_whatsapp_for_organization(
+            organization_id="org-wa", actor_id="owner-wa", body=body,
+            idempotency_key="whatsapp-idempotency-0002",
+        )
+    assert error.value.status_code == 422
+    assert error.value.detail == "recipient_consent_required"
+
+
+def test_whatsapp_number_allowlist_fails_closed(tmp_path, monkeypatch):
+    setup_client(tmp_path, monkeypatch)
+    monkeypatch.setenv("WHATSAPP_ALLOWED_PREFIXES", "+9665")
+    with pytest.raises(HTTPException) as error:
+        main.normalize_whatsapp_number("+967777405578")
+    assert error.value.status_code == 403
