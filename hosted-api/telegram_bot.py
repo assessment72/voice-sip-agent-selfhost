@@ -87,12 +87,14 @@ def _claim_update(update_id: int) -> bool:
     kind, store, updates = _storage()
     now = int(time.time())
     if kind == "mongo":
+        updates.create_index("received_at", expireAfterSeconds=24 * 3600)
         try:
             updates.insert_one({"_id": str(update_id), "received_at": now})
             return True
         except DuplicateKeyError:
             return False
     try:
+        store.execute("DELETE FROM telegram_updates WHERE received_at<?", (now - 24 * 3600,))
         store.execute("INSERT INTO telegram_updates(update_id,received_at) VALUES(?,?)", (update_id, now))
         store.commit()
         return True
@@ -143,26 +145,33 @@ def _create_pending(user_id: int, chat_id: int, action_type: str, target: str, f
     return action_id
 
 
-def _resolve_pending(action_id: str, user_id: int, approved: bool) -> bool:
+def _resolve_pending(action_id: str, user_id: int, chat_id: int, approved: bool) -> bool:
     now = int(time.time())
     kind, store, _ = _storage()
     new_status = "approved_not_executed" if approved else "cancelled"
     if kind == "mongo":
         result = store.update_one(
-            {"_id": action_id, "telegram_user_id": str(user_id), "status": "pending_confirmation"},
+            {"_id": action_id, "telegram_user_id": str(user_id), "chat_id": str(chat_id),
+             "status": "pending_confirmation", "created_at": {"$gte": now - 600}},
             {"$set": {"status": new_status, "updated_at": now}},
         )
         return result.modified_count == 1
     try:
         cursor = store.execute(
             """UPDATE telegram_pending_actions SET status=?,updated_at=?
-               WHERE id=? AND telegram_user_id=? AND status='pending_confirmation'""",
-            (new_status, now, action_id, str(user_id)),
+               WHERE id=? AND telegram_user_id=? AND chat_id=?
+                 AND status='pending_confirmation' AND created_at>=?""",
+            (new_status, now, action_id, str(user_id), str(chat_id), now - 600),
         )
         store.commit()
         return cursor.rowcount == 1
     finally:
         store.close()
+
+
+def _phone_allowed(phone: str, env_name: str) -> bool:
+    prefixes = [item.strip() for item in os.getenv(env_name, "").split(",") if item.strip()]
+    return bool(prefixes) and any(phone.startswith(prefix) for prefix in prefixes)
 
 
 def _menu(chat_id: int) -> None:
@@ -212,15 +221,17 @@ def _handle_message(message: dict) -> None:
     content_for_preview = detail
     if command in {"/whatsapp", "/sms"}:
         fields = [value.strip() for value in detail.split("|", 1)]
-        if len(fields) != 2 or not PHONE_RE.fullmatch(fields[0]) or not fields[1]:
-            _send(chat_id, f"الصيغة: {command} +9677XXXXXXX | نص الرسالة")
+        prefix_env = "WHATSAPP_ALLOWED_PREFIXES" if command == "/whatsapp" else "SMS_ALLOWED_PREFIXES"
+        if (len(fields) != 2 or not PHONE_RE.fullmatch(fields[0]) or not fields[1]
+                or not _phone_allowed(fields[0], prefix_env)):
+            _send(chat_id, f"الصيغة أو بادئة الرقم غير مسموحة: {command} +9677XXXXXXX | نص الرسالة")
             return
         target = fields[0][:4] + "****" + fields[0][-3:]
         content_for_preview = fields[1]
     elif command == "/call":
         phone = detail.split("|", 1)[0].strip()
-        if not PHONE_RE.fullmatch(phone):
-            _send(chat_id, "أدخل رقماً دولياً صحيحاً بصيغة +967...")
+        if not PHONE_RE.fullmatch(phone) or not _phone_allowed(phone, "ALLOWED_PREFIXES"):
+            _send(chat_id, "أدخل رقماً دولياً ضمن بادئات الاتصال المسموحة في إعدادات الخادم.")
             return
         target = phone[:4] + "****" + phone[-3:]
         content_for_preview = "طلب مكالمة صادرة"
@@ -266,7 +277,7 @@ def _handle_callback(callback: dict) -> None:
         _answer_callback(callback_id, "طلب غير صالح")
         return
     approved = match.group(1) == "approve"
-    changed = _resolve_pending(match.group(2), user_id, approved)
+    changed = _resolve_pending(match.group(2), user_id, chat_id, approved)
     if not changed:
         _answer_callback(callback_id, "انتهت صلاحية الطلب أو عولج مسبقاً")
         return
