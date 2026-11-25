@@ -13,7 +13,7 @@ internal object VoiceCallIntentDetector {
 
         val handoff = listOf(
             Regex("""(?:حولني|حوّلني|وصلني|اربطني).{0,32}(?:موظف|موظفه|شخص|انسان|مسؤول|الدعم|المبيعات)"""),
-            Regex("""(?:اريد|ابغى|ودي|احتاج).{0,28}(?:اكلم|اتكلم|اتحدث).{0,24}(?:موظف|موظفه|شخص|انسان|مسؤول)"""),
+            Regex("""(?:اريد|ابغي|ابغى|ودي|احتاج).{0,28}(?:اكلم|اتكلم|اتحدث).{0,24}(?:موظف|موظفه|شخص|انسان|مسؤول)"""),
             Regex("""(?:موظف|موظفه|شخص حقيقي|انسان).{0,24}(?:معي|اكلمه|يتكلم|اتحدث)"""),
         )
         if (handoff.any { it.containsMatchIn(text) } && !Regex("""(?:لا|مش|ما).{0,10}(?:تحولني|حولني|موظف)""").containsMatchIn(text)) {
@@ -36,7 +36,7 @@ internal object VoiceCallIntentDetector {
     private fun normalize(value: String): String = Normalizer.normalize(value, Normalizer.Form.NFD)
         .replace(Regex("\\p{Mn}+"), "")
         .lowercase(Locale.ROOT)
-        .replace('أ', 'ا').replace('إ', 'ا').replace('آ', 'ا').replace('ى', 'ي')
+        .replace('أ', 'ا').replace('إ', 'ا').replace('آ', 'ا').replace('ى', 'ي').replace('ة', 'ه')
         .replace(Regex("""[^\p{L}\p{N}\s]"""), " ")
         .replace(Regex("""\s+"""), " ")
         .trim()
