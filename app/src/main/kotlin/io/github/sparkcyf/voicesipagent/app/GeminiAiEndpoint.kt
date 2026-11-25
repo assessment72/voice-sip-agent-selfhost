@@ -16,6 +16,8 @@ import io.github.sparkcyf.voicesipagent.voice.PcmFormat
 import io.github.sparkcyf.voicesipagent.gateway.MediaBridge
 import java.util.concurrent.ArrayBlockingQueue
 import java.util.concurrent.CopyOnWriteArrayList
+import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.math.sqrt
 
@@ -83,6 +85,8 @@ internal class GeminiAiEndpoint(
     @Volatile private var active: AiLeg? = null
     @Volatile private var context = CallContext()
     @Volatile private var directBridge: MediaBridge? = null
+    @Volatile var onHandoffRequested: (() -> Boolean)? = null
+    @Volatile var onHangupRequested: (() -> Unit)? = null
 
     data class CallContext(val name: String = "", val role: String = "", val company: String = "", val salesInfo: String = "")
 
@@ -94,7 +98,12 @@ internal class GeminiAiEndpoint(
 
     override fun dial(target: String, caller: Party): CallLeg {
         active?.hangup(HangupCause.BUSY)
-        val leg = AiLeg("ai-${System.nanoTime()}", caller, target, context.copy(salesInfo = salesContext()), apiKey, model, report) { active = null }
+        val leg = AiLeg(
+            "ai-${System.nanoTime()}", caller, target, context.copy(salesInfo = salesContext()),
+            apiKey, model, report, { active = null },
+            { onHandoffRequested?.invoke() == true },
+            { onHangupRequested?.invoke() },
+        )
         active = leg
         leg.start()
         return leg
@@ -169,7 +178,10 @@ internal class GeminiAiEndpoint(
 
     private class AiLeg(
         id: String, remote: Party, target: String?, private val context: CallContext, private val key: () -> String, private val model: () -> String,
-        private val report: (AiCallReport) -> Unit, private val onEnd: () -> Unit,
+        private val report: (AiCallReport) -> Unit,
+        private val onEnd: () -> Unit,
+        private val requestHandoff: () -> Boolean,
+        private val requestHangup: () -> Unit,
     ) : AbstractCallLeg(id, "gemini", LegDirection.OUTBOUND, remote, target) {
         private val port = AiPort()
         private val started = System.currentTimeMillis()
@@ -177,8 +189,12 @@ internal class GeminiAiEndpoint(
         @Volatile private var failureDetail = ""
         private var inputText = ""
         private var outputText = ""
-		private var turnCompleteAt: Long? = null
-		private val openingTurnStarted = AtomicBoolean(false)
+        private var turnCompleteAt: Long? = null
+        private val openingTurnStarted = AtomicBoolean(false)
+        private val callerIntentHandled = AtomicBoolean(false)
+        private val hangupScheduler = Executors.newSingleThreadScheduledExecutor { task ->
+            Thread(task, "GeminiSpokenHangup").apply { isDaemon = true }
+        }
 		private val prompt = """أنت سكرتير أعمال ومساعد مبيعات متخصص في تسويق توريد الديزل والوقود للشركات والمشاريع ومحطات الوقود والمصانع والمقاولين.
 
         أسلوبك: تحدث بالعربية باللهجة اليمنية الطبيعية والمفهومة، بنبرة مهنية وودودة، وردود قصيرة ومباشرة. لا تكن آلياً ولا تكرر العبارات، ولا تضغط على العميل. افهم احتياجه قبل عرض أي خطوة.
@@ -199,6 +215,9 @@ internal class GeminiAiEndpoint(
         - احتفظ بملخص داخلي محدث للمعلومات المؤكدة، ولا تكرر سؤالاً أجاب عنه الشخص. إذا صحح معلومة، استبدل القديمة فوراً.
         - استخدم العربية الطبيعية المفهومة بلهجة يمنية خفيفة، وتجنب المبالغة في اللهجة أو تقليد ألفاظ الشخص بطريقة مصطنعة.
         - لا تقل «بحسب تحليلي لمشاعرك» أو «أفهم أنك غاضب». أظهر الفهم عملياً من خلال الرد المناسب.
+        - إذا طلب العميل موظفاً بشرياً أو قال «حولني لموظف» أو «أريد أكلم شخصاً»، أوقف أسئلة البيع واطلب التحويل؛ سيجري النظام اتصال SIP بالموظف. لا تدّعِ نجاح التحويل قبل رد الموظف.
+        - إذا قال العميل بوضوح «أنهِ المكالمة» أو «اقفل الاتصال» أو «مع السلامة»، اشكره بجملة ختامية قصيرة ثم توقف عن الحوار؛ النظام سينهي الاتصال بعد مهلة قصيرة.
+        - لا تعتبر ذكر الموظف أو المكالمة في سياق سؤال أو نفي أمراً للتحويل أو الإنهاء. لا تنهِ المكالمة بسبب صمت أو كلمة عابرة.
         - إذا قال الشخص إنه غير مهتم أو مشغول أو يريد إنهاء المكالمة، احترم قراره وأنهِ المكالمة فوراً وبأدب.
 
         التعبير الصوتي:
@@ -245,7 +264,26 @@ ${context.salesInfo}
         fun start() {
             transition(LegState.PROCEEDING)
             client = GeminiLiveClient(key(), model(), prompt, port::addOutput,
-                { inputText = (inputText + " " + it).trim().takeLast(1200) },
+                { text ->
+                    inputText = (inputText + " " + text).trim().takeLast(1200)
+                    if (state == LegState.ENDED || !callerIntentHandled.compareAndSet(false, true)) return@GeminiLiveClient
+                    when (VoiceCallIntentDetector.detect(text)) {
+                        VoiceCallIntent.HANDOFF_TO_EMPLOYEE -> {
+                            if (requestHandoff()) {
+                                client?.sendClientText("قل للعميل باختصار: سأحولك الآن إلى أحد الموظفين، وابقَ على الخط.")
+                            } else {
+                                client?.sendClientText("اعتذر للعميل باختصار: لا أستطيع تحويل المكالمة إلى موظف الآن. اسأله إن كان يريد متابعة الحديث معك أو إنهاء المكالمة.")
+                            }
+                        }
+                        VoiceCallIntent.HANG_UP -> {
+                            client?.sendClientText("قل للعميل: شكراً لاتصالك، سعدنا بخدمتك، مع السلامة.")
+                            hangupScheduler.schedule({
+                                if (state != LegState.ENDED) requestHangup()
+                            }, 1800, TimeUnit.MILLISECONDS)
+                        }
+                        VoiceCallIntent.NONE -> callerIntentHandled.set(false)
+                    }
+                },
                 { outputText = (outputText + " " + it).trim().takeLast(1200) },
                 { transition(LegState.CONNECTED); publishMedia(port) },
                 { detail ->
@@ -266,6 +304,7 @@ ${context.salesInfo}
         override fun answer() {}
         override fun hangup(cause: HangupCause) {
             if (state == LegState.ENDED) return
+            hangupScheduler.shutdownNow()
             client?.close()
             publishMedia(null)
             transition(LegState.ENDED, cause)
