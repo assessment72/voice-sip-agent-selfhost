@@ -130,11 +130,20 @@ class GatewayRuntime private constructor(context: Context) {
         model = { settings.geminiModel },
         salesContext = { salesAdminStore.assistantContext() },
         report = { onAiReport?.invoke(it.telegramText()) },
-    )
+    ).apply {
+        onHandoffRequested = {
+            val destination = settings.humanHandoffTarget.trim()
+            val employeeEndpoint = sip
+            val activeBridge = bridge
+            destination.isNotBlank() && employeeEndpoint != null &&
+                settings.aiAutoAnswer && activeBridge?.handoffTo(employeeEndpoint, destination) == true
+        }
+        onHangupRequested = { bridge?.hangupActive() }
+    }
     @Volatile var onAiReport: ((String) -> Unit)? = null
     /** Built-in SIP user agent. */
-    private var sip: CallEndpoint? = null
-    private var bridge: CallBridge? = null
+    @Volatile private var sip: CallEndpoint? = null
+    @Volatile private var bridge: CallBridge? = null
     private var echo: EchoEndpoint? = null
     @Volatile
     private var telegramSimCall: TelegramSimCall? = null
