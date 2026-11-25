@@ -1,0 +1,115 @@
+name: Android release signed with one-time new key
+
+on:
+  push:
+    branches:
+      - feature/evolution-n8n-whatsapp-bridge
+    paths:
+      - '.github/workflows/android-release-new-key.yml'
+      - 'app/**'
+      - 'gradle/**'
+      - '*.gradle*'
+      - 'gradle.properties'
+      - '**/*.kt'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: android-release-new-key-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Test, build and sign release APK
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          cmdline-tools-version: 20.0
+          accept-android-sdk-licenses: true
+          packages: 'platform-tools platforms;android-36 build-tools;36.0.0'
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Generate a NEW release signing key
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/vsa-signing"
+          STORE_PASS="$(openssl rand -hex 24)"
+          KEY_PASS="$(openssl rand -hex 24)"
+          KEY_ALIAS="voice-sip-agent-release"
+          keytool -genkeypair -v \
+            -keystore "$RUNNER_TEMP/vsa-signing/release.jks" \
+            -storetype JKS \
+            -storepass "$STORE_PASS" \
+            -keypass "$KEY_PASS" \
+            -alias "$KEY_ALIAS" \
+            -keyalg RSA -keysize 3072 -validity 10000 \
+            -dname "CN=Voice SIP Agent, OU=Android, O=voice-sip-agent-selfhost, L=Taiz, ST=Taiz, C=YE"
+          {
+            echo "STORE_FILE=release.jks"
+            echo "STORE_PASSWORD=$STORE_PASS"
+            echo "KEY_ALIAS=$KEY_ALIAS"
+            echo "KEY_PASSWORD=$KEY_PASS"
+          } > "$RUNNER_TEMP/vsa-signing/credentials.txt"
+          chmod 600 "$RUNNER_TEMP/vsa-signing/"*
+
+      - name: Run unit tests
+        run: ./gradlew --no-daemon --no-configuration-cache testDebugUnitTest
+
+      - name: Build signed release APK
+        env:
+          SIGNING_DIR: ${{ runner.temp }}/vsa-signing
+        run: |
+          ./gradlew --no-daemon --no-configuration-cache :app:assembleRelease \
+            -Pvsa.signing.storeFile="$SIGNING_DIR/release.jks" \
+            -Pvsa.signing.storePassword="$(sed -n 's/^STORE_PASSWORD=//p' "$SIGNING_DIR/credentials.txt")" \
+            -Pvsa.signing.keyAlias="$(sed -n 's/^KEY_ALIAS=//p' "$SIGNING_DIR/credentials.txt")" \
+            -Pvsa.signing.keyPassword="$(sed -n 's/^KEY_PASSWORD=//p' "$SIGNING_DIR/credentials.txt")"
+
+      - name: Verify APK signature and certificate
+        shell: bash
+        run: |
+          set -euo pipefail
+          APK="$(find app/build/outputs/apk/release -maxdepth 1 -name '*.apk' -print -quit)"
+          test -n "$APK"
+          APKSIGNER="$ANDROID_HOME/build-tools/36.0.0/apksigner"
+          "$APKSIGNER" verify --verbose --print-certs "$APK" | tee "$RUNNER_TEMP/apk-certificate.txt"
+          keytool -list -v -keystore "$RUNNER_TEMP/vsa-signing/release.jks" \
+            -storepass "$(sed -n 's/^STORE_PASSWORD=//p' "$RUNNER_TEMP/vsa-signing/credentials.txt")" \
+            -alias voice-sip-agent-release > "$RUNNER_TEMP/keystore-certificate.txt"
+
+      - name: Upload signed APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: voice-sip-agent-release-new-key-${{ github.run_number }}
+          path: app/build/outputs/apk/release/*.apk
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Upload signing key backup - KEEP PRIVATE
+        uses: actions/upload-artifact@v4
+        with:
+          name: voice-sip-agent-signing-backup-${{ github.run_number }}
+          path: |
+            ${{ runner.temp }}/vsa-signing/release.jks
+            ${{ runner.temp }}/vsa-signing/credentials.txt
+            ${{ runner.temp }}/apk-certificate.txt
+            ${{ runner.temp }}/keystore-certificate.txt
+          if-no-files-found: error
+          retention-days: 7
