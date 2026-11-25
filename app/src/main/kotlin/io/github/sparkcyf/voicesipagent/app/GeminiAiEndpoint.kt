@@ -462,7 +462,7 @@ ${context.salesInfo}
             @Volatile var lastSpeechEndAt: Long? = null
             private var turnSpeechStartedAt: Long? = null
             private var lastSpeechAt: Long? = null
-            private var speechEndSignaled = false
+            private val turnEndGate = GeminiTurnEndGate()
             private var noiseFloorRms = 80.0
             private var currentTurnFirstOutputAt: Long? = null
             private val turnResponseLatencies = mutableListOf<Long>()
@@ -484,7 +484,7 @@ ${context.salesInfo}
                     if (turnSpeechStartedAt == null) turnSpeechStartedAt = now
                     lastSpeechAt = now
                 } else if (turnSpeechStartedAt != null && lastSpeechAt != null && !speechEndSignaled &&
-                    now - lastSpeechAt!! >= 600) {
+                    now - lastSpeechAt!! >= 600 && turnEndGate.trySignal()) {
                     // Hybrid VAD: preserve automatic server VAD, but finalize promptly after
                     // a locally detected speech end instead of waiting for the full server window.
                     speechEndSignaled = true
@@ -549,7 +549,7 @@ ${context.salesInfo}
                 }
                 turnSpeechStartedAt = null
                 lastSpeechAt = null
-                speechEndSignaled = false
+                turnEndGate.reset()
             }
             @Synchronized fun responseStats(): Triple<Int, Long?, Long?> {
                 val values = turnResponseLatencies.toList()
