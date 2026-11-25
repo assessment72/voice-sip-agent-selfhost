@@ -1,6 +1,6 @@
 # Voicx Control Bridge (API v1)
 
-A small local control-plane service for up to 20 Android gateway devices. It uses Node.js built-ins only and stores state in a local JSON file. It does not replace or modify the SIP engine.
+A small local control-plane service for up to 20 Android gateway devices. Device telemetry and command state use a local JSON file; the optional customer CRM uses MongoDB. It does not replace or modify the SIP engine.
 
 ## Requirements
 
@@ -56,7 +56,7 @@ prevent duplicate admin submissions for the same device.
 
 Device requests use that device's own bearer token.
 
-- `POST /api/v1/devices/{deviceId}/heartbeat` with JSON such as
+- `POST /api/v1/devices/{deviceId}/calls/report` — report a completed SIM/Gemini call using the device token; stored in MongoDB CRM when configured.\n- `POST /api/v1/devices/{deviceId}/heartbeat` with JSON such as
   `{"battery":87,"charging":true,"serviceState":"running","appVersion":"0.2.0"}`
 - `GET /api/v1/devices/{deviceId}/commands/next` to receive queued commands
 - `POST /api/v1/devices/{deviceId}/commands/{commandId}/result` with
