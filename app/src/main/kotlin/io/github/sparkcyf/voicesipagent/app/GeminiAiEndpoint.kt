@@ -86,7 +86,7 @@ internal class GeminiAiEndpoint(
     @Volatile private var context = CallContext()
     @Volatile private var directBridge: MediaBridge? = null
     @Volatile private var directCellLeg: CallLeg? = null
-    @Volatile private var directAiLeg: CallLeg? = null
+    @Volatile private var directAiLeg: AiLeg? = null
     @Volatile private var directHumanLeg: CallLeg? = null
     @Volatile private var directHandoffCommitted = false
     @Volatile var onHandoffRequested: (() -> Boolean)? = null
