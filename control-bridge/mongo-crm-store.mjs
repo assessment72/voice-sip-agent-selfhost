@@ -32,7 +32,6 @@ export async function createMongoCrmStore() {
   const contacts = db.collection("contacts");
   const interactions = db.collection("contact_interactions");
   const followUps = db.collection("follow_ups");
-  const smsMessages = db.collection("sms_messages");
   await Promise.all([
     contacts.createIndexes([
       { key: { tenantId: 1, normalizedPhone: 1 }, unique: true, name: "uq_crm_tenant_phone" },
@@ -45,10 +44,6 @@ export async function createMongoCrmStore() {
       { key: { tenantId: 1, idempotencyKey: 1 }, unique: true, sparse: true, name: "uq_crm_interaction_idem" },
     ]),
     followUps.createIndexes([{ key: { tenantId: 1, status: 1, dueAt: 1 }, name: "ix_crm_followup_due" }]),
-    smsMessages.createIndexes([
-      { key: { tenantId: 1, idempotencyKey: 1 }, unique: true, sparse: true, name: "uq_crm_sms_idem" },
-      { key: { tenantId: 1, createdAt: -1 }, name: "ix_crm_sms_created" },
-    ]),
   ]);
   const scope = { tenantId };
   const get = id => contacts.findOne({ ...scope, _id: id, status: { $ne: "archived" } });
@@ -118,59 +113,8 @@ export async function createMongoCrmStore() {
     return { interaction: pub(item), contact: contact ? pub(await get(contact._id)) : null, duplicate: false };
   }
 
-  async function checkSmsPermission(phone) {
-    const normalizedPhone = phoneKey(phone);
-    const contact = await contacts.findOne({ ...scope, normalizedPhone, status: { $ne: "archived" } });
-    if (contact && (contact.optedOut === true || contact.doNotContact === true || contact.smsOptOut === true || contact.marketingConsent === false)) {
-      return { allowed: false, contact: pub(contact) };
-    }
-    return { allowed: true, contact: contact ? pub(contact) : null };
-  }
-
-  async function createSmsRecord(input) {
-    const normalizedPhone = phoneKey(input.phone);
-    const permission = await checkSmsPermission(normalizedPhone);
-    if (!permission.allowed || input.consentConfirmed !== true) throw Object.assign(new Error("recipient_consent_required"), { status: 403 });
-    const item = {
-      _id: randomUUID(), ...scope, phone: normalizedPhone,
-      phoneMasked: normalizedPhone.slice(0, 5) + "••••" + normalizedPhone.slice(-2),
-      message: text(input.message, 1000), source: text(input.source || "backend_api", 40),
-      status: "pending", consentConfirmed: true, contactId: permission.contact?.id || null,
-      idempotencyKey: text(input.idempotencyKey, 120), createdAt: new Date().toISOString(), updatedAt: new Date().toISOString()
-    };
-    if (!item.message) throw Object.assign(new Error("message_required"), { status: 400 });
-    try { await smsMessages.insertOne(item); }
-    catch (error) {
-      if (error?.code === 11000 && item.idempotencyKey) {
-        const old = await smsMessages.findOne({ ...scope, idempotencyKey: item.idempotencyKey });
-        return { sms: pub(old), duplicate: true };
-      }
-      throw error;
-    }
-    return { sms: pub(item), duplicate: false };
-  }
-
-  async function updateSmsRecord(id, patch) {
-    const set = { updatedAt: new Date().toISOString() };
-    if (["accepted", "failed"].includes(patch.status)) set.status = patch.status;
-    if (patch.errorCode) set.errorCode = text(patch.errorCode, 80);
-    if (patch.providerResponse && typeof patch.providerResponse === "object") {
-      const response = patch.providerResponse;
-      set.providerMessageId = text(response.messageId || response.id || response.smsId, 120) || null;
-      set.providerStatus = text(response.status, 60) || null;
-    }
-    const row = await smsMessages.findOneAndUpdate({ ...scope, _id: id }, { $set: set }, { returnDocument: "after" });
-    if (!row) throw Object.assign(new Error("sms_record_not_found"), { status: 404 });
-    return pub(row);
-  }
-
-  async function listSmsRecords(limit = 20) {
-    return (await smsMessages.find(scope).sort({ createdAt: -1 }).limit(Math.min(100, Math.max(1, Number(limit) || 20))).toArray()).map(pub);
-  }
-
   return {
     tenantId, databaseName, addContact, searchContacts, addInteraction,
-    checkSmsPermission, createSmsRecord, updateSmsRecord, listSmsRecords,
     async getContact(id) { return pub(await get(id)); },
     async listInteractions(id, limit = 50) {
       return (await interactions.find({ ...scope, contactId: id }).sort({ occurredAt: -1 }).limit(Math.min(100, Number(limit) || 50)).toArray()).map(pub);
