@@ -137,3 +137,12 @@ Check the organization message history with `GET /v1/admin/sms?limit=50`, using 
 The isolated Evolution adapter and webhook contract are documented in [docs/evolution-n8n-whatsapp.md](../docs/evolution-n8n-whatsapp.md). Vercel hosts this FastAPI bridge only; the persistent Evolution API server must run on a separate container-capable host. Baileys and official Cloud API use separate Evolution instances. Outbound sends remain disabled unless `EVOLUTION_SEND_ENABLED=true`, require explicit consent confirmation, a destination allow-list, and an idempotency key. No real messages are sent by CI.
 
 Configure the Evolution API URL/key, both instance names, per-channel webhook secrets, instance-to-organization map, and n8n Cloud webhook URL/token as Vercel Secrets. Never commit those values. Import `n8n/whatsapp-events.workflow.json` into n8n Cloud, configure its Header Auth credential, and keep the workflow inactive until reviewed and explicitly activated.
+
+
+## Telegram main control bot
+
+The single-bot webhook and approval-only command flow are documented in [docs/telegram-main-bot.md](../docs/telegram-main-bot.md). The FastAPI webhook is served by the existing Vercel Hosted API at `POST /v1/telegram/webhook`; it does not require a separate always-on server.
+
+Set `TELEGRAM_BOT_TOKEN`, `TELEGRAM_WEBHOOK_SECRET`, and `TELEGRAM_ALLOWED_USER_IDS` as encrypted Vercel environment variables. An empty allowlist denies everyone. Do not run Android `getUpdates` long polling and this webhook with the same bot token at the same time; PR #13 remains untouched and open.
+
+The current Telegram commands can create approval requests, but confirmation only records `approved_not_executed`. External sends, calls, and publishing are not executed. Live Telegram webhook configuration, external actions, and production deployment have not been performed.
