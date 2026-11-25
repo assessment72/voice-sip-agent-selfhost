@@ -137,8 +137,9 @@ class GatewayRuntime private constructor(context: Context) {
                 if (settings.serverMode) "employee" else ""
             }
             val activeBridge = bridge
-            destination.isNotBlank() && employeeEndpoint?.status?.ready == true &&
-                settings.aiAutoAnswer && activeBridge?.handoffTo(employeeEndpoint, destination) == true
+            destination.isNotBlank() && employeeEndpoint != null &&
+                employeeEndpoint.status.ready && settings.aiAutoAnswer &&
+                activeBridge?.handoffTo(employeeEndpoint, destination) == true
         }
         onHangupRequested = {
             if (bridge?.hangupActive() != true) stop()
