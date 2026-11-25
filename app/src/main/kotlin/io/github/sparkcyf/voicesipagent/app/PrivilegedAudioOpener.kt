@@ -51,7 +51,7 @@ class PrivilegedAudioOpener(
                 try { port.close() } finally {
                     if (ticket == generation) runCatching { svc.closeCallAudio() }
                 }
-                AppLog.i("call audio tap closed: in=${port.framesIn} out=${port.framesOut} ${runCatching { svc.audioStats() }.getOrDefault("")}")
+                AppLog.i("call audio tap closed: in=${port.framesIn} out=${port.framesOut} dropped=${port.framesDropped} queuePeak=${port.queuePeak} ${runCatching { svc.audioStats() }.getOrDefault("")}")
             }
         }
     }
