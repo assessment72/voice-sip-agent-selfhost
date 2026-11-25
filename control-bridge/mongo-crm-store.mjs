@@ -56,14 +56,17 @@ export async function createMongoCrmStore() {
       tags: Array.isArray(input.tags) ? input.tags.map(x => text(x, 40)).filter(Boolean).slice(0, 30) : [],
       status: "active", contactCount: 0, createdAt: now, updatedAt: now };
     if (!doc.name) throw Object.assign(new Error("contact_name_required"), { status: 400 });
-    await contacts.insertOne(doc);
+    try { await contacts.insertOne(doc); } catch (error) {
+      if (error?.code === 11000) throw Object.assign(new Error("contact_phone_already_exists"), { status: 409 });
+      throw error;
+    }
     const orphanCalls = await interactions.find({ ...scope, normalizedPhone: doc.normalizedPhone, contactId: null }).sort({ occurredAt: -1 }).limit(100).toArray();
     if (orphanCalls.length) {
-      await interactions.updateMany({ ...scope, normalizedPhone: doc.normalizedPhone, contactId: null }, { $set: { contactId: doc._id } });
+      const linked = await interactions.updateMany({ ...scope, normalizedPhone: doc.normalizedPhone, contactId: null }, { $set: { contactId: doc._id } });
       const last = orphanCalls[0];
       await contacts.updateOne({ ...scope, _id: doc._id }, { $set: { lastContactAt: last.occurredAt,
         lastContactChannel: last.channel, lastContactResult: last.outcome, lastContactSummary: last.summary },
-        $inc: { contactCount: orphanCalls.length } });
+        $inc: { contactCount: linked.modifiedCount || 0 } });
     }
     return pub(await get(doc._id));
   }
