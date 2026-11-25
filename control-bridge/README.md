@@ -5,6 +5,7 @@ A small local control-plane service for up to 20 Android gateway devices. Device
 ## Requirements
 
 - Node.js 20+
+- MongoDB 6-compatible deployment for persistent CRM (optional)
 - A dedicated always-on local host
 - Private network access from Android devices and API clients
 
@@ -21,6 +22,11 @@ export PORT='8787'
 export VOICX_STORE='./data/voicx-store.json'
 export TELEGRAM_BOT_TOKEN='token-from-botfather'
 export TELEGRAM_ADMIN_IDS='123456789'
+# Optional separate allowlist for CRM-only Telegram commands.
+export VOICX_CRM_TELEGRAM_ADMIN_IDS='123456789'
+export MONGODB_URI='mongodb+srv://...'
+export MONGODB_DATABASE='voice_sip_agent_control'
+export VOICX_CRM_TENANT_ID='your-organization-id'
 node server.mjs
 ```
 
@@ -56,7 +62,8 @@ prevent duplicate admin submissions for the same device.
 
 Device requests use that device's own bearer token.
 
-- `POST /api/v1/devices/{deviceId}/calls/report` — report a completed SIM/Gemini call using the device token; stored in MongoDB CRM when configured.\n- `POST /api/v1/devices/{deviceId}/heartbeat` with JSON such as
+- `POST /api/v1/devices/{deviceId}/calls/report` — report a completed SIM/Gemini call using the device token; stored in MongoDB CRM when configured.\n- `POST /api/v1/devices/{deviceId}/calls/report` — report a completed SIM/Gemini call using the device token; stored in MongoDB CRM when configured.
+- `POST /api/v1/devices/{deviceId}/heartbeat` with JSON such as
   `{"battery":87,"charging":true,"serviceState":"running","appVersion":"0.2.0"}`
 - `GET /api/v1/devices/{deviceId}/commands/next` to receive queued commands
 - `POST /api/v1/devices/{deviceId}/commands/{commandId}/result` with
@@ -75,6 +82,8 @@ Commands:
 - `/status phone-01` — queue a status request for one phone.
 - `/start_device phone-01` — ask for a one-time confirmation, then enable that phone's gateway takeover.
 - `/stop_device phone-01` — ask for a one-time confirmation, then disable that phone's gateway takeover.
+
+CRM-only users are configured separately with `VOICX_CRM_TELEGRAM_ADMIN_IDS`; they cannot control devices unless also listed in `TELEGRAM_ADMIN_IDS`. CRM commands (private chat only): `/crm_help`, `/crm_add name | phone | company | city`, `/crm_search query`, `/crm_never`, `/crm_due`, and `/crm_log phone | outcome | summary | follow-up-ISO`.
 
 Start/stop confirmations expire after 60 seconds and can be used once. Results are sent back to the same private Telegram chat after the phone reports completion. Bot credentials stay on the local bridge host; they are never placed in the APK.
 
