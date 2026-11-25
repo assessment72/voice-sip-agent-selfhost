@@ -24,9 +24,10 @@ def test_confirmation_is_bound_to_requesting_user_and_one_time(tmp_path, monkeyp
         user_id=123, chat_id=456, action_type="sms",
         target="+9677****123", fingerprint="hash-only",
     )
-    assert not telegram_bot._resolve_pending(action_id, 999, True)
-    assert telegram_bot._resolve_pending(action_id, 123, True)
-    assert not telegram_bot._resolve_pending(action_id, 123, True)
+    assert not telegram_bot._resolve_pending(action_id, 999, 456, True)
+    assert not telegram_bot._resolve_pending(action_id, 123, 999, True)
+    assert telegram_bot._resolve_pending(action_id, 123, 456, True)
+    assert not telegram_bot._resolve_pending(action_id, 123, 456, True)
     with sqlite3.connect(tmp_path / "telegram.sqlite3") as connection:
         row = connection.execute(
             "SELECT status,payload_hash FROM telegram_pending_actions WHERE id=?",
@@ -40,6 +41,7 @@ def test_sensitive_command_creates_pending_request_without_storing_message_body(
 ):
     monkeypatch.setenv("DATABASE_PATH", str(tmp_path / "telegram.sqlite3"))
     monkeypatch.setenv("TELEGRAM_ALLOWED_USER_IDS", "123")
+    monkeypatch.setenv("SMS_ALLOWED_PREFIXES", "+9677")
     sent = []
     monkeypatch.setattr(telegram_bot, "_send", lambda chat_id, text, keyboard=None:
                         sent.append((chat_id, text, keyboard)))
