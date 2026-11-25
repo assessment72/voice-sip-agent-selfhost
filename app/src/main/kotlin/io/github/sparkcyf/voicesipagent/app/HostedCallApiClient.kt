@@ -6,6 +6,7 @@ import java.net.URL
 
 data class HostedCallJob(val id: String, val phoneNumber: String, val expiresAt: Long)
 data class HostedDeviceRegistration(val deviceId: String, val organizationId: String, val deviceToken: String)
+data class HostedSmsResult(val smsId: String, val status: String, val phoneMasked: String)
 
 /**
  * HTTPS-only client for one-time enrollment and per-device control-plane traffic.
@@ -106,11 +107,37 @@ class HostedCallApiClient(
         request("POST", "/v1/device/events", body)
     }
 
+    /**
+     * Requests an SMS through the hosted backend. The provider key stays on Vercel.
+     * The backend rejects this call unless this device is explicitly allowlisted.
+     */
+    fun sendSms(phone: String, message: String, consentConfirmed: Boolean, idempotencyKey: String): HostedSmsResult {
+        requireDeviceToken()
+        require(consentConfirmed) { "Recipient consent is required" }
+        require(phone.length in 3..32) { "Invalid phone number" }
+        require(message.isNotBlank() && message.length <= 1000) { "SMS message must be 1-1000 characters" }
+        require(idempotencyKey.length in 16..128) { "Invalid SMS idempotency key" }
+        val body = JSONObject()
+            .put("phone", phone)
+            .put("message", message)
+            .put("consentConfirmed", true)
+        val json = request(
+            "POST",
+            "/v1/device/sms/send",
+            body,
+            mapOf("Idempotency-Key" to idempotencyKey),
+        )
+        val id = json.optString("smsId")
+        val status = json.optString("status")
+        require(id.isNotBlank() && status.isNotBlank()) { "SMS response was incomplete" }
+        return HostedSmsResult(id, status, json.optString("phoneMasked"))
+    }
+
     private fun requireDeviceToken() {
         require(deviceToken.isNotBlank()) { "Device is not enrolled" }
     }
 
-    private fun request(method: String, path: String, body: JSONObject?): JSONObject {
+    private fun request(method: String, path: String, body: JSONObject?, extraHeaders: Map<String, String> = emptyMap()): JSONObject {
         val url = URL(base + path)
         require(url.protocol.equals("https", ignoreCase = true)) { "Hosted API requires HTTPS" }
         val connection = (url.openConnection() as HttpURLConnection).apply {
@@ -120,6 +147,7 @@ class HostedCallApiClient(
             instanceFollowRedirects = false
             if (deviceToken.isNotBlank()) setRequestProperty("Authorization", "Bearer $deviceToken")
             setRequestProperty("Accept", "application/json")
+            extraHeaders.forEach { (name, value) -> setRequestProperty(name, value) }
             if (body != null) {
                 doOutput = true
                 setRequestProperty("Content-Type", "application/json")
