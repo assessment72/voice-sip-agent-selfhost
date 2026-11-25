@@ -1,5 +1,6 @@
 import os
 import sqlite3
+import time
 
 import telegram_bot
 
@@ -87,3 +88,18 @@ def test_approval_callback_only_records_approval_never_executes_provider(
             "SELECT status FROM telegram_pending_actions WHERE id=?", (action_id,)
         ).fetchone()[0]
     assert status == "approved_not_executed"
+
+
+def test_confirmation_expires_after_ten_minutes(tmp_path, monkeypatch):
+    monkeypatch.setenv("DATABASE_PATH", str(tmp_path / "telegram.sqlite3"))
+    action_id = telegram_bot._create_pending(
+        user_id=123, chat_id=456, action_type="publish",
+        target="content", fingerprint="fingerprint",
+    )
+    with sqlite3.connect(tmp_path / "telegram.sqlite3") as connection:
+        connection.execute(
+            "UPDATE telegram_pending_actions SET created_at=? WHERE id=?",
+            (int(time.time()) - 601, action_id),
+        )
+        connection.commit()
+    assert not telegram_bot._resolve_pending(action_id, 123, 456, True)
