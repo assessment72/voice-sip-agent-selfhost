@@ -128,9 +128,9 @@ class GatewayRuntime private constructor(context: Context) {
         apiKey = { settings.geminiApiKey },
         model = { settings.geminiModel },
         salesContext = { salesAdminStore.assistantContext() },
-        report = { onAiReport?.invoke(it.telegramText()) },
+        report = { onAiReport?.invoke(it.telegramMessages()) },
     )
-    @Volatile var onAiReport: ((String) -> Unit)? = null
+    @Volatile var onAiReport: ((List<String>) -> Unit)? = null
     /** Built-in SIP user agent. */
     @Volatile private var sip: CallEndpoint? = null
     @Volatile private var bridge: CallBridge? = null
