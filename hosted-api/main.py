@@ -1511,12 +1511,12 @@ def list_organization_sms(limit: int = Query(default=50, ge=1, le=200),
 
 
 def normalize_whatsapp_number(raw: str) -> str:
-    value = re.sub(r"[\\s().-]", "", raw)
+    value = re.sub(r"[\s().-]", "", raw)
     if value.startswith("00"):
         value = "+" + value[2:]
     elif re.fullmatch(r"7[0-9]{8}", value):
         value = "+967" + value
-    if not re.fullmatch(r"\\+[1-9][0-9]{7,14}", value):
+    if not re.fullmatch(r"\+[1-9][0-9]{7,14}", value):
         raise HTTPException(status_code=422, detail="invalid_phone_number")
     prefixes = tuple(p.strip() for p in os.getenv("WHATSAPP_ALLOWED_PREFIXES", "+9677").split(",") if p.strip())
     if not prefixes or not any(value.startswith(prefix) for prefix in prefixes):
