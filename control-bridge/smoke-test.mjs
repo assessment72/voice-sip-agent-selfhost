@@ -68,6 +68,16 @@ try {
   r = await request("/api/v1/devices/test-01/calls", admin, { method: "POST", body: "{}" });
   assert.equal(r.status, 501, "real call route must remain disabled");
 
+  r = await request("/api/v1/devices/test-01/calls/report", "wrong", {
+    method: "POST", body: JSON.stringify({ phone: "+967700000001" })
+  });
+  assert.equal(r.status, 401, "call reports must require the device-specific token");
+
+  r = await request("/api/v1/devices/test-01/calls/report", deviceToken, {
+    method: "POST", body: JSON.stringify({ phone: "+967700000001", outcome: "completed" })
+  });
+  assert.equal(r.status, 503, "call reports must fail closed when MongoDB CRM is not configured");
+
   r = await request("/api/v1/crm/contacts", admin, {
     method: "POST", body: JSON.stringify({ name: "Test Customer", phone: "+967700000001",
       email: "customer@example.test", jobTitle: "Engineer", company: "Example Co",
