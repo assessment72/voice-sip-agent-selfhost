@@ -483,11 +483,10 @@ ${context.salesInfo}
                 if (isSpeechLike(frame)) {
                     if (turnSpeechStartedAt == null) turnSpeechStartedAt = now
                     lastSpeechAt = now
-                } else if (turnSpeechStartedAt != null && lastSpeechAt != null && !speechEndSignaled &&
+                } else if (turnSpeechStartedAt != null && lastSpeechAt != null &&
                     now - lastSpeechAt!! >= 600 && turnEndGate.trySignal()) {
                     // Hybrid VAD: preserve automatic server VAD, but finalize promptly after
                     // a locally detected speech end instead of waiting for the full server window.
-                    speechEndSignaled = true
                     lastSpeechEndAt = lastSpeechAt
                     // Gemini automaticActivityDetection is enabled in the Live setup.
                     // Keep this local VAD edge for metrics only; sending audioStreamEnd as
