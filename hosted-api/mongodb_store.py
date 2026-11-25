@@ -140,6 +140,12 @@ def ensure_indexes(database: Database | None = None) -> None:
             IndexModel([("device_id", ASCENDING), ("status", ASCENDING), ("created_at", ASCENDING)],
                        name="ix_command_delivery_queue"),
         ],
+        "sms_messages": [
+            IndexModel([("organization_id", ASCENDING), ("idempotency_key", ASCENDING)],
+                       unique=True, name="uq_sms_org_idempotency"),
+            IndexModel([("organization_id", ASCENDING), ("created_at", DESCENDING)],
+                       name="ix_sms_org_created"),
+        ],
         "admin_audit_events": [
             IndexModel([("organization_id", ASCENDING), ("created_at", DESCENDING)],
                        name="ix_audit_org_created"),
