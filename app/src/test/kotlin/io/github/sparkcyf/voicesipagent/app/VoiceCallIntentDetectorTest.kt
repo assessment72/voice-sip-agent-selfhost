@@ -5,7 +5,7 @@ import org.junit.Test
 
 class VoiceCallIntentDetectorTest {
     @Test fun explicitHumanHandoffPhrasesAreDetected() {
-        listOf("حولني لموظف", "أريد أكلم موظف", "أبغى أتحدث مع شخص", "وصلني بمسؤول المبيعات").forEach {
+        listOf("حولني لموظف", "أريد أكلم موظف", "أبغى أتحدث مع شخص", "أريد التحدث مع موظف", "وصلني بمسؤول المبيعات").forEach {
             assertEquals(it, VoiceCallIntent.HANDOFF_TO_EMPLOYEE, VoiceCallIntentDetector.detect(it))
         }
     }
@@ -17,7 +17,7 @@ class VoiceCallIntentDetectorTest {
     }
 
     @Test fun ordinaryOrNegatedSpeechDoesNotTriggerAnAction() {
-        listOf("السلام عليكم", "لا تحولني لموظف", "لا تنهي المكالمة", "أريد معرفة سعر الديزل").forEach {
+        listOf("السلام عليكم", "لا تحولني لموظف", "لا تنهي المكالمة", "لا أريد إنهاء المكالمة", "ما أبغى أكلم موظف", "أريد معرفة سعر الديزل").forEach {
             assertEquals(it, VoiceCallIntent.NONE, VoiceCallIntentDetector.detect(it))
         }
     }
