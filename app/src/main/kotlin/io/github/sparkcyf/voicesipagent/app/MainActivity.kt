@@ -466,8 +466,10 @@ private fun SettingsSection(rt: GatewayRuntime) {
             visualTransformation = PasswordVisualTransformation(), singleLine = true, modifier = Modifier.fillMaxWidth(),
         )
         Field(t("Куда переводить входящие (пусто = логин)", "Cellular inbound -> SIP target (blank = username)"), target, info = "inbound_target") { target = it }
-        Field(t("Внутренний номер сотрудника для перевода из Gemini", "SIP employee extension for Gemini handoff"), humanHandoffTarget) { humanHandoffTarget = it }
-        Text(t("Укажите внутренний номер или SIP URI сотрудника. Клиент остаётся с Gemini, пока сотрудник не ответит; если он не ответит, разговор вернётся к ИИ.",
+        Field(t("Добавочный номер сотрудника (внешняя АТС)", "Employee extension (external PBX)"), humanHandoffTarget) { humanHandoffTarget = it }
+        Text(if (serverMode) t("Встроенный SIP-сервер переводит звонок на единственный зарегистрированный софтфон. Для отдельных добавочных номеров сотрудников переключите режим на внешнюю АТС.",
+            "Built-in SIP server mode transfers to the single registered softphone. Use external PBX mode to reach distinct employee extensions.")
+        else t("Укажите добавочный номер или SIP URI сотрудника. Клиент остаётся с Gemini, пока сотрудник не ответит; если он не ответит, разговор вернётся к ИИ.",
             "Enter the employee extension or SIP URI. The caller stays with Gemini until the employee answers; if unanswered, the AI call is restored."), style = MaterialTheme.typography.bodySmall)
         Field(t("Префиксы для исходящих (через запятую, пусто = любой)", "Allowed dial-out prefixes (comma separated, empty = any)"), prefixes, info = "prefixes") { prefixes = it }
         Choice(t("Второй звонок при занятости", "Second call while busy"), BusyPolicy.entries, busy,
