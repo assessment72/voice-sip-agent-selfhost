@@ -336,12 +336,17 @@ internal class CallAudioTap(
         runCatching(onClosed).onFailure { Log.w(TAG, "onClosed failed: $it") }
     }
 
-    fun stats() = "method=$usedMethod rate=$rate frameBytes=$frameBytes down=$downFrames up=$upFrames " +
+    fun stats(): String {
+        val frameDelta = downFrames - upFrames
+        val deltaPercent = if (downFrames == 0L) 0.0 else kotlin.math.abs(frameDelta) * 100.0 / downFrames
+        return "method=$usedMethod rate=$rate frameBytes=$frameBytes down=$downFrames up=$upFrames " +
+        "frameDelta=$frameDelta(${String.format(java.util.Locale.US, "%.2f", deltaPercent)}% of downlink) " +
         "downPeak=$downPeak(${peakDbfs(downPeak)}dBFS) upPeak=$upPeak(${peakDbfs(upPeak)}dBFS) " +
         "downVoiced=$downVoiced upVoiced=$upVoiced" +
         " backendFailures=$backendFailures preferred=${finalPreferredDeviceType ?: if (::track.isInitialized) runCatching { track.preferredDevice?.type }.getOrNull() else null}" +
         " routed=${finalRoutedDeviceType ?: if (::track.isInitialized) runCatching { track.routedDevice?.type }.getOrNull() else null}" +
         (error?.let { " error=$it" } ?: "")
+    }
 
     private fun peakDbfs(value: Int): String = String.format(java.util.Locale.US, "%.2f",
         20.0 * kotlin.math.log10(value.coerceAtLeast(1).toDouble() / 32768.0))
