@@ -146,6 +146,22 @@ def ensure_indexes(database: Database | None = None) -> None:
             IndexModel([("organization_id", ASCENDING), ("created_at", DESCENDING)],
                        name="ix_sms_org_created"),
         ],
+        "whatsapp_messages": [
+            IndexModel([("organization_id", ASCENDING), ("idempotency_key", ASCENDING)],
+                       unique=True, partialFilterExpression={"idempotency_key": {"$type": "string"}},
+                       name="uq_whatsapp_org_idempotency"),
+            IndexModel([("organization_id", ASCENDING), ("channel", ASCENDING),
+                        ("provider_message_id", ASCENDING)],
+                       name="ix_whatsapp_provider_message"),
+            IndexModel([("organization_id", ASCENDING), ("created_at", DESCENDING)],
+                       name="ix_whatsapp_org_created"),
+        ],
+        "whatsapp_events": [
+            IndexModel([("organization_id", ASCENDING), ("received_at", DESCENDING)],
+                       name="ix_whatsapp_event_org_received"),
+            IndexModel([("organization_id", ASCENDING), ("provider_event_id", ASCENDING)],
+                       name="ix_whatsapp_event_provider_id"),
+        ],
         "admin_audit_events": [
             IndexModel([("organization_id", ASCENDING), ("created_at", DESCENDING)],
                        name="ix_audit_org_created"),
