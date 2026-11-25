@@ -200,4 +200,70 @@ class CallBridgeTest {
         assertEquals(HangupCause.INTERNAL_ERROR, b.endCause)
         assertNull(cellPort.clock)
     }
+    @Test
+    fun humanHandoffKeepsGeminiUntilEmployeeAnswersThenSwitchesMedia() {
+        val inbound = cell.incoming("13800001234")
+        settle()
+        val ai = sip.dialed.single()
+        ai.remoteAnswered(); settle()
+        val callerPort = FakePort(true, 11)
+        val aiPort = FakePort(false, 22)
+        inbound.mediaUp(callerPort); ai.mediaUp(aiPort); settle()
+        val oldMedia = bridge.session?.media
+        assertNotNull(oldMedia)
+
+        val employee = FakeEndpoint("employee")
+        assertTrue(bridge.handoffTo(employee, "1001"))
+        settle()
+        val human = employee.dialed.single()
+        assertEquals("1001", human.target)
+        assertEquals(LegState.CONNECTED, inbound.state)
+        assertEquals(LegState.CONNECTED, ai.state)
+        assertNotNull("Gemini keeps the caller connected while employee rings", bridge.session?.media)
+
+        val employeePort = FakePort(false, 33)
+        human.remoteAnswered(); settle()
+        human.mediaUp(employeePort); settle()
+        assertEquals(HangupCause.CANCELLED, ai.endCause)
+        assertEquals("employee", bridge.session?.outbound?.kind)
+        assertNotNull(bridge.session?.media)
+        assertNull("old AI media clock is detached", callerPort.clock)
+        assertNotNull("new SIP employee media clock is attached", callerPort.clock)
+    }
+
+    @Test
+    fun failedHumanHandoffRestoresGeminiWithoutDroppingCaller() {
+        val inbound = cell.incoming("13800001234")
+        settle()
+        val ai = sip.dialed.single()
+        ai.remoteAnswered(); settle()
+        val callerPort = FakePort(true, 11)
+        val aiPort = FakePort(false, 22)
+        inbound.mediaUp(callerPort); ai.mediaUp(aiPort); settle()
+
+        val employee = FakeEndpoint("employee").apply { onDial = { it.remoteProceeding() } }
+        assertTrue(bridge.handoffTo(employee, "1001"))
+        settle()
+        employee.dialed.single().remoteEnded(HangupCause.BUSY)
+        settle()
+
+        assertEquals(LegState.CONNECTED, inbound.state)
+        assertEquals(LegState.CONNECTED, ai.state)
+        assertTrue("Gemini leg is restored", bridge.session?.outbound === ai)
+        assertNotNull("original AI media remains active", bridge.session?.media)
+    }
+
+    @Test
+    fun spokenHangupControlEndsBothActiveLegs() {
+        val inbound = cell.incoming("13800001234")
+        settle()
+        val outbound = sip.dialed.single()
+        outbound.remoteAnswered(); settle()
+        assertTrue(bridge.hangupActive())
+        settle()
+        assertEquals(LegState.ENDED, inbound.state)
+        assertEquals(LegState.ENDED, outbound.state)
+        assertNull(bridge.session)
+    }
+
 }
