@@ -397,7 +397,7 @@ async function telegramPoll() {
     console.log("Telegram control disabled (bot token/admin allowlist not configured)");
     return;
   }
-  console.log("Telegram polling enabled; device admins=" + TELEGRAM_ADMIN_IDS.size + ", CRM admins=" + CRM_TELEGRAM_ADMIN_IDS.size);
+  console.log("Telegram polling enabled; device admins=" + TELEGRAM_ADMIN_IDS.size + ", CRM admins=" + CRM_TELEGRAM_ADMIN_IDS.size + ", SMS admins=" + SMS_TELEGRAM_ADMIN_IDS.size);
   while (true) {
     try {
       const updates = await telegram("getUpdates", {
