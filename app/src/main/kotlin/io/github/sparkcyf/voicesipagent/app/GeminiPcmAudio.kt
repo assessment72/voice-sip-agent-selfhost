@@ -29,6 +29,16 @@ internal class GeminiPcmOutputBuffer(private val frameSamples: Int) {
         decimationPhase = 0
     }
 
+    /** Emits the final partial telephony frame at turn end, padded with silence. */
+    @Synchronized
+    fun flushPadded(): List<ShortArray> {
+        if (outputRemainder.isEmpty()) return emptyList()
+        val frame = ShortArray(frameSamples)
+        outputRemainder.copyInto(frame, endIndex = minOf(outputRemainder.size, frameSamples))
+        outputRemainder = ShortArray(0)
+        return listOf(frame)
+    }
+
     @Synchronized
     fun append(pcm24kLe: ByteArray): List<ShortArray> {
         if (pcm24kLe.isEmpty()) return emptyList()
