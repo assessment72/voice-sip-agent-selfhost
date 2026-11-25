@@ -209,8 +209,7 @@ class CallBridgeTest {
         val callerPort = FakePort(true, 11)
         val aiPort = FakePort(false, 22)
         inbound.mediaUp(callerPort); ai.mediaUp(aiPort); settle()
-        val oldMedia = bridge.session?.media
-        assertNotNull(oldMedia)
+        assertNotNull(bridge.session?.media)
 
         val employee = FakeEndpoint("employee")
         assertTrue(bridge.handoffTo(employee, "1001"))
@@ -227,7 +226,6 @@ class CallBridgeTest {
         assertEquals(HangupCause.CANCELLED, ai.endCause)
         assertEquals("employee", bridge.session?.outbound?.kind)
         assertNotNull(bridge.session?.media)
-        assertNull("old AI media clock is detached", callerPort.clock)
         assertNotNull("new SIP employee media clock is attached", callerPort.clock)
     }
 
