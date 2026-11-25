@@ -321,6 +321,21 @@ const server = http.createServer(async (req, res) => {
       return json(res, 200, { devices: [...configured.keys()].map(id => publicDevice(id, state.devices[id])) });
     }
 
+    m = routeMatch(p, /^\/api\/v1\/devices\/([^/]+)\/calls\/report$/);
+    if (req.method === "POST" && m) {
+      const id = decodeURIComponent(m[1]);
+      if (!authDevice(req, id)) return json(res, 401, { error: "unauthorized" });
+      if (!crmStore) return json(res, 503, { error: "crm_database_not_configured" });
+      const report = await body(req);
+      if (!report.phone) return json(res, 400, { error: "phone_required" });
+      const result = await crmStore.recordCall({
+        ...report,
+        source: "android_gateway",
+        idempotencyKey: String(report.idempotencyKey || "").slice(0, 128) || undefined
+      });
+      return json(res, 201, result);
+    }
+
     let m = routeMatch(p, /^\/api\/v1\/devices\/([^/]+)\/heartbeat$/);
     if (req.method === "POST" && m) {
       const id = decodeURIComponent(m[1]);
