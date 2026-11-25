@@ -192,7 +192,7 @@ async function handleTelegramSmsCommand(message, command, args) {
   const chatId = message.chat.id;
   if (command === "/sms_help") {
     await telegramMessage(chatId,
-      "أوامر SMS عبر Adasms:\\n/sms_send الرقم | نص الرسالة | موافق\\n/sms_history [عدد]\\nيشترط وجود موافقة المستلم. مفتاح المزود محفوظ في Vercel ولا يظهر في Telegram أو التطبيق.");
+      "أوامر SMS عبر Adasms:\n/sms_send الرقم | نص الرسالة | موافق\n/sms_history [عدد]\nيشترط وجود موافقة المستلم. مفتاح المزود محفوظ في Vercel ولا يظهر في Telegram أو التطبيق.");
     return true;
   }
   if (command === "/sms_send") {
@@ -304,7 +304,7 @@ async function telegramQueueCommand(chatId, deviceId, type) {
 async function handleTelegramUpdate(update) {
   if (update.message && isSmsTelegramAdmin(update)) {
     const raw = String(update.message.text || "").trim();
-    const match = raw.match(/^(\\/sms_(?:help|send|history))(?:\\s+([\\s\\S]*))?$/i);
+    const match = raw.match(/^(\/sms_(?:help|send|history))(?:\s+([\s\S]*))?$/i);
     if (match) {
       try {
         if (await handleTelegramSmsCommand(update.message, match[1].toLowerCase(), match[2] || "")) return;
