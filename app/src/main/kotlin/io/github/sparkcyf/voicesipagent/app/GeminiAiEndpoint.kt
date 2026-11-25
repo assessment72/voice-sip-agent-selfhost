@@ -183,7 +183,7 @@ internal class GeminiAiEndpoint(
 
         private inner class AiPort : MediaPort {
             private val output = ArrayBlockingQueue<ShortArray>(100)
-            private var pending = ShortArray(0)
+            private val outputBuffer = GeminiPcmOutputBuffer(PcmFormat.NARROWBAND.frameSamples)
             @Volatile var inputFrames = 0L
             @Volatile var outputFrames = 0L
             override val format = PcmFormat.NARROWBAND
@@ -192,12 +192,7 @@ internal class GeminiAiEndpoint(
             override fun readFrame(): ShortArray = output.poll()?.also { outputFrames++ } ?: format.silence()
             override fun writeFrame(frame: ShortArray) { inputFrames++; client?.sendPcm8(frame) }
             fun addOutput(bytes24k: ByteArray) {
-                val samples = bytes24k.size / 2
-                val all = ShortArray(samples) { i -> ((bytes24k[2 * i + 1].toInt() shl 8) or (bytes24k[2 * i].toInt() and 255)).toShort() }
-                var pos = 0
-                while (pos + 3 * format.frameSamples <= all.size) {
-                    val frame = ShortArray(format.frameSamples) { i -> all[pos + i * 3] }
-                    pos += 3 * format.frameSamples
+                for (frame in outputBuffer.append(bytes24k)) {
                     if (!output.offer(frame)) output.poll()?.let { output.offer(frame) }
                 }
             }

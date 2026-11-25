@@ -144,13 +144,18 @@ internal class GeminiLiveClient(
         .replace(Regex("(?i)AIza[A-Za-z0-9_-]{20,}"), "[REDACTED_API_KEY]")
         .replace(Regex("https?://\\S+"), "[URL]")
 
-    /** Sends one 20 ms, 8 kHz PCM frame after simple 8->16 kHz duplication. */
+    /** Sends one 20 ms, 8 kHz PCM frame interpolated to Gemini's 16 kHz input rate. */
     fun sendPcm8(frame: ShortArray) {
         val bytes = ByteArray(frame.size * 4)
         var p = 0
-        for (sample in frame) repeat(2) {
-            bytes[p++] = sample.toByte()
-            bytes[p++] = (sample.toInt() shr 8).toByte()
+        for (i in frame.indices) {
+            val current = frame[i].toInt()
+            val next = if (i + 1 < frame.size) frame[i + 1].toInt() else current
+            bytes[p++] = current.toByte()
+            bytes[p++] = (current shr 8).toByte()
+            val interpolated = (current + next) / 2
+            bytes[p++] = interpolated.toByte()
+            bytes[p++] = (interpolated shr 8).toByte()
         }
         val audio = JSONObject()
             .put("data", Base64.encodeToString(bytes, Base64.NO_WRAP))
