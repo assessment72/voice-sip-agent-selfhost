@@ -67,6 +67,18 @@ class GeminiPcmAudioTest {
         assertTrue(afterReset.zip(clean).all { (actual, expected) -> actual.contentEquals(expected) })
     }
 
+    @Test
+    fun `flush pads final partial audio frame for playback`() {
+        val converter = GeminiPcmOutputBuffer(frameSamples = 160)
+        val source = ByteArray(24_000 * 2 / 3) { (it * 7).toByte() }
+        val emitted = converter.append(source)
+        val tail = converter.flushPadded()
+        assertTrue(tail.size <= 1)
+        assertTrue(tail.all { it.size == 160 })
+        assertTrue(converter.flushPadded().isEmpty())
+        assertEquals((source.size / 2 / 3) / 160, emitted.size)
+    }
+
     private fun filteredSineRms(frequencyHz: Int): Double {
         val input = ByteArray(24_000 * 2)
         for (i in 0 until 24_000) {
