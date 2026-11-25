@@ -13,10 +13,10 @@ internal object VoiceCallIntentDetector {
 
         val handoff = listOf(
             Regex("""(?:حولني|حوّلني|وصلني|اربطني).{0,32}(?:موظف|موظفه|شخص|انسان|مسؤول|الدعم|المبيعات)"""),
-            Regex("""(?:اريد|ابغي|ابغى|ودي|احتاج).{0,28}(?:اكلم|اتكلم|اتحدث).{0,24}(?:موظف|موظفه|شخص|انسان|مسؤول)"""),
+            Regex("""(?:اريد|ابغي|ابغى|ودي|احتاج).{0,28}(?:اكلم|اتكلم|اتحدث|التحدث|التكلم).{0,24}(?:موظف|موظفه|شخص|انسان|مسؤول)"""),
             Regex("""(?:موظف|موظفه|شخص حقيقي|انسان).{0,24}(?:معي|اكلمه|يتكلم|اتحدث)"""),
         )
-        if (handoff.any { it.containsMatchIn(text) } && !Regex("""(?:لا|مش|ما).{0,10}(?:تحولني|حولني|موظف)""").containsMatchIn(text)) {
+        if (handoff.any { it.containsMatchIn(text) } && !Regex("""(?:لا|مش|ما).{0,24}(?:تحولني|حولني|اكلم|اتكلم|اتحدث|موظف)""").containsMatchIn(text)) {
             return VoiceCallIntent.HANDOFF_TO_EMPLOYEE
         }
 
@@ -27,7 +27,7 @@ internal object VoiceCallIntentDetector {
             Regex("""مع السلامه"""),
         )
         if (explicitHangup.any { it.containsMatchIn(text) } &&
-            !Regex("""(?:لا|مش|ما).{0,12}(?:تنهي|انهي|تقفل|تغلق)""").containsMatchIn(text)) {
+            !Regex("""(?:لا|مش|ما).{0,24}(?:انهاء|تنهي|انهي|تقفل|تغلق|اقفل)""").containsMatchIn(text)) {
             return VoiceCallIntent.HANG_UP
         }
         return VoiceCallIntent.NONE
