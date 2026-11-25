@@ -102,3 +102,28 @@ Run the end-to-end local API smoke test with Node.js 20+: `npm test` (or `node s
 State is atomically written to a local JSON file with restrictive file permissions.
 Back up this file securely. It contains device telemetry, command metadata, and audit
 records; it does not contain bearer tokens.
+
+## CRM and marketing API (admin authenticated)
+
+All routes below use `Authorization: Bearer $VOICX_ADMIN_TOKEN`. Data is stored in the bridge's existing persistent JSON store under `crm`.
+
+| Route | Purpose |
+|---|---|
+| `GET/POST /api/v1/crm/contacts` | List/create contacts |
+| `GET/PATCH/DELETE /api/v1/crm/contacts/:id` | Read/update/delete a contact |
+| `POST /api/v1/crm/contacts/search` | Search contacts; optional `filterId` |
+| `GET/POST /api/v1/crm/filters` | Manage reusable audience filters |
+| `GET/POST /api/v1/crm/tasks`, `GET /api/v1/crm/tasks/today` | Daily follow-up tasks |
+| `POST /api/v1/crm/sms` | Queue an SMS |
+| `POST /api/v1/crm/whatsapp` | Queue a WhatsApp message |
+| `POST /api/v1/crm/calls` | Queue a call request |
+| `GET /api/v1/crm/outbox`, `PATCH /api/v1/crm/outbox/:id/status` | Inspect/update delivery jobs |
+| `GET/POST /api/v1/crm/automations` | Store persistent automation and reply policies |
+| `POST /api/v1/crm/webhooks/sms` and `/api/v1/crm/webhooks/whatsapp` | Receive provider delivery/inbound events |
+| `POST /api/v1/crm/publications/haraj` | Save a Haraj listing draft for manual publishing |
+| `POST /api/v1/crm/publications/website` | Save a website publication draft |
+| `GET /api/v1/crm/marketing/status` | Marketing activity summary |
+
+Contact fields include name, phone, personal/professional email, job title, company, previous messages, previous-call summary, tags, notes, and next-send time.
+
+**Delivery and publishing safety:** SMS, WhatsApp, and call endpoints currently create persistent queued jobs only. They do not contact a carrier, WhatsApp Business provider, or SIP endpoint until a provider adapter and credentials are configured. Inbound webhooks require `VOICX_MESSAGING_WEBHOOK_TOKEN` (at least 32 characters). The webhook stores inbound messages; automatic replies require a configured provider adapter and an explicitly enabled automation policy. Haraj and website routes create drafts only; no automated login or publishing is performed. This avoids claiming a message was sent or an advert was published when it was not.
