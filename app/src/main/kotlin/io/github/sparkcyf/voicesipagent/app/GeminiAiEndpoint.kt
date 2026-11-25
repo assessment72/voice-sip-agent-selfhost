@@ -275,6 +275,7 @@ internal class GeminiAiEndpoint(
         private val requestHandoff: () -> Boolean,
         private val requestHangup: () -> Unit,
     ) : AbstractCallLeg(id, "gemini", LegDirection.OUTBOUND, remote, target) {
+        companion object { private const val MAX_TRANSCRIPT_CHARS = 24_000 }
         private val port = AiPort()
         private val started = System.currentTimeMillis()
         private var client: GeminiLiveClient? = null
@@ -425,8 +426,11 @@ ${context.salesInfo}
             val clean = text.trim().replace(Regex("\\s+"), " ")
             if (clean.isBlank()) return
             synchronized(transcriptLock) {
-                if (conversationTranscript.isNotEmpty()) conversationTranscript.append('\n')
-                conversationTranscript.append(speaker).append(": ").append(clean)
+                if (conversationTranscript.length >= MAX_TRANSCRIPT_CHARS) return
+                val prefix = if (conversationTranscript.isEmpty()) "" else "\\n"
+                val line = "$prefix$speaker: $clean"
+                val remaining = MAX_TRANSCRIPT_CHARS - conversationTranscript.length
+                conversationTranscript.append(line.take(remaining))
             }
         }
 
@@ -521,6 +525,17 @@ ${context.salesInfo}
                 AppLog.i("Gemini Live output interrupted by caller speech")
             }
             @Synchronized fun completeTurn() {
+                // Pad and queue the last non-frame-aligned audio remainder before stats
+                // are finalized; otherwise a short final chunk has no queue/play timestamp.
+                for (frame in outputBuffer.flushPadded()) {
+                    if (firstOutputQueuedAt == null) firstOutputQueuedAt = SystemClock.elapsedRealtime()
+                    if (!output.offer(frame)) {
+                        output.poll()
+                        if (!output.offer(frame)) outputDroppedFrames++
+                        else outputDroppedFrames++
+                    }
+                    outputQueuePeak = maxOf(outputQueuePeak, output.size)
+                }
                 currentTurnFirstOutputAt = null
                 val startedAt = turnSpeechStartedAt
                 val speechEndAt = lastSpeechAt
