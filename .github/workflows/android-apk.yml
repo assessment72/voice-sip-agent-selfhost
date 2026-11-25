@@ -59,6 +59,7 @@ jobs:
         run: ./gradlew :app:assembleDebug --no-daemon --stacktrace
 
       - name: Sign APK with repository keystore
+        id: signing
         env:
           ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
           ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
@@ -67,12 +68,31 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          : "${ANDROID_KEYSTORE_BASE64:?Missing ANDROID_KEYSTORE_BASE64 repository secret}"
-          : "${ANDROID_KEYSTORE_PASSWORD:?Missing ANDROID_KEYSTORE_PASSWORD repository secret}"
-          : "${ANDROID_KEY_ALIAS:?Missing ANDROID_KEY_ALIAS repository secret}"
-          : "${ANDROID_KEY_PASSWORD:?Missing ANDROID_KEY_PASSWORD repository secret}"
+
+          missing=()
+          for name in ANDROID_KEYSTORE_BASE64 ANDROID_KEYSTORE_PASSWORD ANDROID_KEY_ALIAS ANDROID_KEY_PASSWORD; do
+            if [[ -z "${!name:-}" ]]; then missing+=("$name"); fi
+          done
+
+          if (( ${#missing[@]} == 4 )); then
+            echo "::warning::Custom keystore secrets are unavailable to this workflow. Keeping the Gradle-generated installable debug APK signed with the temporary runner debug key."
+            echo "mode=runner-debug-key" >> "$GITHUB_OUTPUT"
+            {
+              echo "### APK signing"
+              echo "- Custom repository keystore: not available to this workflow."
+              echo "- APK remains signed with the temporary GitHub runner debug key."
+              echo "- To use your persistent key, add all four values under **Settings → Secrets and variables → Actions → Repository secrets**."
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          if (( ${#missing[@]} > 0 )); then
+            printf 'Incomplete signing configuration. Missing secrets: %s\n' "${missing[*]}" >&2
+            exit 1
+          fi
 
           KEYSTORE_PATH="$RUNNER_TEMP/voice-sip-agent-signing.keystore"
+          trap 'rm -f "$KEYSTORE_PATH"' EXIT
           printf '%s' "$ANDROID_KEYSTORE_BASE64" | base64 --decode > "$KEYSTORE_PATH"
           test -s "$KEYSTORE_PATH"
 
@@ -97,7 +117,11 @@ jobs:
           mv "$RUNNER_TEMP/voice-sip-agent-signed.apk" "$APK_PATH"
           "$APKSIGNER" verify --verbose "$APK_PATH"
           keytool -printcert -jarfile "$APK_PATH" | grep -E 'Owner:|Issuer:|SHA256:'
-          rm -f "$KEYSTORE_PATH"
+          echo "mode=repository-keystore" >> "$GITHUB_OUTPUT"
+          {
+            echo "### APK signing"
+            echo "- APK signed and verified with the repository keystore."
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Verify APK output and checksum
         run: |
@@ -106,10 +130,10 @@ jobs:
           ls -lh app/build/outputs/apk/debug/*.apk
           sha256sum app/build/outputs/apk/debug/*.apk
 
-      - name: Upload signed debug APK artifact
+      - name: Upload debug APK artifact
         uses: actions/upload-artifact@v4
         with:
-          name: voice-sip-agent-selfhost-signed-debug-apk
+          name: voice-sip-agent-debug-apk
           path: app/build/outputs/apk/debug/*.apk
           if-no-files-found: error
           retention-days: 14
