@@ -34,6 +34,21 @@ export async function handleCrmRoute(req, res, url, ctx) {
     return ok(res, 200, { tasks: crm.tasks.filter(x => String(x.dueAt || "").slice(0, 10) === today && !["done", "cancelled"].includes(x.status)) }), true;
   }
 
+  if (resource === "contacts" && itemId && action === "messages" && req.method === "GET") {
+    const contact = crm.contacts.find(x => x.id === itemId);
+    return contact ? ok(res, 200, { messages: Array.isArray(contact.previousMessages) ? contact.previousMessages : [] }) : fail(res, 404, "contact_not_found"), true;
+  }
+
+  if (resource === "contacts" && itemId && action === "call-summary" && req.method === "PATCH") {
+    const contact = crm.contacts.find(x => x.id === itemId);
+    if (!contact) return fail(res, 404, "contact_not_found"), true;
+    contact.previousCallSummary = cleanString(b.summary, 4000);
+    contact.lastCallAt = b.lastCallAt || new Date().toISOString();
+    contact.updatedAt = new Date().toISOString();
+    await ctx.save();
+    return ok(res, 200, { contact }), true;
+  }
+
   const specs = {
     contacts: ["contacts", ["name","phone","email","jobTitle","company","professionalEmail","previousMessages","previousCallSummary","nextSendAt","tags","notes"]],
     filters: ["filters", ["name","description","rules","enabled"]],
@@ -192,21 +207,6 @@ export async function handleCrmRoute(req, res, url, ctx) {
       recentMessages: crm.outbox.slice(-100).reverse(),
       marketing: { queued: crm.outbox.filter(x => x.status === "queued").length, failed: crm.outbox.filter(x => x.status === "failed").length }
     }), true;
-  }
-
-  if (resource === "contacts" && itemId && action === "messages" && req.method === "GET") {
-    const contact = crm.contacts.find(x => x.id === itemId);
-    return contact ? ok(res, 200, { messages: Array.isArray(contact.previousMessages) ? contact.previousMessages : [] }) : fail(res, 404, "contact_not_found"), true;
-  }
-
-  if (resource === "contacts" && itemId && action === "call-summary" && req.method === "PATCH") {
-    const contact = crm.contacts.find(x => x.id === itemId);
-    if (!contact) return fail(res, 404, "contact_not_found"), true;
-    contact.previousCallSummary = cleanString(b.summary, 4000);
-    contact.lastCallAt = b.lastCallAt || new Date().toISOString();
-    contact.updatedAt = new Date().toISOString();
-    await ctx.save();
-    return ok(res, 200, { contact }), true;
   }
 
   if (resource === "reports" && itemId === "generate" && req.method === "POST") {
