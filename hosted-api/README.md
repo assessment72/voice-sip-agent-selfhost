@@ -101,3 +101,32 @@ Local development without MongoDB still uses SQLite for compatibility and unit t
 The isolated database is `voice_sip_agent_ci`. Vercel Preview can use `MONGODB_TEST_URI` and `MONGODB_TEST_DATABASE` as a fallback when `VERCEL_ENV` is not `production`. Production must use separately provisioned `MONGODB_URI` and `MONGODB_DATABASE` values. The live Atlas GitHub Actions test remains skipped until repository Actions secrets are configured; local/mocked repository tests do not replace the live Atlas test.
 
 This branch is still a Draft PR. CI and repository tests do not certify live carrier calls, SIP/RTP audio, target-device behavior, backup/restore, or production readiness. Do not merge or deploy Production based only on these tests.
+
+## Adasms SMS API (server-side only)
+
+The Hosted Call API can send SMS through the existing Adasms provider endpoint. The provider key is read only from the server environment variable `ADASMS_API_KEY`; it is never returned by an API route and must never be included in Android configuration, Telegram messages, or Git.
+
+Set these values in Vercel Project Settings → Environment Variables:
+
+- `ADASMS_API_KEY`: the newly rotated Adasms API key, stored as a Secret
+- `SMS_ALLOWED_PREFIXES=+9677`: allowed destination prefixes
+- `SMS_DEVICE_SEND_ENABLED=false`: keep device sending disabled until explicitly approved
+- `SMS_DEVICE_ALLOWLIST=`: add only approved device IDs if device sending is later enabled
+
+Send an SMS through the organization API (owner/admin credential only):
+
+```sh
+curl --fail-with-body -X POST \
+  "https://YOUR_HOSTED_API/v1/organizations/YOUR_ORG_ID/sms/send" \
+  -H "Authorization: Bearer $ORG_API_TOKEN" \
+  -H "X-Organization-ID: $ORG_ID" \
+  -H "Idempotency-Key: $(python -c 'import uuid; print(uuid.uuid4())')" \
+  -H "Content-Type: application/json" \
+  -d '{"phone":"+9677XXXXXXX","message":"Your message","consentConfirmed":true}'
+```
+
+The device endpoint `POST /v1/device/sms/send` uses the enrolled device token and remains disabled unless `SMS_DEVICE_SEND_ENABLED=true` and the device ID is explicitly listed in `SMS_DEVICE_ALLOWLIST`. The Android `HostedCallApiClient.sendSms(...)` method is only a client adapter; no SMS is sent unless an application flow invokes it and the server-side gates are enabled.
+
+Each request requires recipient consent and an `Idempotency-Key`. Delivery attempts are recorded in the tenant-scoped MongoDB `sms_messages` collection (or the local SQLite test database). The API stores status, masked phone in responses, provider message ID, timestamps, source, and actor. A repeated key with the same payload does not send a second SMS; reusing it with a different payload returns HTTP 409. Failed sends are not retried automatically; use a new key only after checking the provider and message history.
+
+Check the organization message history with `GET /v1/admin/sms?limit=50`, using the same organization bearer token and `X-Organization-ID` header. No test sends or real outbound SMS are performed by the automated tests.
