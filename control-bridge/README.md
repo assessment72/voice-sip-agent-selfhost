@@ -110,9 +110,14 @@ All routes below use `Authorization: Bearer $VOICX_ADMIN_TOKEN`. Data is stored 
 | Route | Purpose |
 |---|---|
 | `GET/POST /api/v1/crm/contacts` | List/create contacts |
+| `GET /api/v1/crm/contacts/:id/messages` | Read message history for a contact |
+| `PATCH /api/v1/crm/contacts/:id/call-summary` | Save the previous-call summary and timestamp |
 | `GET/PATCH/DELETE /api/v1/crm/contacts/:id` | Read/update/delete a contact |
 | `POST /api/v1/crm/contacts/search` | Search contacts; optional `filterId` |
 | `GET/POST /api/v1/crm/filters` | Manage reusable audience filters |
+| `GET/POST /api/v1/crm/campaigns` | Save and list marketing campaigns |
+| `GET/POST /api/v1/crm/templates` | Save and list reusable SMS/WhatsApp templates |
+| `GET /api/v1/crm/dashboard` | Today's tasks, upcoming sends, recent calls and messages |
 | `GET/POST /api/v1/crm/tasks`, `GET /api/v1/crm/tasks/today` | Daily follow-up tasks |
 | `POST /api/v1/crm/sms` | Queue an SMS |
 | `POST /api/v1/crm/whatsapp` | Queue a WhatsApp message |
@@ -123,7 +128,8 @@ All routes below use `Authorization: Bearer $VOICX_ADMIN_TOKEN`. Data is stored 
 | `POST /api/v1/crm/publications/haraj` | Save a Haraj listing draft for manual publishing |
 | `POST /api/v1/crm/publications/website` | Save a website publication draft |
 | `GET /api/v1/crm/marketing/status` | Marketing activity summary |
+| `GET/POST /api/v1/crm/reports`, `POST /api/v1/crm/reports/generate` | Store and generate period marketing reports |
 
-Contact fields include name, phone, personal/professional email, job title, company, previous messages, previous-call summary, tags, notes, and next-send time.
+Contact fields include name, phone, personal/professional email, job title, company, previous messages, previous-call summary, tags, notes, and next-send time. Contact opt-out flags (`optedOut` / `doNotContact`) block new outbound SMS/WhatsApp queue requests. The dashboard exposes upcoming queued sends, today's open tasks, recent calls and message activity. Reports aggregate queued, delivered, failed and reply counts for a requested period.
 
 **Delivery and publishing safety:** SMS, WhatsApp, and call endpoints currently create persistent queued jobs only. They do not contact a carrier, WhatsApp Business provider, or SIP endpoint until a provider adapter and credentials are configured. Inbound webhooks require `VOICX_MESSAGING_WEBHOOK_TOKEN` (at least 32 characters). The webhook stores inbound messages; automatic replies require a configured provider adapter and an explicitly enabled automation policy. Haraj and website routes create drafts only; no automated login or publishing is performed. This avoids claiming a message was sent or an advert was published when it was not.
