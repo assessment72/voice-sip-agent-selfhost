@@ -15,6 +15,8 @@ from typing import Literal
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, status
 from fastapi.responses import HTMLResponse, JSONResponse
+from pymongo.errors import DuplicateKeyError
+from sms_provider import SmsProviderError, SmsProviderNotConfigured, send_adasms
 from pydantic import BaseModel, Field
 
 DB = os.getenv("DATABASE_PATH", "./calls.sqlite3")
@@ -30,6 +32,9 @@ QUEUE_TTL = int(os.getenv("QUEUE_TTL_SECONDS", "120"))
 CELL_RING_TIMEOUT = int(os.getenv("CELLULAR_RING_TIMEOUT_SECONDS", "45"))
 SIP_RING_TIMEOUT = int(os.getenv("SIP_RING_TIMEOUT_SECONDS", "45"))
 RATE_LIMIT = int(os.getenv("RATE_LIMIT_PER_MINUTE", "5"))
+SMS_ALLOWED_PREFIXES = tuple(p.strip() for p in os.getenv("SMS_ALLOWED_PREFIXES", "+9677").split(",") if p.strip())
+SMS_DEVICE_SEND_ENABLED = os.getenv("SMS_DEVICE_SEND_ENABLED", "false").lower() in {"1", "true", "yes"}
+SMS_DEVICE_ALLOWLIST = {x.strip() for x in os.getenv("SMS_DEVICE_ALLOWLIST", "").split(",") if x.strip()}
 IP_RATE_LIMIT_PER_MINUTE = int(os.getenv("IP_RATE_LIMIT_PER_MINUTE", "120"))
 GENERAL_RATE_LIMIT_PER_MINUTE = int(os.getenv("GENERAL_RATE_LIMIT_PER_MINUTE", "60"))
 REQUIRE_DISTRIBUTED_RATE_LIMIT = os.getenv(
@@ -74,6 +79,15 @@ def init_db():
           reason_code TEXT, events TEXT NOT NULL DEFAULT '[]',
           UNIQUE(principal, idempotency_key)
         );
+        CREATE TABLE IF NOT EXISTS sms_messages (
+          id TEXT PRIMARY KEY, organization_id TEXT NOT NULL, idempotency_key TEXT NOT NULL,
+          payload_hash TEXT NOT NULL, phone_number TEXT NOT NULL, message TEXT NOT NULL,
+          status TEXT NOT NULL, source TEXT NOT NULL, actor_id TEXT NOT NULL,
+          provider_message_id TEXT, provider_http_status INTEGER, error_code TEXT,
+          created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, sent_at INTEGER,
+          UNIQUE(organization_id, idempotency_key)
+        );
+        CREATE INDEX IF NOT EXISTS idx_sms_org_created ON sms_messages(organization_id, created_at DESC);
         CREATE TABLE IF NOT EXISTS requests (
           id INTEGER PRIMARY KEY AUTOINCREMENT, principal TEXT NOT NULL,
           created_at INTEGER NOT NULL
@@ -168,6 +182,7 @@ async def api_rate_limit(request: Request, call_next):
     path = request.url.path
     method = request.method.upper()
     is_call_create = method == "POST" and path.endswith("/calls")
+    is_sms_send = method == "POST" and path.endswith("/sms/send")
     is_enrollment = method == "POST" and path in {
         "/v1/organizations/bootstrap", "/v1/device/enroll"
     }
@@ -1275,6 +1290,193 @@ def list_organization_calls(limit: int = Query(default=50, ge=1, le=200),
             (principal["organization_id"], limit),
         ).fetchall()
     return {"calls": [dict(row) for row in rows], "count": len(rows)}
+
+
+
+def normalize_sms_number(raw: str) -> str:
+    value = re.sub(r"[\\s().-]", "", raw)
+    if value.startswith("00"):
+        value = "+" + value[2:]
+    elif re.fullmatch(r"7[0-9]{8}", value):
+        value = "+967" + value
+    if not re.fullmatch(r"\\+[1-9][0-9]{7,14}", value):
+        raise HTTPException(status_code=422, detail="invalid_phone_number")
+    if not SMS_ALLOWED_PREFIXES:
+        raise HTTPException(status_code=503, detail="sms_allowlist_not_configured")
+    if not any(value.startswith(prefix) for prefix in SMS_ALLOWED_PREFIXES):
+        raise HTTPException(status_code=403, detail="sms_number_not_allowed")
+    return value
+
+
+def _sms_public(row: dict) -> dict:
+    phone = str(row.get("phone_number", ""))
+    masked = phone[:4] + "****" + phone[-3:] if len(phone) >= 8 else "****"
+    return {
+        "smsId": str(row.get("_id") or row.get("id")),
+        "status": row.get("status"),
+        "phoneMasked": masked,
+        "providerMessageId": row.get("provider_message_id"),
+        "errorCode": row.get("error_code"),
+        "createdAt": row.get("created_at"),
+        "sentAt": row.get("sent_at"),
+    }
+
+
+def _send_sms_for_organization(*, organization_id: str, actor_id: str, source: str,
+                               body: SendSms, idempotency_key: str):
+    if not body.consentConfirmed:
+        raise HTTPException(status_code=422, detail="recipient_consent_required")
+    if not os.getenv("ADASMS_API_KEY", "").strip():
+        raise HTTPException(status_code=503, detail="sms_provider_not_configured")
+    phone = normalize_sms_number(body.phone)
+    payload_hash = hashlib.sha256(
+        (phone + "\\0" + body.message).encode("utf-8")
+    ).hexdigest()
+    sms_id = str(uuid.uuid4())
+    now = int(time.time())
+    row = None
+    created = False
+    if mongodb_enabled():
+        from mongodb_store import collection
+        records = collection("sms_messages")
+        document = {
+            "_id": sms_id, "organization_id": organization_id,
+            "idempotency_key": idempotency_key, "payload_hash": payload_hash,
+            "phone_number": phone, "message": body.message, "status": "sending",
+            "source": source, "actor_id": actor_id, "provider_message_id": None,
+            "provider_http_status": None, "error_code": None,
+            "created_at": now, "updated_at": now, "sent_at": None,
+        }
+        try:
+            records.insert_one(document)
+            row, created = document, True
+        except DuplicateKeyError:
+            row = records.find_one({"organization_id": organization_id, "idempotency_key": idempotency_key})
+            if not row:
+                raise HTTPException(status_code=503, detail="sms_idempotency_store_unavailable")
+            if row.get("payload_hash") != payload_hash:
+                raise HTTPException(status_code=409, detail="idempotency_key_reused")
+    else:
+        with db() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            old = connection.execute(
+                "SELECT * FROM sms_messages WHERE organization_id=? AND idempotency_key=?",
+                (organization_id, idempotency_key),
+            ).fetchone()
+            if old:
+                row = dict(old)
+                if row["payload_hash"] != payload_hash:
+                    connection.rollback()
+                    raise HTTPException(status_code=409, detail="idempotency_key_reused")
+            else:
+                connection.execute(
+                    """INSERT INTO sms_messages
+                       (id,organization_id,idempotency_key,payload_hash,phone_number,message,status,
+                        source,actor_id,created_at,updated_at)
+                       VALUES(?,?,?,?,?,?,'sending',?,?,?,?)""",
+                    (sms_id, organization_id, idempotency_key, payload_hash, phone,
+                     body.message, source, actor_id, now, now),
+                )
+                row = {"id": sms_id, "organization_id": organization_id,
+                       "idempotency_key": idempotency_key, "payload_hash": payload_hash,
+                       "phone_number": phone, "message": body.message, "status": "sending",
+                       "source": source, "actor_id": actor_id, "created_at": now,
+                       "updated_at": now, "sent_at": None}
+                created = True
+            connection.commit()
+
+    if not created:
+        return {**_sms_public(row), "duplicate": True}
+
+    try:
+        provider_result = send_adasms(phone, body.message)
+        status_value = "sent"
+        provider_id = provider_result.get("providerMessageId")
+        provider_status = provider_result.get("httpStatus")
+        error_code = None
+    except SmsProviderNotConfigured:
+        status_value, provider_id, provider_status, error_code = "failed", None, None, "sms_provider_not_configured"
+    except SmsProviderError as exc:
+        status_value, provider_id, provider_status, error_code = "failed", None, exc.http_status, exc.code
+    except Exception:
+        status_value, provider_id, provider_status, error_code = "failed", None, None, "sms_provider_unexpected_error"
+
+    updated = int(time.time())
+    sent_at = updated if status_value == "sent" else None
+    if mongodb_enabled():
+        from mongodb_store import collection
+        collection("sms_messages").update_one(
+            {"_id": sms_id, "organization_id": organization_id},
+            {"$set": {"status": status_value, "provider_message_id": provider_id,
+                      "provider_http_status": provider_status, "error_code": error_code,
+                      "updated_at": updated, "sent_at": sent_at}},
+        )
+        row.update({"status": status_value, "provider_message_id": provider_id,
+                    "provider_http_status": provider_status, "error_code": error_code,
+                    "updated_at": updated, "sent_at": sent_at})
+    else:
+        with db() as connection:
+            connection.execute(
+                """UPDATE sms_messages SET status=?,provider_message_id=?,provider_http_status=?,
+                   error_code=?,updated_at=?,sent_at=? WHERE id=? AND organization_id=?""",
+                (status_value, provider_id, provider_status, error_code, updated, sent_at,
+                 sms_id, organization_id),
+            )
+        row.update({"status": status_value, "provider_message_id": provider_id,
+                    "provider_http_status": provider_status, "error_code": error_code,
+                    "updated_at": updated, "sent_at": sent_at})
+    if status_value != "sent":
+        raise HTTPException(status_code=502 if error_code != "sms_provider_not_configured" else 503,
+                            detail=error_code)
+    return {**_sms_public(row), "duplicate": False}
+
+
+@app.post("/v1/organizations/{organization_id}/sms/send", status_code=202)
+def send_organization_sms(organization_id: str, body: SendSms,
+                          idempotency_key: str = Header(alias="Idempotency-Key", min_length=16, max_length=128),
+                          principal=Depends(organization_principal)):
+    if principal["organization_id"] != organization_id:
+        raise HTTPException(status_code=404, detail="organization_not_found")
+    if principal["role"] not in {"owner", "admin"}:
+        raise HTTPException(status_code=403, detail="insufficient_role")
+    return _send_sms_for_organization(
+        organization_id=organization_id, actor_id=principal["user_id"],
+        source="organization_api", body=body, idempotency_key=idempotency_key,
+    )
+
+
+@app.post("/v1/device/sms/send", status_code=202)
+def send_device_sms(body: SendSms,
+                    idempotency_key: str = Header(alias="Idempotency-Key", min_length=16, max_length=128),
+                    device_ctx=Depends(authenticated_device)):
+    device_id = device_ctx["device_id"]
+    if not SMS_DEVICE_SEND_ENABLED or (SMS_DEVICE_ALLOWLIST and device_id not in SMS_DEVICE_ALLOWLIST):
+        raise HTTPException(status_code=403, detail="device_sms_send_disabled")
+    return _send_sms_for_organization(
+        organization_id=device_ctx["organization_id"], actor_id=device_id,
+        source="android_device", body=body, idempotency_key=idempotency_key,
+    )
+
+
+@app.get("/v1/admin/sms")
+def list_organization_sms(limit: int = Query(default=50, ge=1, le=200),
+                          principal=Depends(organization_principal)):
+    organization_id = principal["organization_id"]
+    if mongodb_enabled():
+        from mongodb_store import collection
+        rows = list(collection("sms_messages").find(
+            {"organization_id": organization_id},
+            {"message": 0, "payload_hash": 0, "idempotency_key": 0},
+        ).sort("created_at", -1).limit(limit))
+    else:
+        with db() as connection:
+            rows = [dict(row) for row in connection.execute(
+                """SELECT id,organization_id,phone_number,status,source,actor_id,
+                          provider_message_id,error_code,created_at,sent_at
+                   FROM sms_messages WHERE organization_id=? ORDER BY created_at DESC LIMIT ?""",
+                (organization_id, limit),
+            ).fetchall()]
+    return {"messages": [_sms_public(row) for row in rows], "count": len(rows)}
 
 
 @app.post("/v1/organizations/{organization_id}/calls", status_code=202)
