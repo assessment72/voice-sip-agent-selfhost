@@ -53,6 +53,20 @@ class GeminiPcmAudioTest {
         assertTrue("alias attenuation was too weak: pass=$passBand stop=$stopBand", stopBand < passBand * 0.08)
     }
 
+    @Test
+    fun `reset discards partial response and starts a clean stream`() {
+        val source = ByteArray(24_000 * 2) { (it * 17).toByte() }
+        val interrupted = GeminiPcmOutputBuffer(frameSamples = 160)
+        interrupted.append(source.copyOfRange(0, 701))
+        interrupted.reset()
+        val afterReset = interrupted.append(source.copyOfRange(701, source.size))
+        val clean = GeminiPcmOutputBuffer(frameSamples = 160)
+            .append(source.copyOfRange(701, source.size))
+
+        assertEquals(clean.size, afterReset.size)
+        assertTrue(afterReset.zip(clean).all { (actual, expected) -> actual.contentEquals(expected) })
+    }
+
     private fun filteredSineRms(frequencyHz: Int): Double {
         val input = ByteArray(24_000 * 2)
         for (i in 0 until 24_000) {

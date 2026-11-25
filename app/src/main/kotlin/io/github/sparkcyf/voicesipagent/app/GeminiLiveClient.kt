@@ -22,6 +22,8 @@ internal class GeminiLiveClient(
     private val onOutputTranscript: (String) -> Unit,
     private val onReady: () -> Unit,
     private val onClosed: (String) -> Unit,
+    private val onTurnComplete: () -> Unit = {},
+    private val onInterrupted: () -> Unit = {},
 ) {
     private val http = OkHttpClient.Builder()
         .readTimeout(0, TimeUnit.MILLISECONDS)
@@ -52,6 +54,13 @@ internal class GeminiLiveClient(
                         .put("model", "models/$model")
                         .put("generationConfig", JSONObject()
                             .put("responseModalities", org.json.JSONArray().put("AUDIO")))
+                        .put("realtimeInputConfig", JSONObject()
+                            .put("automaticActivityDetection", JSONObject()
+                                .put("disabled", false)
+                                .put("startOfSpeechSensitivity", "START_SENSITIVITY_LOW")
+                                .put("endOfSpeechSensitivity", "END_SENSITIVITY_LOW")
+                                .put("prefixPaddingMs", 80)
+                                .put("silenceDurationMs", 420)))
                         .put("systemInstruction", JSONObject().put("parts", org.json.JSONArray()
                             .put(JSONObject().put("text", instructions))))
                         .put("inputAudioTranscription", JSONObject())
@@ -105,8 +114,10 @@ internal class GeminiLiveClient(
             return
         }
         val content = message.optJSONObject("serverContent") ?: return
+        if (content.optBoolean("interrupted", false)) onInterrupted()
         content.optJSONObject("inputTranscription")?.optString("text")?.takeIf { it.isNotBlank() }?.let(onInputTranscript)
         content.optJSONObject("outputTranscription")?.optString("text")?.takeIf { it.isNotBlank() }?.let(onOutputTranscript)
+        if (content.optBoolean("turnComplete", false)) onTurnComplete()
         val parts = content.optJSONObject("modelTurn")?.optJSONArray("parts") ?: return
         for (i in 0 until parts.length()) {
             val inline = parts.optJSONObject(i)?.optJSONObject("inlineData") ?: continue

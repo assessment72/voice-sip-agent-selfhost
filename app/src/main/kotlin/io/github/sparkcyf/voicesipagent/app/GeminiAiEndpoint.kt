@@ -1,5 +1,6 @@
 package io.github.sparkcyf.voicesipagent.app
 
+import android.os.SystemClock
 import io.github.sparkcyf.voicesipagent.voice.AbstractCallLeg
 import io.github.sparkcyf.voicesipagent.voice.CallEndpoint
 import io.github.sparkcyf.voicesipagent.voice.CallLeg
@@ -28,6 +29,14 @@ internal data class AiCallReport(
     val outputAudioBytes: Long = 0,
     val outputDroppedFrames: Long = 0,
     val outputQueuePeak: Int = 0,
+    val lastInputSentAt: Long? = null,
+    val firstOutputAt: Long? = null,
+    val firstOutputQueuedAt: Long? = null,
+    val firstOutputPlayedAt: Long? = null,
+    val turnCompleteAt: Long? = null,
+    val turnResponseCount: Int = 0,
+    val lastTurnResponseMs: Long? = null,
+    val averageTurnResponseMs: Long? = null,
 ) {
     fun telegramText() = buildString {
         appendLine("تقرير مكالمة الذكاء الاصطناعي")
@@ -41,6 +50,14 @@ internal data class AiCallReport(
         appendLine("التقاط وإرسال الصوت: ${inputFrames > 0} (${inputFrames} إطار قُبل من ${inputAttempts}؛ فشل الإرسال: ${inputSendFailures})")
         appendLine("استقبال صوت Gemini: ${outputFrames > 0} (${outputAudioChunks} دفعة، ${outputAudioBytes} بايت؛ ${outputFrames} إطار مشغّل)")
         appendLine("إطارات صوت أُسقطت: ${outputDroppedFrames}؛ أقصى امتلاء للطابور: ${outputQueuePeak}/1000")
+        val responseMs = if (lastInputSentAt != null && firstOutputAt != null) firstOutputAt - lastInputSentAt else null
+        val queuedMs = if (lastInputSentAt != null && firstOutputQueuedAt != null) firstOutputQueuedAt - lastInputSentAt else null
+        val playbackMs = if (lastInputSentAt != null && firstOutputPlayedAt != null) firstOutputPlayedAt - lastInputSentAt else null
+        appendLine("زمن وصول أول صوت Gemini بعد آخر إطار دخل: ${responseMs?.let { "$it مللي ثانية" } ?: "غير متاح"}")
+        appendLine("زمن وضع أول صوت في الطابور: ${queuedMs?.let { "$it مللي ثانية" } ?: "غير متاح"}")
+        appendLine("زمن أول تشغيل بعد آخر إطار دخل: ${playbackMs?.let { "$it مللي ثانية" } ?: "غير متاح"}")
+        if (turnResponseCount > 0) appendLine("زمن الرد لكل جولة: ${lastTurnResponseMs} مللي ثانية؛ المتوسط: ${averageTurnResponseMs} مللي ثانية؛ عدد الجولات: $turnResponseCount")
+        if (turnCompleteAt != null) appendLine("إشارة اكتمال دور Gemini: مسجلة (لا تمثل بالضرورة نهاية كلام الطرف الآخر)")
         if (inputText.isNotBlank()) appendLine("آخر كلام الطرف الآخر: ${inputText.take(500)}")
         if (outputText.isNotBlank()) appendLine("آخر رد Gemini: ${outputText.take(500)}")
     }.take(3900)
@@ -154,10 +171,43 @@ internal class GeminiAiEndpoint(
         @Volatile private var failureDetail = ""
         private var inputText = ""
         private var outputText = ""
+		private var turnCompleteAt: Long? = null
 		private val openingTurnStarted = AtomicBoolean(false)
 		private val prompt = """أنت سكرتير أعمال ومساعد مبيعات متخصص في تسويق توريد الديزل والوقود للشركات والمشاريع ومحطات الوقود والمصانع والمقاولين.
 
-أسلوبك: تحدث بالعربية باللهجة اليمنية الطبيعية والمفهومة، بنبرة مهنية وودودة، وردود قصيرة ومباشرة. لا تكن آلياً ولا تكرر العبارات، ولا تضغط على العميل. افهم احتياجه قبل عرض أي خطوة.
+        أسلوبك: تحدث بالعربية باللهجة اليمنية الطبيعية والمفهومة، بنبرة مهنية وودودة، وردود قصيرة ومباشرة. لا تكن آلياً ولا تكرر العبارات، ولا تضغط على العميل. افهم احتياجه قبل عرض أي خطوة.
+
+        إدارة الحوار الصوتي الطبيعي:
+        - تعامل مع المكالمة كحوار بشري حي، وليس كنموذج أسئلة وأجوبة أو رسالة تسويقية مسجلة.
+        - استمع إلى المعنى والسياق ونبرة الكلام، وليس إلى الكلمات المنفردة فقط. لاحظ مؤشرات الاهتمام أو التردد أو الاستعجال أو عدم الاهتمام، لكن لا تدّعِ أنك حللت مشاعر الشخص ولا تجزم بما يشعر به.
+        - لا تبدأ الرد على كلمة قصيرة أو تردد أو ضوضاء. إذا بدا الكلام غير مكتمل، انتظر لحظة قصيرة أو اطلب التوضيح بلطف.
+        - إذا كان التفريغ أو الصوت غير واضح أو احتوى كلمات متناقضة، لا تخمّن ولا تبنِ جواباً على كلمة مشكوك فيها. قل باختصار: «عذراً، لم أسمع الجزء الأخير بوضوح، ممكن تعيده؟».
+        - أظهر أنك فهمت كلام الشخص أحياناً بعبارة قصيرة وطبيعية مثل «فهمت عليك» أو «يعني احتياجكم هو...»، لكن لا تكرر نفس العبارة في كل رد.
+        - أجب عن سؤال الشخص أولاً قبل الانتقال إلى هدف التأهيل. إذا صحح معلومة أو غيّر الموضوع، اتبع التصحيح والموضوع الجديد ثم ارجع للهدف فقط عندما يكون مناسباً.
+        - اسأل سؤالاً واحداً فقط في كل دور. لا تجمع الاسم والمدينة والكمية وموعد التوريد في سؤال واحد.
+        - بعد كل إجابة مهمة، اترك مساحة للطرف الآخر. لا تبدأ سؤالاً جديداً قبل أن ينتهي من فكرته.
+        - اجعل معظم الردود جملة أو جملتين قصيرتين. لا تستخدم قوائم طويلة أو شرحاً تسويقياً متواصلاً.
+        - إذا بدأ الشخص بالكلام أثناء ردك، توقف عن الكلام فوراً واستمع. لا تكمل الجملة القديمة ولا تدافع عن ردك السابق، وابنِ ردك التالي على الكلام الجديد.
+        - إذا كان الشخص مستعجلاً، اختصر واسأله إن كان يفضل تسجيل طلب مختصر. إذا كان متردداً، وضّح الخطوة التالية دون ضغط. إذا كان منزعجاً، اعتذر باختصار وخفف الأسئلة.
+        - لا تعتبر «نعم» أو «طيب» موافقة على كل شيء. تأكد من المقصود إذا كانت الإجابة مختصرة أو تحتمل أكثر من معنى.
+        - احتفظ بملخص داخلي محدث للمعلومات المؤكدة، ولا تكرر سؤالاً أجاب عنه الشخص. إذا صحح معلومة، استبدل القديمة فوراً.
+        - استخدم العربية الطبيعية المفهومة بلهجة يمنية خفيفة، وتجنب المبالغة في اللهجة أو تقليد ألفاظ الشخص بطريقة مصطنعة.
+        - لا تقل «بحسب تحليلي لمشاعرك» أو «أفهم أنك غاضب». أظهر الفهم عملياً من خلال الرد المناسب.
+        - إذا قال الشخص إنه غير مهتم أو مشغول أو يريد إنهاء المكالمة، احترم قراره وأنهِ المكالمة فوراً وبأدب.
+
+        التعبير الصوتي:
+        - تحدث بصوت دافئ وطبيعي ومهني، كموظف مبيعات حقيقي يتحدث عبر الهاتف، وليس كقارئ نص أو إعلان.
+        - غيّر النبرة حسب الموقف: ودودة عند الترحيب، هادئة عند الاستماع، مطمئنة عند التوضيح، ومختصرة ومحترمة عند إنهاء المكالمة.
+        - استخدم سرعة كلام متوسطة وواضحة تناسب الهاتف. أبطئ قليلاً عند ذكر رقم أو كمية أو مدينة أو موعد.
+        - استخدم وقفات قصيرة طبيعية بين الجمل وبعد السؤال، ولا تملأ الصمت بكلام زائد.
+        - أبرز المعلومات المهمة باعتدال من خلال النبرة، دون رفع الصوت أو استخدام نبرة إعلانية.
+        - عبّر عن الاهتمام من خلال الرد المناسب، ولا تكرر «ممتاز» أو «رائع» في كل مرة.
+        - لا تستخدم حماساً مبالغاً فيه ولا نبرة حزينة أو غاضبة أو مسرحية، ولا تقلد انفعال العميل بطريقة مصطنعة.
+        - عند عدم الفهم استخدم نبرة هادئة وغير محرجة، مثل: «عذراً، الصوت ما كان واضحاً عندي، ممكن تعيد الجزء الأخير؟».
+        - عند تردد العميل خفف سرعة الكلام واترك له وقتاً للتفكير. لا ترفع الحماس ولا تضغط عليه.
+        - عند استعجال العميل اختصر الجمل وخفف المقدمات. وعند طلب إنهاء المكالمة استخدم نبرة ختامية قصيرة ومحترمة.
+        - إذا ذكر العميل معلومة مهمة، أظهر أنك التقطتها بتأكيد صوتي قصير ثم تابع بسؤال مناسب.
+        - إذا ذكر رقماً أو كمية، أعدها ببطء مرة واحدة للتأكد من الفهم، دون تكرار مزعج.
 
 هدف المكالمة: التأهل الأولي لفرصة توريد ديزل، فهم نشاط العميل واحتياجه، ثم عرض تسجيل طلب متابعة أو إعداد طلب عرض سعر للمراجعة من الإدارة.
 
@@ -196,7 +246,9 @@ ${context.salesInfo}
                     failureDetail = detail
                     AppLog.w("Gemini Live call failed: $detail")
                     if (state != LegState.ENDED) hangup(HangupCause.NETWORK_ERROR)
-                })
+                },
+                { turnCompleteAt = SystemClock.elapsedRealtime(); port.completeTurn() },
+                { port.interruptOutput() })
             runCatching { client?.connect() }.onFailure {
                 failureDetail = "Gemini client setup failed (${it.javaClass.simpleName})"
                 AppLog.w(failureDetail)
@@ -211,10 +263,13 @@ ${context.salesInfo}
             client?.close()
             publishMedia(null)
             transition(LegState.ENDED, cause)
+            val turnStats = port.responseStats()
             report(AiCallReport(remote.number, context.name.ifBlank { remote.displayName }, context.role, context.company,
                 started, System.currentTimeMillis(), cause, port.inputFrames, port.outputFrames, inputText, outputText,
                 failureDetail, port.inputAttempts, port.inputSendFailures, port.outputAudioChunks, port.outputAudioBytes,
-                port.outputDroppedFrames, port.outputQueuePeak))
+                port.outputDroppedFrames, port.outputQueuePeak, port.lastInputSentAt, port.firstOutputAt,
+                port.firstOutputQueuedAt, port.firstOutputPlayedAt, turnCompleteAt,
+                turnStats.first, turnStats.second, turnStats.third))
             onEnd()
         }
         override fun sendDtmf(digit: Char, durationMs: Int) {}
@@ -232,22 +287,41 @@ ${context.salesInfo}
             @Volatile var outputAudioBytes = 0L
             @Volatile var outputDroppedFrames = 0L
             @Volatile var outputQueuePeak = 0
+            @Volatile var lastInputSentAt: Long? = null
+            @Volatile var firstOutputAt: Long? = null
+            @Volatile var firstOutputQueuedAt: Long? = null
+            @Volatile var firstOutputPlayedAt: Long? = null
+            private var currentTurnFirstOutputAt: Long? = null
+            private val turnResponseLatencies = mutableListOf<Long>()
             override val format = PcmFormat.NARROWBAND
             override val isClockSource = false
             override fun setClockListener(listener: FrameClockListener?) {}
-            override fun readFrame(): ShortArray = output.poll()?.also { outputFrames++ } ?: format.silence()
+            override fun readFrame(): ShortArray = output.poll()?.also {
+                outputFrames++
+                if (firstOutputPlayedAt == null) firstOutputPlayedAt = SystemClock.elapsedRealtime()
+            } ?: format.silence()
             override fun writeFrame(frame: ShortArray) {
                 if (openingTurnStarted.compareAndSet(false, true)) {
-                    val queued = client?.sendClientText("ابدأ المكالمة الآن بتحية قصيرة باللهجة اليمنية. عرّف بنفسك كمساعد مبيعات للديزل دون اختراع اسم شركة، وتحقق بلطف أن الوقت مناسب للحديث، ثم توقف وانتظر رد العميل.") == true
+                    val queued = client?.sendClientText("ابدأ بتحية قصيرة وطبيعية باللهجة اليمنية الخفيفة. عرّف بنفسك كمساعد مبيعات للديزل دون اختراع اسم شركة، واسأل بلطف إن كان الوقت مناسباً لدقيقة واحدة. إذا قال الشخص إنه مشغول فلا تبدأ الأسئلة؛ اعرض وقتاً مناسباً للمتابعة أو أنهِ المكالمة باحترام، ثم توقف واستمع.") == true
                     AppLog.i("Gemini Live call opening turn started=$queued")
                 }
                 inputAttempts++
-                if (client?.sendPcm8(frame) == true) inputFrames++ else inputSendFailures++
+                if (client?.sendPcm8(frame) == true) {
+                    inputFrames++
+                    lastInputSentAt = SystemClock.elapsedRealtime()
+                } else inputSendFailures++
             }
-            fun addOutput(bytes24k: ByteArray) {
+            @Synchronized fun addOutput(bytes24k: ByteArray) {
+                val now = SystemClock.elapsedRealtime()
+                if (firstOutputAt == null) firstOutputAt = now
+                if (currentTurnFirstOutputAt == null) {
+                    currentTurnFirstOutputAt = now
+                    lastInputSentAt?.let { sentAt -> turnResponseLatencies += (now - sentAt).coerceAtLeast(0) }
+                }
                 outputAudioChunks++
                 outputAudioBytes += bytes24k.size
                 for (frame in outputBuffer.append(bytes24k)) {
+                    if (firstOutputQueuedAt == null) firstOutputQueuedAt = SystemClock.elapsedRealtime()
                     if (!output.offer(frame)) {
                         val removed = output.poll()
                         val added = output.offer(frame)
@@ -255,6 +329,17 @@ ${context.salesInfo}
                     }
                     outputQueuePeak = maxOf(outputQueuePeak, output.size)
                 }
+            }
+            @Synchronized fun interruptOutput() {
+                output.clear()
+                outputBuffer.reset()
+                currentTurnFirstOutputAt = null
+                AppLog.i("Gemini Live output interrupted by caller speech")
+            }
+            @Synchronized fun completeTurn() { currentTurnFirstOutputAt = null }
+            @Synchronized fun responseStats(): Triple<Int, Long?, Long?> {
+                val values = turnResponseLatencies.toList()
+                return Triple(values.size, values.lastOrNull(), values.average().takeIf { values.isNotEmpty() }?.toLong())
             }
         }
     }

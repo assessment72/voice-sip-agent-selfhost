@@ -21,6 +21,15 @@ internal class GeminiPcmOutputBuffer(private val frameSamples: Int) {
     private var decimationPhase = 0
 
     @Synchronized
+    fun reset() {
+        outputRemainder = ShortArray(0)
+        oddByte = null
+        history.fill(0)
+        historyIndex = 0
+        decimationPhase = 0
+    }
+
+    @Synchronized
     fun append(pcm24kLe: ByteArray): List<ShortArray> {
         if (pcm24kLe.isEmpty()) return emptyList()
 
