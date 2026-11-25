@@ -42,6 +42,8 @@ data class GatewaySettings(
     val registrarPassword: String = "",
     /** SIP extension / DID that receives cellular inbound calls; blank = the SIP username (trunk DID). */
     val inboundTarget: String = "",
+    /** SIP extension / URI dialed when the caller explicitly asks for a human employee. */
+    val humanHandoffTarget: String = "",
     /** Comma-separated; empty = any number may be dialed out. */
     val allowedPrefixes: String = "",
     val busyPolicy: BusyPolicy = BusyPolicy.REJECT,
@@ -117,6 +119,7 @@ class SettingsStore(context: Context) {
         registrarLeaseSec = prefs.getInt("registrar_lease_sec", 600).takeIf { it in 30..86400 } ?: 600,
         registrarPassword = prefs.getString("registrar_password_sealed", null)?.let(::unseal).orEmpty(),
         inboundTarget = prefs.getString("inbound_target", "")!!,
+        humanHandoffTarget = prefs.getString("human_handoff_target", "")!!,
         allowedPrefixes = prefs.getString("allowed_prefixes", "")!!,
         busyPolicy = runCatching { BusyPolicy.valueOf(prefs.getString("busy_policy", "REJECT")!!) }.getOrDefault(BusyPolicy.REJECT),
         audioMethod = prefs.getInt("audio_method", AudioMethod.AUTO).takeIf { it in 0..2 } ?: AudioMethod.AUTO,
@@ -153,6 +156,7 @@ class SettingsStore(context: Context) {
             .putInt("registrar_lease_sec", s.registrarLeaseSec)
             .putString("registrar_password_sealed", seal(s.registrarPassword))
             .putString("inbound_target", s.inboundTarget.trim())
+            .putString("human_handoff_target", s.humanHandoffTarget.trim())
             .putString("allowed_prefixes", s.allowedPrefixes.trim())
             .putString("busy_policy", s.busyPolicy.name)
             .putInt("audio_method", s.audioMethod)
