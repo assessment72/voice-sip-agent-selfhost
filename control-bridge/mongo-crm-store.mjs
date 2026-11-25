@@ -137,7 +137,13 @@ export async function createMongoCrmStore() {
       const set = { updatedAt: new Date().toISOString() };
       for (const key of ["name", "phone", "company", "jobTitle", "city", "email", "notes", "tags"]) if (patch[key] !== undefined) set[key] = patch[key];
       if (set.phone) set.normalizedPhone = phoneKey(set.phone);
-      const result = await contacts.findOneAndUpdate({ ...scope, _id: id, status: { $ne: "archived" } }, { $set: set }, { returnDocument: "after" });
+      let result;
+      try {
+        result = await contacts.findOneAndUpdate({ ...scope, _id: id, status: { $ne: "archived" } }, { $set: set }, { returnDocument: "after" });
+      } catch (error) {
+        if (error?.code === 11000) throw Object.assign(new Error("contact_phone_already_exists"), { status: 409 });
+        throw error;
+      }
       if (!result) throw Object.assign(new Error("contact_not_found"), { status: 404 });
       return pub(result);
     },
