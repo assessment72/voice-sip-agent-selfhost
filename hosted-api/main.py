@@ -1456,7 +1456,7 @@ def send_device_sms(body: SendSms,
                     idempotency_key: str = Header(alias="Idempotency-Key", min_length=16, max_length=128),
                     device_ctx=Depends(authenticated_device)):
     device_id = device_ctx["device_id"]
-    if not SMS_DEVICE_SEND_ENABLED or (SMS_DEVICE_ALLOWLIST and device_id not in SMS_DEVICE_ALLOWLIST):
+    if not SMS_DEVICE_SEND_ENABLED or not SMS_DEVICE_ALLOWLIST or device_id not in SMS_DEVICE_ALLOWLIST:
         raise HTTPException(status_code=403, detail="device_sms_send_disabled")
     return _send_sms_for_organization(
         organization_id=device_ctx["organization_id"], actor_id=device_id,
