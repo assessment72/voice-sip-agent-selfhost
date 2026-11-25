@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [main, feature/voicx-control-api-foundation, feature/direct-telegram-control-single-device, feature/telegram-simcall-balance-ussd]
+    branches: [main, feature/voicx-control-api-foundation, feature/direct-telegram-control-single-device, feature/telegram-simcall-balance-ussd, feature/voicx-crm-customer-followups]
   pull_request:
 
 jobs:
@@ -24,7 +24,10 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 20
-      - run: node control-bridge/smoke-test.mjs
+      - name: Install control bridge dependencies
+        run: npm install --prefix control-bridge --ignore-scripts --no-audit --no-fund
+      - name: Run control bridge smoke tests
+        run: node control-bridge/smoke-test.mjs
 
   android-unit-tests:
     name: Android unit tests
