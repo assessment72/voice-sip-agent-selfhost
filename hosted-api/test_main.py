@@ -433,3 +433,40 @@ def test_adasms_device_send_is_disabled_by_default(tmp_path, monkeypatch):
     )
     assert response.status_code == 403
     assert response.json()["detail"] == "device_sms_send_disabled"
+
+
+def test_adasms_mongodb_records_are_tenant_scoped_and_idempotent(monkeypatch):
+    import mongomock
+    import mongodb_store
+
+    database = mongomock.MongoClient()["sms-test"]
+    records = database["sms_messages"]
+    records.create_index([("organization_id", 1), ("idempotency_key", 1)], unique=True)
+    monkeypatch.setattr(mongodb_store, "collection", lambda name: database[name])
+    monkeypatch.setattr(main, "mongodb_enabled", lambda: True)
+    monkeypatch.setattr(main, "SMS_ALLOWED_PREFIXES", ("+9677",))
+    monkeypatch.setenv("ADASMS_API_KEY", "test-provider-key")
+    sends = []
+    monkeypatch.setattr(main, "send_adasms",
+                        lambda phone, message: sends.append((phone, message)) or {"httpStatus": 200})
+
+    payload = main.SendSms(phone="+967777405578", message="hello", consentConfirmed=True)
+    first = main._send_sms_for_organization(
+        organization_id="org-a", actor_id="owner-a", source="test",
+        body=payload, idempotency_key="sms-idempotency-key-0001",
+    )
+    replay = main._send_sms_for_organization(
+        organization_id="org-a", actor_id="owner-a", source="test",
+        body=payload, idempotency_key="sms-idempotency-key-0001",
+    )
+    other_tenant = main._send_sms_for_organization(
+        organization_id="org-b", actor_id="owner-b", source="test",
+        body=payload, idempotency_key="sms-idempotency-key-0001",
+    )
+
+    assert first["status"] == "sent"
+    assert replay["duplicate"] is True
+    assert other_tenant["duplicate"] is False
+    assert records.count_documents({"organization_id": "org-a"}) == 1
+    assert records.count_documents({"organization_id": "org-b"}) == 1
+    assert len(sends) == 2
