@@ -68,6 +68,50 @@ try {
   r = await request("/api/v1/devices/test-01/calls", admin, { method: "POST", body: "{}" });
   assert.equal(r.status, 501, "real call route must remain disabled");
 
+  r = await request("/api/v1/crm/contacts", admin, {
+    method: "POST", body: JSON.stringify({ name: "Test Customer", phone: "+967700000001",
+      email: "customer@example.test", jobTitle: "Engineer", company: "Example Co",
+      professionalEmail: "work@example.test", previousMessages: [], previousCallSummary: "Initial call",
+      nextSendAt: "2026-12-01T10:00:00Z" })
+  });
+  assert.equal(r.status, 201, "CRM contact creation");
+  const { contact } = await r.json();
+  assert.equal(contact.phone, "+967700000001");
+
+  r = await request("/api/v1/crm/contacts/search", admin, {
+    method: "POST", body: JSON.stringify({ query: "Test Customer" })
+  });
+  assert.equal(r.status, 200);
+  assert.equal((await r.json()).contacts.length, 1);
+
+  r = await request("/api/v1/crm/sms", admin, {
+    method: "POST", body: JSON.stringify({ contactId: contact.id, message: "Hello" })
+  });
+  assert.equal(r.status, 202, "SMS should be queued, not falsely reported as sent");
+  const sms = await r.json();
+  assert.equal(sms.job.status, "queued");
+  assert.equal(sms.job.provider, "not_configured");
+
+  r = await request("/api/v1/crm/tasks", admin, {
+    method: "POST", body: JSON.stringify({ title: "Follow up", dueAt: new Date().toISOString(), status: "open" })
+  });
+  assert.equal(r.status, 201, "daily task creation");
+
+  r = await request("/api/v1/crm/tasks/today", admin);
+  assert.equal(r.status, 200);
+  assert.equal((await r.json()).tasks.length, 1);
+
+  r = await request("/api/v1/crm/marketing/status", admin);
+  assert.equal(r.status, 200);
+  const marketing = await r.json();
+  assert.equal(marketing.contacts, 1);
+  assert.equal(marketing.sms, 1);
+
+  r = await request("/api/v1/crm/publications/haraj", admin, {
+    method: "POST", body: JSON.stringify({ title: "Listing", content: "Draft content" })
+  });
+  assert.equal(r.status, 202, "Haraj publishing must remain draft/manual review");
+
   console.log("Voicx bridge smoke test passed");
 } finally {
   child.kill("SIGTERM");
