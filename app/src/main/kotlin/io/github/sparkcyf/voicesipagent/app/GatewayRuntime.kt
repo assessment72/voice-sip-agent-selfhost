@@ -132,10 +132,12 @@ class GatewayRuntime private constructor(context: Context) {
         report = { onAiReport?.invoke(it.telegramText()) },
     ).apply {
         onHandoffRequested = {
-            val destination = settings.humanHandoffTarget.trim()
             val employeeEndpoint = sip
+            val destination = settings.humanHandoffTarget.trim().ifBlank {
+                if (settings.serverMode) "employee" else ""
+            }
             val activeBridge = bridge
-            destination.isNotBlank() && employeeEndpoint != null &&
+            destination.isNotBlank() && employeeEndpoint?.status?.ready == true &&
                 settings.aiAutoAnswer && activeBridge?.handoffTo(employeeEndpoint, destination) == true
         }
         onHangupRequested = {
