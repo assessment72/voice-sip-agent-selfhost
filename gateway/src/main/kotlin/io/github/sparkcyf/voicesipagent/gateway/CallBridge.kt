@@ -223,7 +223,12 @@ class CallBridge(
                 s.media?.stop()
                 s.media = null
                 s.mediaTimer?.cancel(false)
-                s.mediaTimer = null
+                s.mediaTimer = executor.schedule({
+                    if (session === s && s.media == null) {
+                        log("$"+"s: employee media did not come up")
+                        endSession(s, HangupCause.INTERNAL_ERROR)
+                    }
+                }, config.mediaSetupTimeoutMs, TimeUnit.MILLISECONDS)
                 previous?.takeIf { it.state != LegState.ENDED }?.hangup(HangupCause.CANCELLED)
                 log("employee answered; media switched from Gemini to SIP")
             }
