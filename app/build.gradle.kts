@@ -75,4 +75,6 @@ dependencies {
     implementation(libs.okhttp)
     testImplementation(libs.junit)
     testImplementation(libs.mockito.core)
+    // Use a real JSON implementation in local JVM tests instead of Android's mockable stubs.
+    testImplementation("org.json:json:20250517")
 }
