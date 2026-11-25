@@ -4,19 +4,18 @@ import android.content.Context
 import android.content.Intent
 import io.github.sparkcyf.voicesipagent.privileged.CallAccess
 import io.github.sparkcyf.voicesipagent.telephony.CallSnapshot
-import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.mockito.Mockito.*
 
 class GatewayServicePolicyTest {
-    @Test fun companionStandbyPersistsButSwitchingOffStopsService() {
+    @Test fun foregroundHostPersistsWhenTakeoverIsDisabled() {
         val standby = HealthState(effectiveCallAccess = CallAccess.COMPANION, takeover = true)
         assertTrue(standby.needsForegroundService)
-        assertFalse(standby.copy(takeover = false).needsForegroundService)
+        assertTrue(standby.copy(takeover = false).needsForegroundService)
     }
 
-    @Test fun dialerSetupNeedsForegroundEvenBeforeRoleAcquisition() {
+    @Test fun dialerSetupKeepsForegroundHostBeforeAndAfterRoleAcquisition() {
         val selected = HealthState(effectiveCallAccess = CallAccess.DIALER, holdsDialer = false)
         assertTrue(selected.needsForegroundService)
         assertTrue(selected.copy(holdsDialer = true).needsForegroundService)
@@ -24,19 +23,19 @@ class GatewayServicePolicyTest {
         assertTrue(reminder.needsForegroundService)
         assertTrue(reminder.copy(effectiveCallAccess =
             CallAccess.effective(CallAccess.COMPANION, 34, reminder.holdsDialer)).needsForegroundService)
-        assertFalse(reminder.copy(holdsDialer = false).needsForegroundService)
+        assertTrue(reminder.copy(holdsDialer = false).needsForegroundService)
     }
 
-    @Test fun losingRoleKeepsOwnedCallCleanupButOtherCallsDoNotKeepServiceAlive() {
+    @Test fun foregroundHostDoesNotDependOnCallOwnershipOrSessionState() {
         val lost = HealthState(effectiveCallAccess = CallAccess.DIALER, holdsDialer = false,
             takeover = false, calls = CallSnapshot(count = 1, owned = 1))
         assertTrue(lost.needsForegroundService)
-        assertFalse(lost.copy(calls = CallSnapshot(count = 1, owned = 0)).needsForegroundService)
-        assertFalse(lost.copy(calls = CallSnapshot()).needsForegroundService)
+        assertTrue(lost.copy(calls = CallSnapshot(count = 1, owned = 0)).needsForegroundService)
+        assertTrue(lost.copy(calls = CallSnapshot()).needsForegroundService)
         assertTrue(lost.copy(calls = CallSnapshot(), session = "SIP call finishing").needsForegroundService)
     }
 
-    @Test fun switchAndRoleChangesRequestServiceStopAndRestart() {
+    @Test fun switchAndRoleChangesKeepRequestingTheForegroundHostWithoutStoppingIt() {
         val context = mock(Context::class.java)
         mockConstruction(Intent::class.java).use {
             val companion = HealthState(effectiveCallAccess = CallAccess.COMPANION)
@@ -47,8 +46,8 @@ class GatewayServicePolicyTest {
             GatewayService.sync(context, dialer.copy(holdsDialer = true))
             GatewayService.sync(context, dialer.copy(holdsDialer = true, takeover = false))
             GatewayService.sync(context, dialer.copy(holdsDialer = false, takeover = false))
-            verify(context, times(4)).startForegroundService(any(Intent::class.java))
-            verify(context, times(2)).stopService(any(Intent::class.java))
+            verify(context, times(6)).startForegroundService(any(Intent::class.java))
+            verify(context, never()).stopService(any(Intent::class.java))
         }
     }
 }
