@@ -60,8 +60,8 @@ internal data class AiCallReport(
         appendLine("التقاط وإرسال الصوت: ${inputFrames > 0} (${inputFrames} إطار قُبل من ${inputAttempts}؛ فشل الإرسال: ${inputSendFailures})")
         appendLine("استقبال صوت Gemini: ${outputFrames > 0} (${outputAudioChunks} دفعة، ${outputAudioBytes} بايت؛ ${outputFrames} إطار مشغّل)")
         appendLine("إطارات صوت أُسقطت: ${outputDroppedFrames}؛ أقصى امتلاء للطابور: ${outputQueuePeak}/1000")
-        // The opening greeting may arrive before any caller audio, while lastInputSentAt
-        // is updated throughout the call. Do not report a negative cross-call duration.
+        // Measure first-response latency from the detected end of caller speech, not from
+        // the last continuously streamed input frame (which may occur after Gemini responds).
         val responseMs = if (lastSpeechEndAt != null && firstOutputAt != null) (firstOutputAt - lastSpeechEndAt).takeIf { it >= 0 } else null
         val queuedMs = if (lastSpeechEndAt != null && firstOutputQueuedAt != null) (firstOutputQueuedAt - lastSpeechEndAt).takeIf { it >= 0 } else null
         val playbackMs = if (lastSpeechEndAt != null && firstOutputPlayedAt != null) (firstOutputPlayedAt - lastSpeechEndAt).takeIf { it >= 0 } else null
@@ -425,7 +425,7 @@ ${context.salesInfo}
             val clean = text.trim().replace(Regex("\\s+"), " ")
             if (clean.isBlank()) return
             synchronized(transcriptLock) {
-                if (conversationTranscript.isNotEmpty()) conversationTranscript.append('\\n')
+                if (conversationTranscript.isNotEmpty()) conversationTranscript.append('\n')
                 conversationTranscript.append(speaker).append(": ").append(clean)
             }
         }
