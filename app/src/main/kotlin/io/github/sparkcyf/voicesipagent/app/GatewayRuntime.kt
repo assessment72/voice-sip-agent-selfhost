@@ -141,7 +141,7 @@ class GatewayRuntime private constructor(context: Context) {
                 settings.aiAutoAnswer && activeBridge?.handoffTo(employeeEndpoint, destination) == true
         }
         onHangupRequested = {
-            if (bridge?.hangupActive() != true) gemini.stop()
+            if (bridge?.hangupActive() != true) stop()
         }
     }
     @Volatile var onAiReport: ((String) -> Unit)? = null
