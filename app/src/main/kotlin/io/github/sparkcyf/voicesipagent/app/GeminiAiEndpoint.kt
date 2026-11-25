@@ -50,9 +50,11 @@ internal data class AiCallReport(
         appendLine("التقاط وإرسال الصوت: ${inputFrames > 0} (${inputFrames} إطار قُبل من ${inputAttempts}؛ فشل الإرسال: ${inputSendFailures})")
         appendLine("استقبال صوت Gemini: ${outputFrames > 0} (${outputAudioChunks} دفعة، ${outputAudioBytes} بايت؛ ${outputFrames} إطار مشغّل)")
         appendLine("إطارات صوت أُسقطت: ${outputDroppedFrames}؛ أقصى امتلاء للطابور: ${outputQueuePeak}/1000")
-        val responseMs = if (lastInputSentAt != null && firstOutputAt != null) firstOutputAt - lastInputSentAt else null
-        val queuedMs = if (lastInputSentAt != null && firstOutputQueuedAt != null) firstOutputQueuedAt - lastInputSentAt else null
-        val playbackMs = if (lastInputSentAt != null && firstOutputPlayedAt != null) firstOutputPlayedAt - lastInputSentAt else null
+        // The opening greeting may arrive before any caller audio, while lastInputSentAt
+        // is updated throughout the call. Do not report a negative cross-call duration.
+        val responseMs = if (lastInputSentAt != null && firstOutputAt != null) (firstOutputAt - lastInputSentAt).takeIf { it >= 0 } else null
+        val queuedMs = if (lastInputSentAt != null && firstOutputQueuedAt != null) (firstOutputQueuedAt - lastInputSentAt).takeIf { it >= 0 } else null
+        val playbackMs = if (lastInputSentAt != null && firstOutputPlayedAt != null) (firstOutputPlayedAt - lastInputSentAt).takeIf { it >= 0 } else null
         appendLine("زمن وصول أول صوت Gemini بعد آخر إطار دخل: ${responseMs?.let { "$it مللي ثانية" } ?: "غير متاح"}")
         appendLine("زمن وضع أول صوت في الطابور: ${queuedMs?.let { "$it مللي ثانية" } ?: "غير متاح"}")
         appendLine("زمن أول تشغيل بعد آخر إطار دخل: ${playbackMs?.let { "$it مللي ثانية" } ?: "غير متاح"}")
@@ -291,6 +293,7 @@ ${context.salesInfo}
             @Volatile var firstOutputAt: Long? = null
             @Volatile var firstOutputQueuedAt: Long? = null
             @Volatile var firstOutputPlayedAt: Long? = null
+            private var turnInputStartedAt: Long? = null
             private var currentTurnFirstOutputAt: Long? = null
             private val turnResponseLatencies = mutableListOf<Long>()
             override val format = PcmFormat.NARROWBAND
@@ -305,6 +308,7 @@ ${context.salesInfo}
                     val queued = client?.sendClientText("ابدأ بتحية قصيرة وطبيعية باللهجة اليمنية الخفيفة. عرّف بنفسك كمساعد مبيعات للديزل دون اختراع اسم شركة، واسأل بلطف إن كان الوقت مناسباً لدقيقة واحدة. إذا قال الشخص إنه مشغول فلا تبدأ الأسئلة؛ اعرض وقتاً مناسباً للمتابعة أو أنهِ المكالمة باحترام، ثم توقف واستمع.") == true
                     AppLog.i("Gemini Live call opening turn started=$queued")
                 }
+                if (turnInputStartedAt == null) turnInputStartedAt = SystemClock.elapsedRealtime()
                 inputAttempts++
                 if (client?.sendPcm8(frame) == true) {
                     inputFrames++
@@ -316,7 +320,7 @@ ${context.salesInfo}
                 if (firstOutputAt == null) firstOutputAt = now
                 if (currentTurnFirstOutputAt == null) {
                     currentTurnFirstOutputAt = now
-                    lastInputSentAt?.let { sentAt -> turnResponseLatencies += (now - sentAt).coerceAtLeast(0) }
+                    turnInputStartedAt?.let { startedAt -> turnResponseLatencies += (now - startedAt).coerceAtLeast(0) }
                 }
                 outputAudioChunks++
                 outputAudioBytes += bytes24k.size
@@ -334,9 +338,13 @@ ${context.salesInfo}
                 output.clear()
                 outputBuffer.reset()
                 currentTurnFirstOutputAt = null
+                turnInputStartedAt = SystemClock.elapsedRealtime()
                 AppLog.i("Gemini Live output interrupted by caller speech")
             }
-            @Synchronized fun completeTurn() { currentTurnFirstOutputAt = null }
+            @Synchronized fun completeTurn() {
+                currentTurnFirstOutputAt = null
+                turnInputStartedAt = null
+            }
             @Synchronized fun responseStats(): Triple<Int, Long?, Long?> {
                 val values = turnResponseLatencies.toList()
                 return Triple(values.size, values.lastOrNull(), values.average().takeIf { values.isNotEmpty() }?.toLong())
