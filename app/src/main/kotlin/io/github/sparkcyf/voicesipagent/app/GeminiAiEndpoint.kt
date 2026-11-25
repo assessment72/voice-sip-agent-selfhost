@@ -489,8 +489,9 @@ ${context.salesInfo}
                     // a locally detected speech end instead of waiting for the full server window.
                     speechEndSignaled = true
                     lastSpeechEndAt = lastSpeechAt
-                    val queued = client?.sendAudioStreamEnd() == true
-                    AppLog.i("Gemini Live audio stream end queued=$queued")
+                    // Gemini automaticActivityDetection is enabled in the Live setup.
+                    // Keep this local VAD edge for metrics only; sending audioStreamEnd as
+                    // well would race server VAD and finalize the same utterance twice.
                 }
                 inputAttempts++
                 if (client?.sendPcm8(frame) == true) {
