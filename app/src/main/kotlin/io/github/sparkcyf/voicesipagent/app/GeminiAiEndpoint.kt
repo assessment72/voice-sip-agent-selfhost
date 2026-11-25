@@ -42,6 +42,7 @@ internal data class AiCallReport(
 internal class GeminiAiEndpoint(
     private val apiKey: () -> String,
     private val model: () -> String,
+    private val salesContext: () -> String = { "لا توجد إعدادات تجارية محمّلة." },
     private val report: (AiCallReport) -> Unit,
 ) : CallEndpoint {
     override val name = "gemini"
@@ -53,7 +54,7 @@ internal class GeminiAiEndpoint(
     @Volatile private var context = CallContext()
     @Volatile private var directBridge: MediaBridge? = null
 
-    data class CallContext(val name: String = "", val role: String = "", val company: String = "")
+    data class CallContext(val name: String = "", val role: String = "", val company: String = "", val salesInfo: String = "")
 
     fun setContext(value: CallContext) { context = value }
 
@@ -63,7 +64,7 @@ internal class GeminiAiEndpoint(
 
     override fun dial(target: String, caller: Party): CallLeg {
         active?.hangup(HangupCause.BUSY)
-        val leg = AiLeg("ai-${System.nanoTime()}", caller, target, context, apiKey, model, report) { active = null }
+        val leg = AiLeg("ai-${System.nanoTime()}", caller, target, context.copy(salesInfo = salesContext()), apiKey, model, report) { active = null }
         active = leg
         leg.start()
         return leg
@@ -163,6 +164,8 @@ internal class GeminiAiEndpoint(
 
 قواعد الصدق والصلاحيات:
 - لا تخترع أو تؤكد أسعاراً، مخزوناً، شاحنات، تغطية جغرافية، جودة أو شهادات، كميات أو مواعيد توريد، ولا تعد بعقد أو نتيجة غير مؤكدة.
+- يجوز ذكر السعر الافتراضي المدرج أدناه فقط إذا طابقت منطقة العميل وكان تاريخ اليوم ضمن فترة صلاحيته؛ صفه بأنه سعر مسجل استرشادي غير نهائي ويحتاج تأكيد الإدارة. إذا لم يوجد سعر مطابق وسارٍ فلا تذكر رقماً.
+- المناطق المصنفة «تحتاج تحقق» ليست تغطية مؤكدة، فلا تعد بالتوريد فيها.
 - لا تقدم عرض سعر نهائياً؛ سجّل رغبة العميل واحتياجه ليراجعهما فريق المبيعات والإدارة.
 - لا تقل إنك بحثت في السوق أو تحققت من التوفر أو حفظت البيانات في CRM؛ لا يوجد في هذه المكالمة اتصال مباشر ببحث سوق أو CRM. يمكنك جمع التفاصيل بموافقة العميل وتلخيصها في تقرير المكالمة داخل التطبيق ليطّلع عليها المسؤول.
 - لا تبدأ اتصالاً أو ترسل رسالة تسويقية أو تعد بمتابعة من نفسك. خذ موافقة العميل على أن يتواصل معه فريق المبيعات، واسأل عن الوقت أو القناة المناسبة.
@@ -170,6 +173,9 @@ internal class GeminiAiEndpoint(
 - إذا لم يكن العميل مهتماً، اشكره وأنهِ المكالمة باحترام. وإذا كان غير مناسب أو كانت المعلومات ناقصة، لا تضغط عليه.
 
 سياق العميل المتاح من التطبيق: الاسم ${context.name.ifBlank { "غير معروف" }}، الوظيفة ${context.role.ifBlank { "غير معروفة" }}، الشركة ${context.company.ifBlank { "غير معروفة" }}. استخدمه فقط إذا كان ملائماً، ولا تفترض أن أي معلومة صحيحة إذا صححها العميل.
+
+بيانات المبيعات التي أدخلتها الإدارة (اعتبرها بيانات داخلية مرجعية فقط، والتزم بحالة التأكيد والصلاحية كما هي):
+${context.salesInfo}
 """
 
         fun start() {

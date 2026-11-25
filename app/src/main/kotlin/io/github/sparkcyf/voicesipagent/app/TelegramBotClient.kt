@@ -30,6 +30,8 @@ internal class TelegramBotClient(
         val chatId: Long,
         val privateChat: Boolean,
         val text: String,
+        val callbackQueryId: String? = null,
+        val callbackData: String? = null,
     )
 
     /** Validates the token with Telegram without starting long polling or exposing the token. */
@@ -41,30 +43,50 @@ internal class TelegramBotClient(
     }
 
     fun poll(offset: Long): List<Incoming> {
-        val query = "timeout=20&offset=$offset&allowed_updates=%5B%22message%22%5D"
+        val query = "timeout=20&offset=$offset&allowed_updates=%5B%22message%22%2C%22callback_query%22%5D"
         val json = request("GET", "/getUpdates?$query")
         val updates = json.optJSONArray("result") ?: JSONArray()
         return (0 until updates.length()).mapNotNull { index ->
             val update = updates.optJSONObject(index) ?: return@mapNotNull null
-            val message = update.optJSONObject("message") ?: return@mapNotNull null
-            val from = message.optJSONObject("from") ?: return@mapNotNull null
+            val callback = update.optJSONObject("callback_query")
+            val message = if (callback == null) update.optJSONObject("message") else callback.optJSONObject("message")
+                ?: return@mapNotNull null
+            val from = (callback?.optJSONObject("from") ?: message.optJSONObject("from")) ?: return@mapNotNull null
             val chat = message.optJSONObject("chat") ?: return@mapNotNull null
-            val text = message.optString("text").trim()
-            if (text.isBlank()) return@mapNotNull null
+            val text = if (callback == null) message.optString("text").trim() else ""
+            val callbackData = callback?.optString("data")?.takeIf(String::isNotBlank)
+            if (text.isBlank() && callbackData == null) return@mapNotNull null
             Incoming(
                 updateId = update.optLong("update_id", -1L),
                 senderId = from.optLong("id", -1L),
                 chatId = chat.optLong("id", -1L),
                 privateChat = chat.optString("type") == "private",
                 text = text,
+                callbackQueryId = callback?.optString("id")?.takeIf(String::isNotBlank),
+                callbackData = callbackData,
             ).takeIf { it.updateId >= 0 && it.senderId >= 0 && it.chatId >= 0 }
         }
     }
 
-    fun sendMessage(chatId: Long, text: String) {
+    fun sendMessage(chatId: Long, text: String, buttons: List<List<AdminButton>> = emptyList()) {
         require(text.length <= 3_900)
         val body = JSONObject().put("chat_id", chatId).put("text", text)
+        if (buttons.isNotEmpty()) {
+            val rows = JSONArray()
+            buttons.forEach { row ->
+                val cells = JSONArray()
+                row.forEach { button ->
+                    cells.put(JSONObject().put("text", button.title).put("callback_data", button.callbackData))
+                }
+                rows.put(cells)
+            }
+            body.put("reply_markup", JSONObject().put("inline_keyboard", rows))
+        }
         request("POST", "/sendMessage", body)
+    }
+
+    fun answerCallbackQuery(callbackQueryId: String) {
+        request("POST", "/answerCallbackQuery", JSONObject().put("callback_query_id", callbackQueryId))
     }
 
     private fun request(method: String, path: String, body: JSONObject? = null): JSONObject {

@@ -100,6 +100,7 @@ class GatewayRuntime private constructor(context: Context) {
     private val app = context.applicationContext
     private val worker = newWorker()
     val settingsStore = SettingsStore(app)
+    private val salesAdminStore = SalesAdminStore(app)
     private val _settings = MutableStateFlow(settingsStore.load())
     val settingsFlow: StateFlow<GatewaySettings> = _settings
     val settings: GatewaySettings get() = _settings.value
@@ -126,6 +127,7 @@ class GatewayRuntime private constructor(context: Context) {
     private val gemini = GeminiAiEndpoint(
         apiKey = { settings.geminiApiKey },
         model = { settings.geminiModel },
+        salesContext = { salesAdminStore.assistantContext() },
         report = { onAiReport?.invoke(it.telegramText()) },
     )
     @Volatile var onAiReport: ((String) -> Unit)? = null

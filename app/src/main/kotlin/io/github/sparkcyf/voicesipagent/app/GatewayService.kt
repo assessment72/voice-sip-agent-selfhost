@@ -44,6 +44,7 @@ class GatewayService : Service() {
     private var bridgeHeartbeatJob: Job? = null
     private var bridgeCommandJob: Job? = null
     private var foreground = false
+    private val salesAdmin by lazy { SalesAdminController(SalesAdminStore(this)) }
     // Held while the gateway runs in the foreground, so Doze on an aggressive OEM (ZTE/Nubia,
     // Xiaomi, Transsion…) cannot suspend the SIP reader thread.  Without it the socket backs up
     // and the softphone's registration silently drops until the phone next wakes — the battery
@@ -254,13 +255,24 @@ class GatewayService : Service() {
                         telegramUpdateOffset = maxOf(telegramUpdateOffset, update.updateId + 1L)
                         SettingsStore(this@GatewayService).saveTelegramUpdateOffset(telegramUpdateOffset)
                         if (!update.privateChat || update.senderId != allowedUserId) continue
+                        if (update.callbackQueryId != null) {
+                            withContext(Dispatchers.IO) { runCatching { client.answerCallbackQuery(update.callbackQueryId) } }
+                            val response = withContext(Dispatchers.IO) { salesAdmin.handleCallback(update.callbackData.orEmpty(), update.senderId) }
+                            withContext(Dispatchers.IO) { client.sendMessage(update.chatId, response.text, response.buttons) }
+                            continue
+                        }
+                        val adminReply = withContext(Dispatchers.IO) { salesAdmin.handleText(update.text, update.senderId) }
+                        if (adminReply != null) {
+                            withContext(Dispatchers.IO) { client.sendMessage(update.chatId, adminReply.text, adminReply.buttons) }
+                            continue
+                        }
                         val commandParts = update.text.trim().split(Regex("\\s+"), limit = 2)
                         val command = commandParts.firstOrNull().orEmpty().substringBefore('@').lowercase()
                         val argument = commandParts.getOrNull(1).orEmpty().trim()
                         val reply = try {
                             when (command) {
                                 "/start", "/help" ->
-                                    "Voicx control جاهز. الأوامر:\n/status - حالة البوابة\n/sip - حالة SIP\n/calls - حالة المكالمات\n/simcall <رقم> - اتصال SIM وربطه بـ SIP\n/call رقم | اسم | وظيفة | شركة - اتصال SIM مع Gemini\n/ai_status - اختبار اتصال Gemini Live API\n/ai_errors - آخر تشخيصات Gemini\n/auto_answer_on - الرد الآلي بواسطة Gemini\n/auto_answer_off - إيقاف الرد الآلي\n/ai_stop - إيقاف مكالمة Gemini\n/simcall_cancel - إنهاء الاتصال الجاري\n/account - سجل المكالمات والصوت والبطارية\n/simcall_delete <id> - حذف سجل\n/service_on - تشغيل البوابة\n/service_off - إيقاف التحويل"
+                                    "Voicx control جاهز. الأوامر:\n/status - حالة البوابة\n/sip - حالة SIP\n/calls - حالة المكالمات\n/simcall <رقم> - اتصال SIM وربطه بـ SIP\n/call رقم | اسم | وظيفة | شركة - اتصال SIM مع Gemini\n/admin - إعدادات أسعار وتغطية الديزل\n/ai_status - اختبار اتصال Gemini Live API\n/ai_errors - آخر تشخيصات Gemini\n/auto_answer_on - الرد الآلي بواسطة Gemini\n/auto_answer_off - إيقاف الرد الآلي\n/ai_stop - إيقاف مكالمة Gemini\n/simcall_cancel - إنهاء الاتصال الجاري\n/account - سجل المكالمات والصوت والبطارية\n/simcall_delete <id> - حذف سجل\n/service_on - تشغيل البوابة\n/service_off - إيقاف التحويل"
                                 "/status" -> {
                                     val h = GatewayRuntime.get(this@GatewayService).health.value
                                     "Gateway: ${if (h.takeover) "ON" else "OFF"}\nSIP: ${if (h.sip.ready) "ready" else "not ready"}\nActive call: ${h.session != null || h.calls.owned > 0}"
