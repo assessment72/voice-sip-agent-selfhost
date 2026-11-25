@@ -130,21 +130,7 @@ class GatewayRuntime private constructor(context: Context) {
         model = { settings.geminiModel },
         salesContext = { salesAdminStore.assistantContext() },
         report = { onAiReport?.invoke(it.telegramText()) },
-    ).apply {
-        onHandoffRequested = {
-            val employeeEndpoint = sip
-            val destination = settings.humanHandoffTarget.trim().ifBlank {
-                if (settings.serverMode) "employee" else ""
-            }
-            val activeBridge = bridge
-            destination.isNotBlank() && employeeEndpoint != null &&
-                employeeEndpoint.status.ready && settings.aiAutoAnswer &&
-                activeBridge?.handoffTo(employeeEndpoint, destination) == true
-        }
-        onHangupRequested = {
-            if (bridge?.hangupActive() != true) stop()
-        }
-    }
+    )
     @Volatile var onAiReport: ((String) -> Unit)? = null
     /** Built-in SIP user agent. */
     @Volatile private var sip: CallEndpoint? = null
@@ -197,6 +183,23 @@ class GatewayRuntime private constructor(context: Context) {
     private val sipLog = object : SipLog {
         override fun info(msg: String) = AppLog.i("sip: $msg")
         override fun warn(msg: String, t: Throwable?) = AppLog.w("sip: $msg", t)
+    }
+
+    init {
+        gemini.onHandoffRequested = {
+            val employeeEndpoint: CallEndpoint? = sip
+            val destination = settings.humanHandoffTarget.trim().ifBlank {
+                if (settings.serverMode) "employee" else ""
+            }
+            val activeBridge: CallBridge? = bridge
+            destination.isNotBlank() && employeeEndpoint != null &&
+                employeeEndpoint.status.ready && settings.aiAutoAnswer &&
+                activeBridge?.handoffTo(employeeEndpoint, destination) == true
+        }
+        gemini.onHangupRequested = {
+            val activeBridge: CallBridge? = bridge
+            if (activeBridge?.hangupActive() != true) gemini.stop()
+        }
     }
     fun start() = worker.execute {
         if (started) return@execute
