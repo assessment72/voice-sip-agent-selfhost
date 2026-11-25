@@ -97,7 +97,7 @@ internal class GeminiAiEndpoint(
     }
 
     private class AiLeg(
-        id: String, remote: Party, target: String?, private val context: CallContext, key: () -> String, model: () -> String,
+        id: String, remote: Party, target: String?, private val context: CallContext, private val key: () -> String, private val model: () -> String,
         private val report: (AiCallReport) -> Unit, private val onEnd: () -> Unit,
     ) : AbstractCallLeg(id, "gemini", LegDirection.OUTBOUND, remote, target) {
         private val port = AiPort()
