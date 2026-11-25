@@ -66,9 +66,9 @@ internal data class AiCallReport(
         val responseMs = if (firstInputSentAt != null && firstOutputAt != null) (firstOutputAt - firstInputSentAt).takeIf { it >= 0 } else null
         val queuedMs = if (firstInputSentAt != null && firstOutputQueuedAt != null) (firstOutputQueuedAt - firstInputSentAt).takeIf { it >= 0 } else null
         val playbackMs = if (firstInputSentAt != null && firstOutputPlayedAt != null) (firstOutputPlayedAt - firstInputSentAt).takeIf { it >= 0 } else null
-        appendLine("زمن وصول أول صوت Gemini بعد آخر إطار دخل: ${responseMs?.let { "$it مللي ثانية" } ?: "غير متاح"}")
-        appendLine("زمن وضع أول صوت في الطابور: ${queuedMs?.let { "$it مللي ثانية" } ?: "غير متاح"}")
-        appendLine("زمن أول تشغيل بعد آخر إطار دخل: ${playbackMs?.let { "$it مللي ثانية" } ?: "غير متاح"}")
+        appendLine("زمن وصول أول صوت Gemini بعد أول إطار دخل: ${responseMs?.let { "$it مللي ثانية" } ?: "غير متاح"}")
+        appendLine("زمن وضع أول إطار صوت في الطابور: ${queuedMs?.let { "$it مللي ثانية" } ?: "غير متاح"}")
+        appendLine("زمن أول تشغيل بعد أول إطار دخل: ${playbackMs?.let { "$it مللي ثانية" } ?: "غير متاح"}")
         appendLine("عدد جولات الحوار المكتملة: $turnCount")
         if (turnResponseCount > 0) appendLine("زمن استجابة Gemini بعد نهاية كلام العميل: ${lastTurnResponseMs} مللي ثانية؛ المتوسط: ${averageTurnResponseMs} مللي ثانية؛ عدد الجولات المقاسة: $turnResponseCount")
         if (lastTurnSpeechDurationMs != null) appendLine("مدة كلام العميل في آخر جولة: ${lastTurnSpeechDurationMs} مللي ثانية؛ المتوسط: ${averageTurnSpeechDurationMs} مللي ثانية")
