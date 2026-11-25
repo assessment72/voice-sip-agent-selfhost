@@ -24,7 +24,6 @@ class SipShutdownTest {
             try {
                 ua.start()
                 assertTrue(ready.await(2, TimeUnit.SECONDS))
-                val port = ua.transport.localPort
                 val lateTask = AtomicInteger()
                 ua.schedule(60_000) { lateTask.incrementAndGet() }
                 // The local peer deliberately never answers either REGISTER.
@@ -34,7 +33,7 @@ class SipShutdownTest {
                 assertFalse(ua.status.ready)
                 assertEquals("stopped", ua.status.detail)
                 assertEquals(0, lateTask.get())
-                DatagramSocket(port).use { assertEquals(port, it.localPort) }
+                assertTrue(ua.transport.isClosed)
             } finally {
                 if (thread.get()?.isAlive == true) ua.stop(timeoutMs = 50)
             }

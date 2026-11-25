@@ -57,6 +57,12 @@ data class GatewaySettings(
     val serverMode: Boolean = true,
     /** UI language: "ru" or "en". Pure UI preference, no SIP restart. */
     val uiLanguage: String = "ru",
+    /** Telegram Bot API voice-message fallback; token is sealed with Android Keystore. */
+    val telegramVoiceEnabled: Boolean = false,
+    val telegramBotToken: String = "",
+    val telegramPrivateChatId: String = "",
+    /** HTTPS base URL of the deployed Vercel signaling project. */
+    val webRtcServerUrl: String = "",
 ) {
     val sipConfigured: Boolean get() =
         serverMode || (server.isNotBlank() && username.isNotBlank() && password.isNotEmpty())
@@ -111,6 +117,10 @@ class SettingsStore(context: Context) {
         // First run (key absent): default to the system language — Russian locale → "ru",
         // anything else → "en". Once the user picks a language it is saved and always wins.
         uiLanguage = prefs.getString("ui_lang", null) ?: systemDefaultUiLang(),
+        telegramVoiceEnabled = prefs.getBoolean("telegram_voice_enabled", false),
+        telegramBotToken = prefs.getString("telegram_bot_token_sealed", null)?.let(::unseal).orEmpty(),
+        telegramPrivateChatId = prefs.getString("telegram_private_chat_id", "")!!,
+        webRtcServerUrl = prefs.getString("webrtc_server_url", "")!!,
     )
 
     fun save(s: GatewaySettings) {
@@ -137,6 +147,10 @@ class SettingsStore(context: Context) {
             .putString("sip_stack", s.sipStack.id)
             .putBoolean("server_mode", s.serverMode)
             .putString("ui_lang", s.uiLanguage)
+            .putBoolean("telegram_voice_enabled", s.telegramVoiceEnabled)
+            .putString("telegram_bot_token_sealed", seal(s.telegramBotToken))
+            .putString("telegram_private_chat_id", s.telegramPrivateChatId.trim())
+            .putString("webrtc_server_url", s.webRtcServerUrl.trim().trimEnd('/'))
             .apply()
     }
 

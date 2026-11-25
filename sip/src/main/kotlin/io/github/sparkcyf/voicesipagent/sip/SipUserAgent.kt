@@ -107,6 +107,10 @@ class SipUserAgent(
 
     /** Unregisters, hangs up all calls and releases sockets. Blocks up to [timeoutMs]. */
     fun stop(timeoutMs: Long = 2000) {
+        if (executor.isShutdown) {
+            if (::transport.isInitialized) transport.close()
+            return
+        }
         val done = CountDownLatch(1)
         post {
             if (!started) { done.countDown(); return@post }
@@ -116,13 +120,35 @@ class SipUserAgent(
             peerExpiry?.cancel(false)
             if (config.serverMode) done.countDown() else sendRegister(0, null) { done.countDown() }
         }
-        done.await(timeoutMs, TimeUnit.MILLISECONDS)
-        post {
+        done.await(timeoutMs.coerceAtLeast(0), TimeUnit.MILLISECONDS)
+
+        // Socket closure is the hard shutdown boundary. Wait for it before returning so callers
+        // can safely bind the port again; the unregister transaction is best-effort and may time out.
+        val closed = CountDownLatch(1)
+        try {
+            executor.execute {
+                try {
+                    if (::transport.isInitialized) transport.close()
+                    started = false
+                    setStatus(false, "stopped")
+                } finally {
+                    closed.countDown()
+                }
+            }
+        } catch (_: java.util.concurrent.RejectedExecutionException) {
             if (::transport.isInitialized) transport.close()
             started = false
             setStatus(false, "stopped")
+            closed.countDown()
         }
-        executor.shutdown()
+        val closeWaitMs = timeoutMs.coerceAtLeast(1000)
+        if (!closed.await(closeWaitMs, TimeUnit.MILLISECONDS)) {
+            // A wedged protocol callback must never leave the UDP port bound indefinitely.
+            if (::transport.isInitialized) transport.close()
+            executor.shutdownNow()
+        } else {
+            executor.shutdown()
+        }
     }
 
     /** Call when the network changes: refreshes our address and re-registers. */

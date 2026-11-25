@@ -19,6 +19,7 @@ internal class SipTransport(
     private val thread = Thread(::loop, "sip-rx").apply { isDaemon = true }
 
     val localPort: Int get() = socket.localPort
+    val isClosed: Boolean get() = socket.isClosed
 
     fun start() = thread.start()
 

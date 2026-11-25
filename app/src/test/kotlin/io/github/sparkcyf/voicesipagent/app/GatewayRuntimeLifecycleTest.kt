@@ -11,8 +11,8 @@ import android.os.Process
 import android.telecom.TelecomManager
 import android.util.Log
 import io.github.sparkcyf.voicesipagent.gateway.CallBridge
-import io.github.sparkcyf.voicesipagent.pjsua2.PjsipConfig
-import io.github.sparkcyf.voicesipagent.pjsua2.PjsipEndpoint
+import io.github.sparkcyf.voicesipagent.sip.SipConfig
+import io.github.sparkcyf.voicesipagent.sip.SipUserAgent
 import io.github.sparkcyf.voicesipagent.privileged.CallAccess
 import io.github.sparkcyf.voicesipagent.privileged.DialerRoleResult
 import io.github.sparkcyf.voicesipagent.privileged.IPrivilegedService
@@ -136,7 +136,7 @@ class GatewayRuntimeLifecycleTest {
             f.runtime.restartSip()
             f.drain()
             verify(bridge).stop()
-            verify(endpoint).stop(releaseTransport = true)
+            verify(endpoint).stop()
             verify(f.network).unregisterNetworkCallback(any(ConnectivityManager.NetworkCallback::class.java))
             verify(f.connector).stop()
             verify(f.helper, never()).becomeDefaultDialer(anyString())
@@ -173,7 +173,7 @@ class GatewayRuntimeLifecycleTest {
             f.runtime.onServiceCreated(f.serviceToken)
             f.runtime.onForegroundStopped(old)
             f.drain()
-            verify(f.endpoints.constructed().single(), never()).stop(anyLong(), anyBoolean())
+            verify(f.endpoints.constructed().single(), never()).stop()
             f.promote()
             f.runtime.onForegroundStopped(f.serviceToken)
             f.drain()
@@ -189,11 +189,11 @@ class GatewayRuntimeLifecycleTest {
         f.runtime.setTakeover(false)
         f.drain()
         assertTrue(f.runtime.health.value.takeoverOffPending)
-        verify(f.endpoints.constructed().single(), never()).stop(anyLong(), anyBoolean())
+        verify(f.endpoints.constructed().single(), never()).stop()
         `when`(f.runtime.cellular.hasCalls).thenReturn(false)
         f.callsChanged(CallSnapshot())
         f.drain()
-        verify(f.endpoints.constructed().single()).stop(releaseTransport = true)
+        verify(f.endpoints.constructed().single()).stop()
         verify(f.bridges.constructed().single()).stop()
         assertFalse(f.runtime.health.value.takeover)
         assertFalse(f.runtime.health.value.takeoverOffPending)
@@ -204,7 +204,7 @@ class GatewayRuntimeLifecycleTest {
         private val workerScopes = mutableListOf<AutoCloseable>()
         lateinit var connector: ShizukuConnector
             private set
-        lateinit var endpoints: MockedConstruction<PjsipEndpoint>
+        lateinit var endpoints: MockedConstruction<SipUserAgent>
             private set
         lateinit var bridges: MockedConstruction<CallBridge>
             private set
@@ -276,8 +276,8 @@ class GatewayRuntimeLifecycleTest {
                 workerScopes += mockConstruction(ComponentName::class.java)
                 workerScopes += mockConstruction(Intent::class.java)
                 workerScopes += mockConstruction(ConnectivityManager.NetworkCallback::class.java)
-                endpoints = mockConstruction(PjsipEndpoint::class.java) { endpoint, construction ->
-                    `when`(endpoint.config).thenReturn(construction.arguments()[0] as PjsipConfig)
+                endpoints = mockConstruction(SipUserAgent::class.java) { endpoint, construction ->
+                    `when`(endpoint.config).thenReturn(construction.arguments()[0] as SipConfig)
                     `when`(endpoint.status).thenReturn(EndpointStatus(false, "test endpoint"))
                 }.also { workerScopes += it }
                 bridges = mockConstruction(CallBridge::class.java).also { workerScopes += it }
