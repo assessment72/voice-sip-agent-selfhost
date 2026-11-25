@@ -83,6 +83,8 @@ Commands:
 - `/start_device phone-01` — ask for a one-time confirmation, then enable that phone's gateway takeover.
 - `/stop_device phone-01` — ask for a one-time confirmation, then disable that phone's gateway takeover.
 
+SMS-only Telegram users are configured separately with `VOICX_SMS_TELEGRAM_ADMIN_IDS`. Configure `VOICX_HOSTED_API_URL`, `VOICX_SMS_ORGANIZATION_ID`, and `VOICX_SMS_ORGANIZATION_TOKEN` on this backend; never place the Adasms provider key here or in the Android app. If the Hosted API preview is protected by Vercel SSO, configure its deployment-protection bypass secret in `VOICX_HOSTED_API_BYPASS_TOKEN` or use an approved custom domain. SMS commands (private chat only): `/sms_help`, `/sms_send +9677xxxxxxx | message | موافق`, and `/sms_history [count]`. The operator must confirm recipient consent in the command before an SMS request is accepted.
+
 CRM-only users are configured separately with `VOICX_CRM_TELEGRAM_ADMIN_IDS`; they cannot control devices unless also listed in `TELEGRAM_ADMIN_IDS`. CRM commands (private chat only): `/crm_help`, `/crm_add name | phone | company | city`, `/crm_search query`, `/crm_never`, `/crm_due`, and `/crm_log phone | outcome | summary | follow-up-ISO`.
 
 Start/stop confirmations expire after 60 seconds and can be used once. Results are sent back to the same private Telegram chat after the phone reports completion. Bot credentials stay on the local bridge host; they are never placed in the APK.
