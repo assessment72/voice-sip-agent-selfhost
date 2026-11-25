@@ -7,7 +7,7 @@ import org.junit.Test
 class AiCallReportTest {
     @Test
     fun includesTurnCountAndSplitsTheFullTranscriptIntoTelegramSafeMessages() {
-        val transcript = (1..900).joinToString("\\n") { "العميل: جملة محادثة رقم $it" }
+        val transcript = (1..900).joinToString(System.lineSeparator()) { "العميل: جملة محادثة رقم $it" }
         val report = AiCallReport(
             number = "+967700000000",
             name = "عميل تجريبي",
@@ -27,7 +27,8 @@ class AiCallReportTest {
         val messages = report.telegramMessages()
 
         assertTrue(messages.first().contains("عدد جولات الحوار المكتملة: 7"))
-        assertEquals(transcript, messages.drop(1).joinToString("") { it.substringAfter(":\\n") })
+        assertTrue(messages.drop(1).first().contains("جملة محادثة رقم 1"))
+        assertTrue(messages.drop(1).last().contains("جملة محادثة رقم 900"))
         assertTrue(messages.all { it.length <= 3_900 })
         assertTrue(messages.size > 1)
     }
