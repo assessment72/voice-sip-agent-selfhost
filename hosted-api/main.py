@@ -1300,12 +1300,12 @@ def list_organization_calls(limit: int = Query(default=50, ge=1, le=200),
 
 
 def normalize_sms_number(raw: str) -> str:
-    value = re.sub(r"[\\s().-]", "", raw)
+    value = re.sub(r"[\s().-]", "", raw)
     if value.startswith("00"):
         value = "+" + value[2:]
     elif re.fullmatch(r"7[0-9]{8}", value):
         value = "+967" + value
-    if not re.fullmatch(r"\\+[1-9][0-9]{7,14}", value):
+    if not re.fullmatch(r"\+[1-9][0-9]{7,14}", value):
         raise HTTPException(status_code=422, detail="invalid_phone_number")
     if not SMS_ALLOWED_PREFIXES:
         raise HTTPException(status_code=503, detail="sms_allowlist_not_configured")
