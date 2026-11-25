@@ -46,6 +46,7 @@ internal data class AiCallReport(
     val turnCount: Int = 0,
     val conversationTranscript: String = "",
     val lastSpeechEndAt: Long? = null,
+    val firstInputSentAt: Long? = null,
 ) {
     fun telegramMessages(): List<String> {
         val summary = buildString {
@@ -62,9 +63,9 @@ internal data class AiCallReport(
         appendLine("إطارات صوت أُسقطت: ${outputDroppedFrames}؛ أقصى امتلاء للطابور: ${outputQueuePeak}/1000")
         // Measure first-response latency from the detected end of caller speech, not from
         // the last continuously streamed input frame (which may occur after Gemini responds).
-        val responseMs = if (lastSpeechEndAt != null && firstOutputAt != null) (firstOutputAt - lastSpeechEndAt).takeIf { it >= 0 } else null
-        val queuedMs = if (lastSpeechEndAt != null && firstOutputQueuedAt != null) (firstOutputQueuedAt - lastSpeechEndAt).takeIf { it >= 0 } else null
-        val playbackMs = if (lastSpeechEndAt != null && firstOutputPlayedAt != null) (firstOutputPlayedAt - lastSpeechEndAt).takeIf { it >= 0 } else null
+        val responseMs = if (firstInputSentAt != null && firstOutputAt != null) (firstOutputAt - firstInputSentAt).takeIf { it >= 0 } else null
+        val queuedMs = if (firstInputSentAt != null && firstOutputQueuedAt != null) (firstOutputQueuedAt - firstInputSentAt).takeIf { it >= 0 } else null
+        val playbackMs = if (firstInputSentAt != null && firstOutputPlayedAt != null) (firstOutputPlayedAt - firstInputSentAt).takeIf { it >= 0 } else null
         appendLine("زمن وصول أول صوت Gemini بعد آخر إطار دخل: ${responseMs?.let { "$it مللي ثانية" } ?: "غير متاح"}")
         appendLine("زمن وضع أول صوت في الطابور: ${queuedMs?.let { "$it مللي ثانية" } ?: "غير متاح"}")
         appendLine("زمن أول تشغيل بعد آخر إطار دخل: ${playbackMs?.let { "$it مللي ثانية" } ?: "غير متاح"}")
@@ -419,7 +420,7 @@ ${context.salesInfo}
                 port.outputDroppedFrames, port.outputQueuePeak, port.lastInputSentAt, port.firstOutputAt,
                 port.firstOutputQueuedAt, port.firstOutputPlayedAt, turnCompleteAt,
                 turnStats.first, turnStats.second, turnStats.third, speechStats.first, speechStats.second,
-                completedTurns.get(), synchronized(transcriptLock) { conversationTranscript.toString() }, port.lastSpeechEndAt))
+                completedTurns.get(), synchronized(transcriptLock) { conversationTranscript.toString() }, port.lastSpeechEndAt, port.firstInputSentAt))
             onEnd()
         }
         private fun appendTranscript(speaker: String, text: String) {
@@ -454,6 +455,7 @@ ${context.salesInfo}
             @Volatile var outputDroppedFrames = 0L
             @Volatile var outputQueuePeak = 0
             @Volatile var lastInputSentAt: Long? = null
+            @Volatile var firstInputSentAt: Long? = null
             @Volatile var firstOutputAt: Long? = null
             @Volatile var firstOutputQueuedAt: Long? = null
             @Volatile var firstOutputPlayedAt: Long? = null
@@ -486,14 +488,16 @@ ${context.salesInfo}
                     // Hybrid VAD: preserve automatic server VAD, but finalize promptly after
                     // a locally detected speech end instead of waiting for the full server window.
                     speechEndSignaled = true
-                    lastSpeechEndAt = now
+                    lastSpeechEndAt = lastSpeechAt
                     val queued = client?.sendAudioStreamEnd() == true
                     AppLog.i("Gemini Live audio stream end queued=$queued")
                 }
                 inputAttempts++
                 if (client?.sendPcm8(frame) == true) {
                     inputFrames++
-                    lastInputSentAt = SystemClock.elapsedRealtime()
+                    val sentAt = SystemClock.elapsedRealtime()
+                    lastInputSentAt = sentAt
+                    if (firstInputSentAt == null) firstInputSentAt = sentAt
                 } else inputSendFailures++
             }
             @Synchronized fun addOutput(bytes24k: ByteArray) {
