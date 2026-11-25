@@ -26,6 +26,13 @@ class MediaBridge(private val a: MediaPort, private val b: MediaPort) {
         private set
     @Volatile var peakB = 0
         private set
+    @Volatile var pumpFailures = 0L
+        private set
+    @Volatile var lastPumpFailure: String = ""
+        private set
+
+    fun diagnostics(): String = "frames=$frames peakA=$peakA peakB=$peakB pumpFailures=$pumpFailures" +
+        (lastPumpFailure.takeIf { it.isNotBlank() }?.let { " lastPumpFailure=$it" } ?: "")
 
     fun start() {
         val m = master
@@ -52,8 +59,10 @@ class MediaBridge(private val a: MediaPort, private val b: MediaPort) {
             peakA = maxOf(peakA, VoiceFormat.peak(fa))
             peakB = maxOf(peakB, VoiceFormat.peak(fb))
             frames++
-        } catch (_: Throwable) {
-            // A failing port must not kill the clock thread; leg teardown stops the bridge.
+        } catch (t: Throwable) {
+            // Keep the clock alive, but retain evidence instead of silently hiding dropped ticks.
+            pumpFailures++
+            lastPumpFailure = "${t.javaClass.simpleName}: ${t.message.orEmpty()}".take(180)
         }
     }
 
