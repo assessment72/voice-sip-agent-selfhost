@@ -1,6 +1,12 @@
 name: Hosted Call API tests
 
 on:
+  push:
+    branches:
+      - feature/evolution-n8n-whatsapp-bridge
+    paths:
+      - "hosted-api/**"
+      - ".github/workflows/hosted-api-ci.yml"
   pull_request:
     paths:
       - "hosted-api/**"
