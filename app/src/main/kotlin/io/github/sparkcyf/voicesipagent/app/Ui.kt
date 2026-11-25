@@ -141,6 +141,8 @@ private val arabicUi = mapOf(
     "Point your softphone at  <this phone's IP>:\$localPort  over UDP." to "وجّه تطبيق الاتصال إلى <عنوان IP لهذا الهاتف>:\$localPort باستخدام UDP.",
     "Empty = no password, anyone may register. Set one before exposing the gateway to the internet, and enter the same password in your softphone." to "تركه فارغاً يعني عدم وجود كلمة مرور وإمكانية تسجيل أي شخص. عيّن كلمة مرور قبل إتاحة البوابة عبر الإنترنت، واستخدمها نفسها في تطبيق الاتصال.",
     "Cellular inbound -> SIP target (blank = username)" to "وجهة مكالمات الشريحة الواردة إلى SIP (فارغ = اسم المستخدم)",
+    "SIP employee extension for Gemini handoff" to "امتداد موظف SIP للتحويل من Gemini",
+    "Enter the employee extension or SIP URI. The caller stays with Gemini until the employee answers; if unanswered, the AI call is restored." to "أدخل الرقم الداخلي للموظف أو SIP URI. يبقى العميل مع Gemini حتى يرد الموظف، وإذا لم يرد يعود الاتصال إلى Gemini.",
     "Allowed dial-out prefixes (comma separated, empty = any)" to "بادئات الأرقام المسموح الاتصال بها عبر الشريحة (افصل بفواصل، فارغ = جميع الأرقام)"
 )
 
