@@ -139,6 +139,7 @@ class GatewayRuntime private constructor(context: Context) {
     private var pendingSettings: GatewaySettings? = null
     private var restartPending = false
     private var loopbackPending: Boolean? = null
+    private var aiAutoAnswerPending: Boolean? = null
     private var setupPending = false
     private var foregroundRequested: Boolean? = null
     private var serviceToken: Any? = null
@@ -406,11 +407,11 @@ class GatewayRuntime private constructor(context: Context) {
             !access -> requirements.problem!!
             h.shizuku != ShizukuConnector.State.CONNECTED -> "Shizuku not connected"
             !audio -> "Selected call audio unavailable: ${h.privilegedDetail}"
-            !h.loopbackTest && !h.sip.ready -> "SIP unavailable: ${h.sip.detail}"
+            !h.loopbackTest && !settings.aiAutoAnswer && !h.sip.ready -> "SIP unavailable: ${h.sip.detail}"
             else -> "Gateway ready"
         }
         val ready = !h.dialerChangeRunning && gatewayEnabled && access && audio && h.shizuku == ShizukuConnector.State.CONNECTED &&
-            (h.loopbackTest || h.sip.ready)
+            (h.loopbackTest || settings.aiAutoAnswer || h.sip.ready)
         _health.update { it.copy(callAccessReady = access, audioReady = audio, cellularReady = ready, readinessDetail = detail) }
         cellular.setReadiness(ready, detail)
         syncForegroundService()
@@ -648,7 +649,9 @@ class GatewayRuntime private constructor(context: Context) {
         }
         // In server mode the SIP side dials whichever phone is registered, so the target only has
         // to be non-empty; "phone" is a readable placeholder when no DID/username is configured.
-        val inboundTarget = s.inboundTarget.ifBlank { s.username.ifBlank { if (s.serverMode) "phone" else "" } }
+        val inboundTarget = s.inboundTarget.ifBlank {
+            s.username.ifBlank { if (s.aiAutoAnswer) "gemini" else if (s.serverMode) "phone" else "" }
+        }
         val b = CallBridge(
             sideA = cellular,
             sideB = sideB,
@@ -734,10 +737,30 @@ class GatewayRuntime private constructor(context: Context) {
         settingsStore.save(updated); _settings.value = updated
     }
 
-    fun setAiAutoAnswer(on: Boolean) = worker.execute {
-        if (hasActiveWork()) { _health.update { it.copy(settingsPending = true) }; return@execute }
+    fun setAiAutoAnswer(on: Boolean, callback: (String) -> Unit = {}) = worker.execute {
+        if (on && settings.geminiApiKey.isBlank()) {
+            callback("تعذر تشغيل الرد الآلي: احفظ مفتاح Gemini API أولاً.")
+            return@execute
+        }
+        if (settings.aiAutoAnswer == on && aiAutoAnswerPending == null) {
+            callback(if (on) "الرد الآلي بواسطة Gemini مفعّل بالفعل." else "الرد الآلي بواسطة Gemini متوقف بالفعل.")
+            return@execute
+        }
+        if (hasActiveWork()) {
+            aiAutoAnswerPending = on
+            _health.update { it.copy(settingsPending = true) }
+            callback("تم قبول الطلب؛ سيُطبق ${if (on) "تشغيل" else "إيقاف"} الرد الآلي بواسطة Gemini بعد انتهاء المكالمة الحالية.")
+            return@execute
+        }
+        applyAiAutoAnswer(on)
+        callback(if (on) "تم تشغيل الرد الآلي للمكالمات الواردة بواسطة Gemini." else "تم إيقاف الرد الآلي بواسطة Gemini.")
+    }
+
+    private fun applyAiAutoAnswer(on: Boolean) {
         settingsStore.save(settings.copy(aiAutoAnswer = on).also { _settings.value = it })
+        AppLog.i("Gemini auto-answer ${if (on) "ON" else "OFF"}")
         rebuildBridge()
+        updateReadiness()
     }
 
     fun startAiCall(number: String, name: String, role: String, company: String) = worker.execute {
@@ -927,9 +950,12 @@ class GatewayRuntime private constructor(context: Context) {
         restartPending = false
         val loopback = loopbackPending
         loopbackPending = null
+        val aiAutoAnswer = aiAutoAnswerPending
+        aiAutoAnswerPending = null
         _health.update { it.copy(settingsPending = false) }
         if (queued != null) applySettings(queued.copy(takeover = settings.takeover))
         if (loopback != null) setLoopbackTest(loopback)
+        if (aiAutoAnswer != null) applyAiAutoAnswer(aiAutoAnswer)
         if (restart) restartSip()
         configureCallAccess()
         updateReadiness()

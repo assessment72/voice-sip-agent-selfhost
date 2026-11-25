@@ -305,8 +305,18 @@ class GatewayService : Service() {
                                     if (diagnostics.isEmpty()) "لا توجد تشخيصات Gemini مسجلة منذ تشغيل التطبيق."
                                     else "آخر تشخيصات Gemini Live (لا تتضمن المفتاح أو الصوت):\n${diagnostics.joinToString("\n")}".take(3_800)
                                 }
-                                "/auto_answer_on" -> { runtime.setAiAutoAnswer(true); "تم قبول تشغيل الرد الآلي بواسطة Gemini." }
-                                "/auto_answer_off" -> { runtime.setAiAutoAnswer(false); "تم إيقاف الرد الآلي بواسطة Gemini." }
+                                "/auto_answer_on" -> {
+                                    runtime.setAiAutoAnswer(true) { result ->
+                                        scope.launch(Dispatchers.IO) { runCatching { client.sendMessage(update.chatId, result) } }
+                                    }
+                                    "جارٍ تفعيل الرد الآلي بواسطة Gemini."
+                                }
+                                "/auto_answer_off" -> {
+                                    runtime.setAiAutoAnswer(false) { result ->
+                                        scope.launch(Dispatchers.IO) { runCatching { client.sendMessage(update.chatId, result) } }
+                                    }
+                                    "جارٍ إيقاف الرد الآلي بواسطة Gemini."
+                                }
                                 "/ai_stop" -> { runtime.stopAiCall(); "تم قبول طلب إيقاف مكالمة Gemini." }
                                 "/call" -> {
                                     val fields = argument.split('|').map { it.trim() }
