@@ -86,8 +86,7 @@ data class HealthState(
      * is a best-effort persistence policy rather than an OS-level guarantee.
      */
     val needsForegroundService: Boolean
-        get() = takeover || takeoverOffPending || takeoverOnPending ||
-            holdsDialer || calls.owned > 0 || session != null
+        get() = true
 }
 
 /**
