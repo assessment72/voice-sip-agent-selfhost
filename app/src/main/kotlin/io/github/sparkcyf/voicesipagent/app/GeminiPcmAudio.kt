@@ -111,3 +111,15 @@ internal class GeminiPcmOutputBuffer(private val frameSamples: Int) {
         }
     }
 }
+
+
+/** One audioStreamEnd per caller turn; reset only when Gemini confirms turn completion. */
+internal class GeminiTurnEndGate {
+    private val signalled = java.util.concurrent.atomic.AtomicBoolean(false)
+
+    fun trySignal(): Boolean = signalled.compareAndSet(false, true)
+
+    fun reset() {
+        signalled.set(false)
+    }
+}
