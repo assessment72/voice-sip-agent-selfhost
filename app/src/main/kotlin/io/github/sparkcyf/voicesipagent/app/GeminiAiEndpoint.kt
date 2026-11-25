@@ -113,7 +113,11 @@ internal class GeminiAiEndpoint(
         return leg
     }
 
-    fun stop() { active?.hangup(HangupCause.CANCELLED) }
+    fun stop() {
+        active?.hangup(HangupCause.CANCELLED)
+        directCellLeg?.takeIf { it.state != LegState.ENDED }?.hangup(HangupCause.CANCELLED)
+        directHumanLeg?.takeIf { it.state != LegState.ENDED }?.hangup(HangupCause.CANCELLED)
+    }
 
     /** Opens a short Live session and reports only after Gemini confirms setupComplete. */
     fun checkConnection(callback: (String) -> Unit) {
