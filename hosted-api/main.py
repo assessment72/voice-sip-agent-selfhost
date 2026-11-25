@@ -268,6 +268,12 @@ class CreateCall(BaseModel):
     phoneNumber: str = Field(min_length=3, max_length=32)
 
 
+class SendSms(BaseModel):
+    phone: str = Field(min_length=3, max_length=32)
+    message: str = Field(min_length=1, max_length=1000)
+    consentConfirmed: bool
+
+
 class CallUpdate(BaseModel):
     state: Literal["ringing_cellular", "cellular_answered", "calling_sip", "bridged", "failed", "ended"]
     reasonCode: str | None = Field(default=None, max_length=64)
