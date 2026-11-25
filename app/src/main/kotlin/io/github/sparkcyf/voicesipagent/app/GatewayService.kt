@@ -136,6 +136,9 @@ class GatewayService : Service() {
         bridgeHeartbeatJob = null
         bridgeCommandJob?.cancel()
         bridgeCommandJob = null
+        // Interrupt blocking getUpdates before cancelling its coroutine. HttpURLConnection
+        // is not cancellation-aware while running on Dispatchers.IO.
+        telegramClient?.cancelPoll()
         telegramCommandJob?.cancel()
         telegramCommandJob = null
         stopForeground(STOP_FOREGROUND_REMOVE)
@@ -382,6 +385,9 @@ class GatewayService : Service() {
                 } catch (e: CancellationException) {
                     throw e
                 } catch (e: Exception) {
+                    // A deliberate poll disconnect during service/config shutdown is not
+                    // a Telegram outage and must not be reported as an IllegalStateException.
+                    if (!isActive || !foreground) break
                     AppLog.w("Telegram polling failed: ${e.javaClass.simpleName}: ${e.message?.take(180) ?: "no detail"}")
                     delay(5_000)
                 }
