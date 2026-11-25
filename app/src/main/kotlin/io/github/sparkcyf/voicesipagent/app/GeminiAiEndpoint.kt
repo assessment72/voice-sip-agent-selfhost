@@ -268,22 +268,23 @@ ${context.salesInfo}
                 { text ->
                     inputText = (inputText + " " + text).trim().takeLast(1200)
                     intentTranscriptBuffer = (intentTranscriptBuffer + " " + text).trim().takeLast(240)
-                    if (state == LegState.ENDED || !callerIntentHandled.compareAndSet(false, true)) return@GeminiLiveClient
-                    when (VoiceCallIntentDetector.detect(intentTranscriptBuffer)) {
-                        VoiceCallIntent.HANDOFF_TO_EMPLOYEE -> {
-                            if (requestHandoff()) {
-                                client?.sendClientText("قل للعميل باختصار: سأحولك الآن إلى أحد الموظفين، وابقَ على الخط.")
-                            } else {
-                                client?.sendClientText("اعتذر للعميل باختصار: لا أستطيع تحويل المكالمة إلى موظف الآن. اسأله إن كان يريد متابعة الحديث معك أو إنهاء المكالمة.")
+                    if (state != LegState.ENDED && callerIntentHandled.compareAndSet(false, true)) {
+                        when (VoiceCallIntentDetector.detect(intentTranscriptBuffer)) {
+                            VoiceCallIntent.HANDOFF_TO_EMPLOYEE -> {
+                                if (requestHandoff()) {
+                                    client?.sendClientText("قل للعميل باختصار: سأحولك الآن إلى أحد الموظفين، وابقَ على الخط.")
+                                } else {
+                                    client?.sendClientText("اعتذر للعميل باختصار: لا أستطيع تحويل المكالمة إلى موظف الآن. اسأله إن كان يريد متابعة الحديث معك أو إنهاء المكالمة.")
+                                }
                             }
+                            VoiceCallIntent.HANG_UP -> {
+                                client?.sendClientText("قل للعميل: شكراً لاتصالك، سعدنا بخدمتك، مع السلامة.")
+                                hangupScheduler.schedule({
+                                    if (state != LegState.ENDED) requestHangup()
+                                }, 1800, TimeUnit.MILLISECONDS)
+                            }
+                            VoiceCallIntent.NONE -> callerIntentHandled.set(false)
                         }
-                        VoiceCallIntent.HANG_UP -> {
-                            client?.sendClientText("قل للعميل: شكراً لاتصالك، سعدنا بخدمتك، مع السلامة.")
-                            hangupScheduler.schedule({
-                                if (state != LegState.ENDED) requestHangup()
-                            }, 1800, TimeUnit.MILLISECONDS)
-                        }
-                        VoiceCallIntent.NONE -> callerIntentHandled.set(false)
                     }
                 },
                 { outputText = (outputText + " " + it).trim().takeLast(1200) },
