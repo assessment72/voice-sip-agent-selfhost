@@ -266,8 +266,12 @@ class GatewayService : Service() {
         telegramConfigToken = token
         telegramConfigUserId = allowedUserId
         val runtime = GatewayRuntime.get(this)
-        runtime.onAiReport = { report ->
-            scope.launch(Dispatchers.IO) { runCatching { client.sendMessage(allowedUserId, report) } }
+        runtime.onAiReport = { messages ->
+            scope.launch(Dispatchers.IO) {
+                messages.forEach { message ->
+                    if (isActive) runCatching { client.sendMessage(allowedUserId, message) }
+                }
+            }
         }
         telegramCommandJob = scope.launch {
             while (isActive && foreground) {
