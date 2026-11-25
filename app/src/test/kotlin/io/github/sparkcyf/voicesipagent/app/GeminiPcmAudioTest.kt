@@ -79,6 +79,17 @@ class GeminiPcmAudioTest {
         assertEquals((source.size / 2 / 3) / 160, emitted.size)
     }
 
+
+    @Test
+    fun `audio stream end is signalled once until Gemini completes the turn`() {
+        val gate = GeminiTurnEndGate()
+        assertTrue(gate.trySignal())
+        assertTrue(!gate.trySignal())
+        assertTrue(!gate.trySignal())
+        gate.reset()
+        assertTrue(gate.trySignal())
+    }
+
     private fun filteredSineRms(frequencyHz: Int): Double {
         val input = ByteArray(24_000 * 2)
         for (i in 0 until 24_000) {
