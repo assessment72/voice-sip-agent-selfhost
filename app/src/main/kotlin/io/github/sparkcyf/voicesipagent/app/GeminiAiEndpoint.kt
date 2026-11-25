@@ -26,6 +26,8 @@ internal data class AiCallReport(
     val inputSendFailures: Long = 0,
     val outputAudioChunks: Long = 0,
     val outputAudioBytes: Long = 0,
+    val outputDroppedFrames: Long = 0,
+    val outputQueuePeak: Int = 0,
 ) {
     fun telegramText() = buildString {
         appendLine("تقرير مكالمة الذكاء الاصطناعي")
@@ -38,6 +40,7 @@ internal data class AiCallReport(
         if (failureDetail.isNotBlank()) appendLine("تفصيل الاتصال: ${failureDetail.take(240)}")
         appendLine("التقاط وإرسال الصوت: ${inputFrames > 0} (${inputFrames} إطار قُبل من ${inputAttempts}؛ فشل الإرسال: ${inputSendFailures})")
         appendLine("استقبال صوت Gemini: ${outputFrames > 0} (${outputAudioChunks} دفعة، ${outputAudioBytes} بايت؛ ${outputFrames} إطار مشغّل)")
+        appendLine("إطارات صوت أُسقطت: ${outputDroppedFrames}؛ أقصى امتلاء للطابور: ${outputQueuePeak}/1000")
         if (inputText.isNotBlank()) appendLine("آخر كلام الطرف الآخر: ${inputText.take(500)}")
         if (outputText.isNotBlank()) appendLine("آخر رد Gemini: ${outputText.take(500)}")
     }.take(3900)
@@ -210,13 +213,16 @@ ${context.salesInfo}
             transition(LegState.ENDED, cause)
             report(AiCallReport(remote.number, context.name.ifBlank { remote.displayName }, context.role, context.company,
                 started, System.currentTimeMillis(), cause, port.inputFrames, port.outputFrames, inputText, outputText,
-                failureDetail, port.inputAttempts, port.inputSendFailures, port.outputAudioChunks, port.outputAudioBytes))
+                failureDetail, port.inputAttempts, port.inputSendFailures, port.outputAudioChunks, port.outputAudioBytes,
+                port.outputDroppedFrames, port.outputQueuePeak))
             onEnd()
         }
         override fun sendDtmf(digit: Char, durationMs: Int) {}
 
         private inner class AiPort : MediaPort {
-            private val output = ArrayBlockingQueue<ShortArray>(100)
+            // Gemini may deliver spoken output in bursts faster than the 20 ms cellular clock.
+            // A short 2-second queue discarded speech; 20 seconds is still bounded and modest in memory.
+            private val output = ArrayBlockingQueue<ShortArray>(1_000)
             private val outputBuffer = GeminiPcmOutputBuffer(PcmFormat.NARROWBAND.frameSamples)
             @Volatile var inputFrames = 0L
             @Volatile var inputAttempts = 0L
@@ -224,6 +230,8 @@ ${context.salesInfo}
             @Volatile var outputFrames = 0L
             @Volatile var outputAudioChunks = 0L
             @Volatile var outputAudioBytes = 0L
+            @Volatile var outputDroppedFrames = 0L
+            @Volatile var outputQueuePeak = 0
             override val format = PcmFormat.NARROWBAND
             override val isClockSource = false
             override fun setClockListener(listener: FrameClockListener?) {}
@@ -240,7 +248,12 @@ ${context.salesInfo}
                 outputAudioChunks++
                 outputAudioBytes += bytes24k.size
                 for (frame in outputBuffer.append(bytes24k)) {
-                    if (!output.offer(frame)) output.poll()?.let { output.offer(frame) }
+                    if (!output.offer(frame)) {
+                        val removed = output.poll()
+                        val added = output.offer(frame)
+                        outputDroppedFrames += (if (removed == null) 0 else 1) + (if (added) 0 else 1)
+                    }
+                    outputQueuePeak = maxOf(outputQueuePeak, output.size)
                 }
             }
         }
