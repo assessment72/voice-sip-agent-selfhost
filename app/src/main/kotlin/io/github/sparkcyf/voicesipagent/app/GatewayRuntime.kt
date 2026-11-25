@@ -138,7 +138,9 @@ class GatewayRuntime private constructor(context: Context) {
             destination.isNotBlank() && employeeEndpoint != null &&
                 settings.aiAutoAnswer && activeBridge?.handoffTo(employeeEndpoint, destination) == true
         }
-        onHangupRequested = { bridge?.hangupActive() }
+        onHangupRequested = {
+            if (bridge?.hangupActive() != true) gemini.stop()
+        }
     }
     @Volatile var onAiReport: ((String) -> Unit)? = null
     /** Built-in SIP user agent. */
