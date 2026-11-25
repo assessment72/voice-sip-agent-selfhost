@@ -15,6 +15,7 @@ internal class TelegramBotClient(
     private val readTimeoutMs: Int = 35_000,
 ) {
     private val endpoint: String
+    @Volatile private var activePoll: HttpURLConnection? = null
 
     init {
         require(token.length >= 30 && Regex("^[0-9]+:[A-Za-z0-9_-]+$").matches(token)) {
@@ -44,7 +45,7 @@ internal class TelegramBotClient(
 
     fun poll(offset: Long): List<Incoming> {
         val query = "timeout=20&offset=$offset&allowed_updates=%5B%22message%22%2C%22callback_query%22%5D"
-        val json = request("GET", "/getUpdates?$query")
+        val json = request("GET", "/getUpdates?$query", isPoll = true)
         val updates = json.optJSONArray("result") ?: JSONArray()
         return (0 until updates.length()).mapNotNull { index ->
             val update = updates.optJSONObject(index) ?: return@mapNotNull null
@@ -89,7 +90,12 @@ internal class TelegramBotClient(
         request("POST", "/answerCallbackQuery", JSONObject().put("callback_query_id", callbackQueryId))
     }
 
-    private fun request(method: String, path: String, body: JSONObject? = null): JSONObject {
+    /** Interrupts an outstanding long-poll before its owning coroutine is replaced. */
+    fun cancelPoll() {
+        activePoll?.disconnect()
+    }
+
+    private fun request(method: String, path: String, body: JSONObject? = null, isPoll: Boolean = false): JSONObject {
         val connection = (URL(endpoint + path).openConnection() as HttpURLConnection).apply {
             requestMethod = method
             connectTimeout = connectTimeoutMs
@@ -101,6 +107,7 @@ internal class TelegramBotClient(
                 setRequestProperty("Content-Type", "application/json; charset=utf-8")
             }
         }
+        if (isPoll) activePoll = connection
         try {
             if (body != null) connection.outputStream.use {
                 it.write(body.toString().toByteArray(Charsets.UTF_8))
@@ -116,6 +123,7 @@ internal class TelegramBotClient(
             }
             return response
         } finally {
+            if (isPoll && activePoll === connection) activePoll = null
             connection.disconnect()
         }
     }
