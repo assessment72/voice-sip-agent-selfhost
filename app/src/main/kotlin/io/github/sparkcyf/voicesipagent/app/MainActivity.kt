@@ -407,7 +407,6 @@ private fun SettingsSection(rt: GatewayRuntime) {
         Card(Modifier.fillMaxWidth()) {
             Column(Modifier.fillMaxWidth().padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                 Text(t("أوامر البوت", "Bot commands"), style = MaterialTheme.typography.titleSmall)
-                val commands = "/start — بدء / Start\n/help — المساعدة / Help\n/status — حالة البوابة / Gateway status\n/sip — حالة SIP / SIP status\n/calls — حالة المكالمات / Call status\n/simcall <رقم> — اتصال عبر SIM وربطه بـ SIP / Call via SIM and bridge to SIP\n/simcall_cancel — إنهاء الاتصال الجاري / End active call\n/account — سجل المدد والصوت والبطارية / Call history, audio and battery\n/balance — استعلام *144# عبر USSD / Query *144# by USSD\n/simcall_delete <id> — حذف سجل / Delete a record\n/service_on — تشغيل التحويل / Enable takeover\n/service_off — إيقاف التحويل / Disable takeover"
                 Text(commands, style = MaterialTheme.typography.bodySmall)
                 Text(t("إيقاف التحويل لا يقطع مكالمة جارية.", "Disabling takeover does not interrupt an active call."), style = MaterialTheme.typography.bodySmall)
                 OutlinedButton(onClick = {
