@@ -331,7 +331,7 @@ const server = http.createServer(async (req, res) => {
       const result = await crmStore.recordCall({
         ...report,
         source: "android_gateway",
-        idempotencyKey: String(report.idempotencyKey || "").slice(0, 128) || undefined
+        idempotencyKey: report.idempotencyKey ? (id + ":" + String(report.idempotencyKey).slice(0, 110)) : undefined
       });
       return json(res, 201, result);
     }
