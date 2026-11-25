@@ -242,6 +242,10 @@ class GatewayService : Service() {
             AppLog.w("Telegram configuration invalid: ${it.javaClass.simpleName}")
             return
         }
+        val runtime = GatewayRuntime.get(this)
+        runtime.onAiReport = { report ->
+            scope.launch(Dispatchers.IO) { runCatching { client.sendMessage(allowedUserId, report) } }
+        }
         telegramCommandJob = scope.launch {
             while (isActive && foreground) {
                 try {
@@ -256,7 +260,7 @@ class GatewayService : Service() {
                         val reply = try {
                             when (command) {
                                 "/start", "/help" ->
-                                    "Voicx control جاهز. الأوامر:\n/status - حالة البوابة\n/sip - حالة SIP\n/calls - حالة المكالمات\n/simcall <رقم> - اتصال عبر SIM وربطه بـ SIP\n/simcall_cancel - إنهاء الاتصال الجاري\n/account - سجل المكالمات والصوت والبطارية\n/balance - استعلام *144# عبر USSD\n/simcall_delete <id> - حذف سجل\n/service_on - تشغيل البوابة\n/service_off - إيقاف التحويل"
+                                    "Voicx control جاهز. الأوامر:\n/status - حالة البوابة\n/sip - حالة SIP\n/calls - حالة المكالمات\n/simcall <رقم> - اتصال SIM وربطه بـ SIP\n/call رقم | اسم | وظيفة | شركة - اتصال SIM مع Gemini\n/auto_answer_on - الرد الآلي بواسطة Gemini\n/auto_answer_off - إيقاف الرد الآلي\n/ai_stop - إيقاف مكالمة Gemini\n/simcall_cancel - إنهاء الاتصال الجاري\n/account - سجل المكالمات والصوت والبطارية\n/simcall_delete <id> - حذف سجل\n/service_on - تشغيل البوابة\n/service_off - إيقاف التحويل"
                                 "/status" -> {
                                     val h = GatewayRuntime.get(this@GatewayService).health.value
                                     "Gateway: ${if (h.takeover) "ON" else "OFF"}\nSIP: ${if (h.sip.ready) "ready" else "not ready"}\nActive call: ${h.session != null || h.calls.owned > 0}"
@@ -285,12 +289,16 @@ class GatewayService : Service() {
                                     "تم حذف سجل المكالمة #$argument."
                                 } else "لم أعثر على سجل بالمعرّف المحدد."
                                 "/account" -> GatewayRuntime.get(this@GatewayService).telegramAccountReport()
-                                "/balance" -> {
-                                    val chatId = update.chatId
-                                    GatewayRuntime.get(this@GatewayService).requestTelegramBalance { event ->
-                                        scope.launch(Dispatchers.IO) { runCatching { client.sendMessage(chatId, event) } }
+                                "/auto_answer_on" -> { runtime.setAiAutoAnswer(true); "تم قبول تشغيل الرد الآلي بواسطة Gemini." }
+                                "/auto_answer_off" -> { runtime.setAiAutoAnswer(false); "تم إيقاف الرد الآلي بواسطة Gemini." }
+                                "/ai_stop" -> { runtime.stopAiCall(); "تم قبول طلب إيقاف مكالمة Gemini." }
+                                "/call" -> {
+                                    val fields = argument.split('|').map { it.trim() }
+                                    if (fields.size < 4 || fields[0].isBlank()) "الاستخدام: /call الرقم | الاسم | الوظيفة | الشركة"
+                                    else {
+                                        runtime.startAiCall(fields[0], fields[1], fields[2], fields[3])
+                                        "تم قبول طلب الاتصال. سيرد Gemini على المكالمة وسيُرسل التقرير بعد انتهائها."
                                     }
-                                    "جارٍ إرسال *144# عبر USSD؛ قد تُحتسب رسوم حسب المشغّل. سأرسل الرد هنا، وليس عبر SMS."
                                 }
                                 "/service_on" -> {
                                     GatewayRuntime.get(this@GatewayService).setTakeover(true)

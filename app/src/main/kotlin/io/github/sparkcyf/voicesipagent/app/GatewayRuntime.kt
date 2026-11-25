@@ -36,6 +36,7 @@ import io.github.sparkcyf.voicesipagent.voice.EndpointStatus
 import io.github.sparkcyf.voicesipagent.voice.HangupCause
 import io.github.sparkcyf.voicesipagent.voice.LegState
 import io.github.sparkcyf.voicesipagent.voice.PcmFormat
+import io.github.sparkcyf.voicesipagent.voice.Party
 import io.github.sparkcyf.voicesipagent.voice.redactNumber
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -97,7 +98,6 @@ data class HealthState(
  */
 class GatewayRuntime private constructor(context: Context) {
     private val app = context.applicationContext
-    private val ussdBalance = TelegramUssdBalance(app)
     private val worker = newWorker()
     val settingsStore = SettingsStore(app)
     private val _settings = MutableStateFlow(settingsStore.load())
@@ -123,6 +123,12 @@ class GatewayRuntime private constructor(context: Context) {
         PrivilegedAudioOpener(shizuku, { settings.audioMethod }, { settings.muteEarpiece }, ::audioFormat),
         logger = { AppLog.i(it) },
     )
+    private val gemini = GeminiAiEndpoint(
+        apiKey = { settings.geminiApiKey },
+        model = { settings.geminiModel },
+        report = { onAiReport?.invoke(it.telegramText()) },
+    )
+    @Volatile var onAiReport: ((String) -> Unit)? = null
     /** Built-in SIP user agent. */
     private var sip: CallEndpoint? = null
     private var bridge: CallBridge? = null
@@ -630,7 +636,11 @@ class GatewayRuntime private constructor(context: Context) {
             return
         }
         val loopback = _health.value.loopbackTest
-        val sideB: CallEndpoint? = if (loopback) EchoEndpoint(format = audioFormat()).also { echo = it } else sip
+        val sideB: CallEndpoint? = when {
+            loopback -> EchoEndpoint(format = audioFormat()).also { echo = it }
+            settings.aiAutoAnswer -> gemini
+            else -> sip
+        }
         if (sideB == null) {
             bridge = null
             AppLog.i("bridge idle: SIP not configured")
@@ -716,6 +726,29 @@ class GatewayRuntime private constructor(context: Context) {
         AppLog.i(if (clean.isEmpty()) "Telegram control disabled" else "Telegram bot settings saved")
     }
 
+    fun updateGeminiSettings(apiKey: String, model: String = settings.geminiModel) = worker.execute {
+        val cleanKey = apiKey.trim()
+        require(cleanKey.isEmpty() || cleanKey.length >= 20) { "Invalid Gemini API key" }
+        val cleanModel = model.trim().ifEmpty { "gemini-2.5-flash-native-audio-preview-12-2025" }
+        val updated = settings.copy(geminiApiKey = cleanKey, geminiModel = cleanModel)
+        settingsStore.save(updated); _settings.value = updated
+    }
+
+    fun setAiAutoAnswer(on: Boolean) = worker.execute {
+        if (hasActiveWork()) { _health.update { it.copy(settingsPending = true) }; return@execute }
+        settingsStore.save(settings.copy(aiAutoAnswer = on).also { _settings.value = it })
+        rebuildBridge()
+    }
+
+    fun startAiCall(number: String, name: String, role: String, company: String) = worker.execute {
+        require(settings.geminiApiKey.isNotBlank()) { "Gemini API key is not configured" }
+        val clean = number.trim(); require(clean.isNotEmpty()) { "phone number is required" }
+        gemini.setContext(GeminiAiEndpoint.CallContext(name.trim(), role.trim(), company.trim()))
+        gemini.startOutbound(cellular, clean, Party(clean, name.trim().ifBlank { null }))
+    }
+
+    fun stopAiCall() = worker.execute { gemini.stop() }
+
     /** Starts an authenticated Telegram-originated SIM call and bridges it to the registered SIP phone. */
     fun startTelegramSimCall(rawNumber: String, notify: (String) -> Unit) = worker.execute {
         val raw = rawNumber.trim().filterNot { it.isWhitespace() || it == '(' || it == ')' || it == '-' }
@@ -755,16 +788,6 @@ class GatewayRuntime private constructor(context: Context) {
                     onFinished = { record -> worker.execute {
                         TelegramCallHistory(app).add(record)
                         if (telegramSimCall === callRef) telegramSimCall = null
-                        if (record.answeredAtMs != null) {
-                            worker.schedule({
-                                queryUssdBalance { result ->
-                                    notify(result.fold(
-                                        { "استعلام الرصيد بعد المكالمة عبر *144# (USSD، وليس SMS):\n$it" },
-                                        { "تعذر استعلام الدقائق/الرصيد بعد المكالمة عبر *144#. تحقق من إذن الهاتف وتغطية الشبكة." },
-                                    ))
-                                }
-                            }, 2, TimeUnit.SECONDS)
-                        }
                     } },
                 )
                 callRef = call
@@ -782,18 +805,6 @@ class GatewayRuntime private constructor(context: Context) {
     }
 
     fun deleteTelegramCallRecord(id: String): Boolean = TelegramCallHistory(app).delete(id)
-
-    /** Starts the carrier's fixed *144# balance query, returning its network response to Telegram. */
-    fun requestTelegramBalance(notify: (String) -> Unit) = worker.execute {
-        queryUssdBalance { result ->
-            notify(result.fold(
-                { "نتيجة *144# عبر USSD (ليست رسالة SMS):\n$it" },
-                { "فشل استعلام *144#. تأكد من إذن الهاتف، الشريحة الافتراضية، وتغطية الشبكة." },
-            ))
-        }
-    }
-
-    private fun queryUssdBalance(callback: (Result<String>) -> Unit) = ussdBalance.query(callback)
 
     @Suppress("DEPRECATION")
     private fun batteryStatus(): String {

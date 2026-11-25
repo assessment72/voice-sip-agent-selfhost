@@ -331,16 +331,11 @@ private fun SettingsSection(rt: GatewayRuntime) {
     var bridgeToken by remember(cur) { mutableStateOf(cur.controlBridgeToken) }
     var telegramBotToken by remember(cur) { mutableStateOf(cur.telegramBotToken) }
     var telegramAllowedUserId by remember(cur) { mutableStateOf(if (cur.telegramAllowedUserId > 0) cur.telegramAllowedUserId.toString() else "") }
+    var geminiApiKey by remember(cur) { mutableStateOf(cur.geminiApiKey) }
     var telegramTestRunning by remember { mutableStateOf(false) }
     var telegramTestResult by remember { mutableStateOf("") }
     val telegramScope = rememberCoroutineScope()
     val context = LocalContext.current
-    var ussdPermissionGranted by remember {
-        mutableStateOf(ContextCompat.checkSelfPermission(context, Manifest.permission.CALL_PHONE) == PackageManager.PERMISSION_GRANTED)
-    }
-    val ussdPermissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
-        ussdPermissionGranted = granted
-    }
     val builtin = stack == SipStack.BUILTIN
 
     Section(t("Voicx Control API", "Voicx Control API")) {
@@ -385,6 +380,9 @@ private fun SettingsSection(rt: GatewayRuntime) {
         Button(onClick = { rt.updateTelegramBotSettings(telegramBotToken, telegramAllowedUserId) }) {
             Text(t("حفظ اتصال Telegram", "Save Telegram connection"))
         }
+        OutlinedTextField(value = geminiApiKey, onValueChange = { geminiApiKey = it }, label = { Text(t("مفتاح Gemini API", "Gemini API key")) }, visualTransformation = PasswordVisualTransformation(), singleLine = true, modifier = Modifier.fillMaxWidth())
+        Button(onClick = { rt.updateGeminiSettings(geminiApiKey) }) { Text(t("حفظ إعداد Gemini", "Save Gemini settings")) }
+        Toggle(t("الرد الآلي بواسطة Gemini", "Gemini auto-answer"), cur.aiAutoAnswer, { rt.setAiAutoAnswer(it) }, detail = { t("يجيب Gemini على المكالمات الواردة.", "Gemini answers incoming calls.") })
         OutlinedButton(
             enabled = !telegramTestRunning && telegramBotToken.isNotBlank(),
             onClick = {
@@ -411,14 +409,6 @@ private fun SettingsSection(rt: GatewayRuntime) {
                 Text(t("أوامر البوت", "Bot commands"), style = MaterialTheme.typography.titleSmall)
                 val commands = "/start — بدء / Start\n/help — المساعدة / Help\n/status — حالة البوابة / Gateway status\n/sip — حالة SIP / SIP status\n/calls — حالة المكالمات / Call status\n/simcall <رقم> — اتصال عبر SIM وربطه بـ SIP / Call via SIM and bridge to SIP\n/simcall_cancel — إنهاء الاتصال الجاري / End active call\n/account — سجل المدد والصوت والبطارية / Call history, audio and battery\n/balance — استعلام *144# عبر USSD / Query *144# by USSD\n/simcall_delete <id> — حذف سجل / Delete a record\n/service_on — تشغيل التحويل / Enable takeover\n/service_off — إيقاف التحويل / Disable takeover"
                 Text(commands, style = MaterialTheme.typography.bodySmall)
-                Text(t("قد تُحتسب رسوم على المكالمة أو استعلام USSD وفق باقة المشغّل. بعد كل مكالمة تم الرد عليها سيُطلب *144# تلقائياً، ويُرسل رد المشغّل إلى Telegram. حالة الصوت تقيس إطارات ومؤشرات مسار الصوت فقط، ولا تثبت جودة السماع.", "The carrier may charge for calls or USSD. After each answered call, *144# is queried automatically and the carrier response is sent to Telegram. Audio status reports media-path frames/levels; it cannot guarantee perceived audio quality."), style = MaterialTheme.typography.bodySmall)
-                if (!ussdPermissionGranted) {
-                    OutlinedButton(onClick = { ussdPermissionLauncher.launch(Manifest.permission.CALL_PHONE) }) {
-                        Text(t("السماح باستعلام الرصيد عبر USSD", "Allow USSD balance queries"))
-                    }
-                } else {
-                    Text(t("إذن USSD: ممنوح؛ سيُستخدم الرمز *144# يدوياً وبعد المكالمات المردود عليها.", "USSD permission: granted; *144# will be used manually and after answered calls."), style = MaterialTheme.typography.bodySmall)
-                }
                 Text(t("إيقاف التحويل لا يقطع مكالمة جارية.", "Disabling takeover does not interrupt an active call."), style = MaterialTheme.typography.bodySmall)
                 OutlinedButton(onClick = {
                     val clipboard = context.getSystemService(android.content.Context.CLIPBOARD_SERVICE) as ClipboardManager

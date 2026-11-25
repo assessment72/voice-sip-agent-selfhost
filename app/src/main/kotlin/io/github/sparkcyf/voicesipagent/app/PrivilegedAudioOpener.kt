@@ -22,6 +22,8 @@ class PrivilegedAudioOpener(
         val svc = shizuku.service ?: error("privileged service not connected (${shizuku.state})")
         val pcm = format()
         val selectedMethod = method()
+        // This flag controls only the gateway handset speaker. The PCM port is opened and
+        // bridged independently, so local muting must not mute SIP↔SIM capture or media delivery.
         val suppressLocal = muteEarpiece()
         val ticket = ++generation
         val pfd = svc.openCallAudio(selectedMethod, pcm.sampleRate)
