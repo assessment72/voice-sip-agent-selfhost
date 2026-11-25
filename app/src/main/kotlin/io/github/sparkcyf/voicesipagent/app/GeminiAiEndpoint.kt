@@ -158,7 +158,7 @@ internal class GeminiAiEndpoint(
     /** Places a SIM call and directly cross-connects it to a new Gemini leg. */
     fun startOutbound(cellular: CallEndpoint, number: String, caller: Party) {
         val cell = cellular.dial(number, caller)
-        val ai = dial(number, caller)
+        val ai = dial(number, caller) as AiLeg
         directBridge?.stop()
         directBridge = null
         directCellLeg = cell
