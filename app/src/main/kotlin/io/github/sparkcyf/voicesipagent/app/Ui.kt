@@ -144,7 +144,7 @@ private val arabicUi = mapOf(
     "Employee extension (external PBX)" to "الرقم الداخلي للموظف (مقسم خارجي)",
     "Enter the employee extension or SIP URI. The caller stays with Gemini until the employee answers; if unanswered, the AI call is restored." to "أدخل الرقم الداخلي للموظف أو SIP URI. يبقى العميل مع Gemini حتى يرد الموظف، وإذا لم يرد يعود الاتصال إلى Gemini.",
     "Built-in SIP server mode transfers to the single registered softphone. Use external PBX mode to reach distinct employee extensions." to "في وضع خادم SIP المدمج، يتم التحويل إلى تطبيق الاتصال الوحيد المسجّل. للوصول إلى أرقام داخلية مختلفة للموظفين، استخدم وضع مقسم SIP الخارجي.",
-    "Use external PBX mode to reach distinct employee extensions." to "للوصول إلى أرقام داخلية مختلفة للموظفين، استخدم وضع مقسم SIP الخارجي."
+    "Use external PBX mode to reach distinct employee extensions." to "للوصول إلى أرقام داخلية مختلفة للموظفين، استخدم وضع مقسم SIP الخارجي.",
     "Allowed dial-out prefixes (comma separated, empty = any)" to "بادئات الأرقام المسموح الاتصال بها عبر الشريحة (افصل بفواصل، فارغ = جميع الأرقام)"
 )
 
