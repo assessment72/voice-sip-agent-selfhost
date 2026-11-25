@@ -100,16 +100,5 @@ jobs:
           name: voice-sip-agent-release-new-key-${{ github.run_number }}
           path: app/build/outputs/apk/release/*.apk
           if-no-files-found: error
-          retention-days: 7
+          retention-days: 1
 
-      - name: Upload signing key backup - KEEP PRIVATE
-        uses: actions/upload-artifact@v4
-        with:
-          name: voice-sip-agent-signing-backup-${{ github.run_number }}
-          path: |
-            ${{ runner.temp }}/vsa-signing/release.jks
-            ${{ runner.temp }}/vsa-signing/credentials.txt
-            ${{ runner.temp }}/apk-certificate.txt
-            ${{ runner.temp }}/keystore-certificate.txt
-          if-no-files-found: error
-          retention-days: 7
