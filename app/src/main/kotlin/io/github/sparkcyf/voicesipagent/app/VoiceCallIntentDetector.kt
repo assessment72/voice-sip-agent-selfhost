@@ -37,7 +37,7 @@ internal object VoiceCallIntentDetector {
         .replace(Regex("\\p{Mn}+"), "")
         .lowercase(Locale.ROOT)
         .replace('أ', 'ا').replace('إ', 'ا').replace('آ', 'ا').replace('ى', 'ي')
-        .replace(Regex("""[^\\p{L}\\p{N}\\s]"""), " ")
-        .replace(Regex("""\\s+"""), " ")
+        .replace(Regex("""[^\p{L}\p{N}\s]"""), " ")
+        .replace(Regex("""\s+"""), " ")
         .trim()
 }
