@@ -144,3 +144,25 @@ All routes below use `Authorization: Bearer $VOICX_ADMIN_TOKEN`. Data is stored 
 Contact fields include name, phone, personal/professional email, job title, company, previous messages, previous-call summary, tags, notes, and next-send time. Contact opt-out flags (`optedOut` / `doNotContact`) block new outbound SMS/WhatsApp queue requests. The dashboard exposes upcoming queued sends, today's open tasks, recent calls and message activity. Reports aggregate queued, delivered, failed and reply counts for a requested period.
 
 **Delivery and publishing safety:** SMS, WhatsApp, and call endpoints currently create persistent queued jobs only. They do not contact a carrier, WhatsApp Business provider, or SIP endpoint until a provider adapter and credentials are configured. Inbound webhooks require `VOICX_MESSAGING_WEBHOOK_TOKEN` (at least 32 characters). The webhook stores inbound messages; automatic replies require a configured provider adapter and an explicitly enabled automation policy. Haraj and website routes create drafts only; no automated login or publishing is performed. This avoids claiming a message was sent or an advert was published when it was not.
+
+
+## Direct Adasms SMS adapter
+
+The separate Adasms adapter calls `https://adasms-standalone.vercel.app/api/sms/send`
+from the backend only. Configure `ADASMS_API_KEY` as a **Sensitive** Vercel
+environment variable for the backend deployment; never add it to GitHub, Telegram,
+logs, or the Android app.
+
+- `POST /api/v1/sms/adasms/send` — admin bearer-authenticated backend route.
+  JSON: `{"phone":"+9677xxxxxxxx","message":"...","consentConfirmed":true}`.
+  Pass an `Idempotency-Key` header to prevent duplicate sends.
+- Telegram private-chat commands for IDs in `VOICX_SMS_TELEGRAM_ADMIN_IDS`:
+  `/adasms_help`, `/adasms_send +9677xxxxxxx | message | موافق`,
+  and `/adasms_history [count]`.
+- SMS request records are stored in MongoDB collection `sms_messages` with
+  tenant scoping, masked phone display, idempotency, and accepted/failed state.
+- Existing `/sms_send` Hosted SMS integration is retained unchanged.
+- The backend requires explicit consent confirmation and blocks contacts marked
+  `optedOut`, `doNotContact`, `smsOptOut`, or `marketingConsent=false`.
+- A provider HTTP success is recorded as `accepted`, not as carrier delivery.
+  No live SMS is sent by CI tests.
