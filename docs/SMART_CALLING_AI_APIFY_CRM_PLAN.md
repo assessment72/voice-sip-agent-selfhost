@@ -26,8 +26,9 @@ Smart Calling API (independent server)
    |-- Gemini Live / Vertex AI adapter
    |-- Transcript + structured extraction worker
    |-- Customer identity resolution
-   |-- Central CRM (PostgreSQL recommended)
-   |-- Job queue (Redis-backed worker recommended)
+   |-- Existing customer database / CRM (system of record; reuse its current technology)
+   |-- Call/enrichment records in the existing backend where suitable; add only missing tables after schema audit
+   |-- Background job runner/queue compatible with the existing server stack (do not mandate Redis)
    |-- Apify adapter (async Actor runs + webhook/poll completion)
    |-- Telegram report adapter
    v
@@ -60,9 +61,18 @@ The audio plane and data plane are separate. The Android audio path remains loca
 5. Send a Telegram report after server-side policy checks; redact sensitive data by default.
 6. Retry failed enrichment/report jobs without affecting call media.
 
-## Central CRM data model
+## Existing customer database — reuse, do not replace
 
-Recommended relational entities:
+The user has an existing customer database. It is the sole customer system of record. Do not provision PostgreSQL, create a parallel CRM, copy all customer records into a second database, or change the existing database engine.
+
+Before implementation, inspect the existing customer database/API, schema, customer identifiers, phone-number normalization, authentication, tenant/organization scoping, and audit model. Integrate through the existing backend API/repository layer where available; do not expose database credentials to the Android app or connect Apify directly to the database. If the current backend owns the database, extend that backend with narrowly scoped call/enrichment endpoints and only add missing tables after a migration review. If the database is managed by another service, use its supported authenticated API/connector.
+
+The customer identity and existing customer IDs must remain stable. Match incoming calls to existing records using normalized phone numbers plus additional evidence; do not treat a phone number alone as proof of identity. Create a new customer only under the existing system's established customer-creation rules and permissions.
+
+## Existing CRM data model — extend only when needed
+
+The following are logical capabilities to map to existing tables/entities, not instructions to create duplicate tables:
+
 - tenants / users / devices
 - customers
 - customer_phone_numbers (E.164, type, verification status, source)
@@ -76,7 +86,7 @@ Recommended relational entities:
 - consent_records / suppression_list
 - audit_events and tenant_usage
 
-Use tenant isolation in every query and write. A phone number is a lookup key, not proof of a person's identity. Keep raw phone numbers encrypted at rest where feasible; use a keyed HMAC index for exact lookup. Restrict access to transcripts and exports.
+Use the existing tenant/organization isolation and authorization rules in every query and write. A phone number is a lookup key, not proof of a person's identity. Preserve existing customer IDs and data ownership. Keep raw phone numbers encrypted at rest where feasible; use a keyed HMAC index for exact lookup if compatible with the existing database. Restrict access to transcripts and exports.
 
 ## Server API (proposed)
 
@@ -115,7 +125,7 @@ All endpoints require authentication, authorization, rate limits, input validati
 ## Delivery plan and acceptance gates
 
 1. **Repository audit + contract tests:** map existing call lifecycle hooks without changing audio classes; define server contracts and prove the bridge is unchanged.
-2. **Independent backend foundation:** authentication, tenant isolation, migrations, CRM schema, health checks, audit trail, feature flags.
+2. **Existing backend integration:** audit and reuse the current customer database/API, authentication, tenant isolation, customer IDs, and audit trail; add only missing call/enrichment records and feature flags.
 3. **Call event integration:** send only lifecycle/structured events from the app; verify no synchronous dependency on the audio path.
 4. **Gemini/Vertex adapter:** server-side ADC, session lifecycle, structured extraction; no credentials in APK.
 5. **Apify async adapter:** actor configuration, webhook verification, cache, quota/cost guard, failure isolation.
@@ -136,4 +146,4 @@ All endpoints require authentication, authorization, rate limits, input validati
 
 ## Open implementation dependency
 
-The current repository is the Android gateway only. Before production backend implementation, choose/provision the server runtime and central database, and provide server-side credentials through a secure secret manager. Do not commit credentials or place them in Android resources/build config.
+The current repository is the Android gateway only, and the user already has a customer database. Before backend implementation, identify the exact existing database/backend and inspect its schema/API. The implementation must reuse it and its current technology; do not select or provision a replacement database. Server-side credentials must be supplied through a secure secret manager. Do not commit credentials or place them in Android resources/build config.
