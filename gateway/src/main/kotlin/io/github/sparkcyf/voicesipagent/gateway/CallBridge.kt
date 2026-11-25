@@ -31,6 +31,8 @@ class BridgeSession internal constructor(
     internal var answerTimer: ScheduledFuture<*>? = null
     internal var inboundAnswerRequested = false
     internal var mediaTimer: ScheduledFuture<*>? = null
+    internal var handoffPending = false
+    internal var handoffPrevious: CallLeg? = null
 
     override fun toString() =
         "session#$id[$origin ${inbound.kind}:${inbound.state} -> ${outbound?.kind}:${outbound?.state}]"
@@ -85,6 +87,43 @@ class CallBridge(
 
     fun addListener(l: BridgeListener) = listeners.addIfAbsent(l)
     fun removeListener(l: BridgeListener) = listeners.remove(l)
+
+    /** Dial the employee while keeping the caller on Gemini until the employee answers. */
+    fun handoffTo(endpoint: CallEndpoint, target: String): Boolean {
+        val snapshot = session ?: return false
+        if (target.isBlank()) return false
+        post {
+            if (session !== snapshot || snapshot.handoffPending) return@post
+            val previous = snapshot.outbound ?: return@post
+            if (snapshot.inbound.state != LegState.CONNECTED || previous.state != LegState.CONNECTED) return@post
+            val replacement = endpoint.dial(target.trim(), snapshot.inbound.remote)
+            if (replacement.state == LegState.ENDED) {
+                log("handoff dial failed; Gemini remains connected")
+                return@post
+            }
+            snapshot.handoffPrevious = previous
+            snapshot.handoffPending = true
+            snapshot.outbound = replacement
+            replacement.addListener(LegWatcher(snapshot, inbound = false))
+            snapshot.answerTimer?.cancel(false)
+            snapshot.answerTimer = executor.schedule({
+                if (session === snapshot && snapshot.handoffPending && snapshot.outbound === replacement) {
+                    restorePreviousAfterFailedHandoff(snapshot, HangupCause.NO_ANSWER)
+                }
+            }, config.answerTimeoutMs, TimeUnit.MILLISECONDS)
+            log("human SIP handoff dialing ${redactNumber(target)}")
+            reevaluate(snapshot)
+            notifyChanged(snapshot)
+        }
+        return true
+    }
+
+    /** End the active customer session after a spoken goodbye. */
+    fun hangupActive(): Boolean {
+        val snapshot = session ?: return false
+        post { if (session === snapshot) endSession(snapshot, HangupCause.NORMAL) }
+        return true
+    }
 
     /** Blocks until every task posted so far has run (tests). */
     internal fun drain() {
@@ -157,6 +196,10 @@ class CallBridge(
         val a = s.inbound
         val b = s.outbound ?: return
 
+        if (b.state == LegState.ENDED && s.handoffPending) {
+            restorePreviousAfterFailedHandoff(s, b.endCause ?: HangupCause.UNAVAILABLE)
+            return
+        }
         if (a.state == LegState.ENDED || b.state == LegState.ENDED) {
             val cause = if (a.state == LegState.ENDED) {
                 if (s.connectedAtMs == null) HangupCause.CANCELLED else HangupCause.NORMAL
@@ -173,6 +216,17 @@ class CallBridge(
             a.answer()
         }
         if (a.state == LegState.CONNECTED && b.state == LegState.CONNECTED) {
+            if (s.handoffPending) {
+                val previous = s.handoffPrevious
+                s.handoffPrevious = null
+                s.handoffPending = false
+                s.media?.stop()
+                s.media = null
+                s.mediaTimer?.cancel(false)
+                s.mediaTimer = null
+                previous?.takeIf { it.state != LegState.ENDED }?.hangup(HangupCause.CANCELLED)
+                log("employee answered; media switched from Gemini to SIP")
+            }
             if (s.connectedAtMs == null) {
                 s.connectedAtMs = System.currentTimeMillis()
                 s.answerTimer?.cancel(false)
@@ -202,6 +256,25 @@ class CallBridge(
         }
     }
 
+    private fun restorePreviousAfterFailedHandoff(s: BridgeSession, cause: HangupCause) {
+        if (session !== s || !s.handoffPending) return
+        val failed = s.outbound
+        val previous = s.handoffPrevious
+        if (previous != null && previous.state == LegState.CONNECTED && s.inbound.state == LegState.CONNECTED) {
+            s.outbound = previous
+            s.handoffPrevious = null
+            s.handoffPending = false
+            s.answerTimer?.cancel(false)
+            s.answerTimer = null
+            failed?.takeIf { it.state != LegState.ENDED }?.hangup(cause)
+            log("employee handoff failed; Gemini restored")
+            notifyChanged(s)
+            reevaluate(s)
+        } else {
+            endSession(s, cause)
+        }
+    }
+
     private fun endSession(s: BridgeSession, cause: HangupCause) {
         if (session !== s) return
         session = null
@@ -212,6 +285,9 @@ class CallBridge(
         s.media = null
         if (s.inbound.state != LegState.ENDED) s.inbound.hangup(cause)
         s.outbound?.let { if (it.state != LegState.ENDED) it.hangup(if (cause == HangupCause.CANCELLED) HangupCause.CANCELLED else cause) }
+        s.handoffPrevious?.let { if (it.state != LegState.ENDED) it.hangup(HangupCause.CANCELLED) }
+        s.handoffPrevious = null
+        s.handoffPending = false
         log("$s ended: $cause")
         notifyChanged(s)
     }
