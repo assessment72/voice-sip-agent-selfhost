@@ -58,16 +58,58 @@ jobs:
       - name: Assemble debug APK
         run: ./gradlew :app:assembleDebug --no-daemon --stacktrace
 
-      - name: Verify APK output
+      - name: Sign APK with repository keystore
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        shell: bash
         run: |
+          set -euo pipefail
+          : "${ANDROID_KEYSTORE_BASE64:?Missing ANDROID_KEYSTORE_BASE64 repository secret}"
+          : "${ANDROID_KEYSTORE_PASSWORD:?Missing ANDROID_KEYSTORE_PASSWORD repository secret}"
+          : "${ANDROID_KEY_ALIAS:?Missing ANDROID_KEY_ALIAS repository secret}"
+          : "${ANDROID_KEY_PASSWORD:?Missing ANDROID_KEY_PASSWORD repository secret}"
+
+          KEYSTORE_PATH="$RUNNER_TEMP/voice-sip-agent-signing.keystore"
+          printf '%s' "$ANDROID_KEYSTORE_BASE64" | base64 --decode > "$KEYSTORE_PATH"
+          test -s "$KEYSTORE_PATH"
+
+          keytool -list -keystore "$KEYSTORE_PATH" \
+            -storepass "$ANDROID_KEYSTORE_PASSWORD" \
+            -alias "$ANDROID_KEY_ALIAS" >/dev/null
+
+          APK_PATH="$(find app/build/outputs/apk/debug -maxdepth 1 -name '*.apk' -print -quit)"
+          test -n "$APK_PATH"
+
+          APKSIGNER="$(find "$ANDROID_HOME/build-tools" -type f -name apksigner | sort -V | tail -n 1)"
+          test -n "$APKSIGNER"
+
+          "$APKSIGNER" sign \
+            --ks "$KEYSTORE_PATH" \
+            --ks-key-alias "$ANDROID_KEY_ALIAS" \
+            --ks-pass env:ANDROID_KEYSTORE_PASSWORD \
+            --key-pass env:ANDROID_KEY_PASSWORD \
+            --out "$RUNNER_TEMP/voice-sip-agent-signed.apk" \
+            "$APK_PATH"
+
+          mv "$RUNNER_TEMP/voice-sip-agent-signed.apk" "$APK_PATH"
+          "$APKSIGNER" verify --verbose "$APK_PATH"
+          keytool -printcert -jarfile "$APK_PATH" | grep -E 'Owner:|Issuer:|SHA256:'
+          rm -f "$KEYSTORE_PATH"
+
+      - name: Verify APK output and checksum
+        run: |
+          set -euo pipefail
           test -n "$(find app/build/outputs/apk/debug -maxdepth 1 -name '*.apk' -print -quit)"
           ls -lh app/build/outputs/apk/debug/*.apk
           sha256sum app/build/outputs/apk/debug/*.apk
 
-      - name: Upload debug APK artifact
+      - name: Upload signed debug APK artifact
         uses: actions/upload-artifact@v4
         with:
-          name: voice-sip-agent-selfhost-debug-apk
+          name: voice-sip-agent-selfhost-signed-debug-apk
           path: app/build/outputs/apk/debug/*.apk
           if-no-files-found: error
           retention-days: 14
