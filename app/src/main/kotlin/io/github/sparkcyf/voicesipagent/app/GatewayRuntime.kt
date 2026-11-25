@@ -192,9 +192,12 @@ class GatewayRuntime private constructor(context: Context) {
                 if (settings.serverMode) "employee" else ""
             }
             val activeBridge: CallBridge? = bridge
-            destination.isNotBlank() && employeeEndpoint != null &&
-                employeeEndpoint.status.ready && settings.aiAutoAnswer &&
-                activeBridge?.handoffTo(employeeEndpoint, destination) == true
+            if (destination.isBlank() || employeeEndpoint == null || !employeeEndpoint.status.ready) {
+                false
+            } else {
+                activeBridge?.handoffTo(employeeEndpoint, destination) == true ||
+                    gemini.handoffDirectTo(employeeEndpoint, destination)
+            }
         }
         gemini.onHangupRequested = {
             val activeBridge: CallBridge? = bridge
