@@ -20,6 +20,7 @@ internal data class AiCallReport(
     val number: String?, val name: String?, val role: String?, val company: String?,
     val startedAt: Long, val endedAt: Long, val cause: HangupCause?,
     val inputFrames: Long, val outputFrames: Long, val inputText: String, val outputText: String,
+    val failureDetail: String = "",
 ) {
     fun telegramText() = buildString {
         appendLine("تقرير مكالمة الذكاء الاصطناعي")
@@ -29,6 +30,7 @@ internal data class AiCallReport(
         if (!company.isNullOrBlank()) appendLine("الشركة: $company")
         appendLine("المدة: ${((endedAt - startedAt).coerceAtLeast(0) / 1000)} ثانية")
         appendLine("النتيجة: ${cause ?: HangupCause.NORMAL}")
+        if (failureDetail.isNotBlank()) appendLine("تفصيل الاتصال: ${failureDetail.take(240)}")
         appendLine("التقاط وإرسال الصوت: ${inputFrames > 0} (${inputFrames} إطار)")
         appendLine("استقبال صوت Gemini: ${outputFrames > 0} (${outputFrames} إطار)")
         if (inputText.isNotBlank()) appendLine("آخر كلام الطرف الآخر: ${inputText.take(500)}")
@@ -103,6 +105,7 @@ internal class GeminiAiEndpoint(
         private val port = AiPort()
         private val started = System.currentTimeMillis()
         private var client: GeminiLiveClient? = null
+        @Volatile private var failureDetail = ""
         private var inputText = ""
         private var outputText = ""
         private val prompt = """أنت وكيل اتصال صوتي. تحدث بالعربية باختصار ووضوح وبأسلوب مهني.
@@ -116,8 +119,16 @@ internal class GeminiAiEndpoint(
                 { inputText = (inputText + " " + it).trim().takeLast(1200) },
                 { outputText = (outputText + " " + it).trim().takeLast(1200) },
                 { transition(LegState.CONNECTED); publishMedia(port) },
-                { if (state != LegState.ENDED) hangup(HangupCause.NETWORK_ERROR) })
-            runCatching { client?.connect() }.onFailure { hangup(HangupCause.INTERNAL_ERROR) }
+                { detail ->
+                    failureDetail = detail
+                    AppLog.w("Gemini Live call failed: $detail")
+                    if (state != LegState.ENDED) hangup(HangupCause.NETWORK_ERROR)
+                })
+            runCatching { client?.connect() }.onFailure {
+                failureDetail = "Gemini client setup failed (${it.javaClass.simpleName})"
+                AppLog.w(failureDetail)
+                hangup(HangupCause.INTERNAL_ERROR)
+            }
         }
 
         override fun ring() {}
@@ -127,7 +138,7 @@ internal class GeminiAiEndpoint(
             client?.close()
             publishMedia(null)
             transition(LegState.ENDED, cause)
-            report(AiCallReport(remote.number, context.name.ifBlank { remote.displayName }, context.role, context.company, started, System.currentTimeMillis(), cause, port.inputFrames, port.outputFrames, inputText, outputText))
+            report(AiCallReport(remote.number, context.name.ifBlank { remote.displayName }, context.role, context.company, started, System.currentTimeMillis(), cause, port.inputFrames, port.outputFrames, inputText, outputText, failureDetail))
             onEnd()
         }
         override fun sendDtmf(digit: Char, durationMs: Int) {}

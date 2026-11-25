@@ -7,6 +7,8 @@ import okhttp3.Response
 import okhttp3.WebSocket
 import okhttp3.WebSocketListener
 import org.json.JSONObject
+import java.util.concurrent.Executors
+import java.util.concurrent.ScheduledFuture
 import java.util.concurrent.TimeUnit
 
 /** Direct Gemini Live API transport. The API key is supplied only by the caller and never logged. */
@@ -23,8 +25,13 @@ internal class GeminiLiveClient(
     private val http = OkHttpClient.Builder()
         .readTimeout(0, TimeUnit.MILLISECONDS)
         .build()
+    private val setupTimer = Executors.newSingleThreadScheduledExecutor { task ->
+        Thread(task, "GeminiLiveSetupTimeout").apply { isDaemon = true }
+    }
     @Volatile private var socket: WebSocket? = null
     @Volatile private var closed = false
+    @Volatile private var setupComplete = false
+    @Volatile private var setupTimeout: ScheduledFuture<*>? = null
 
     fun connect() {
         require(apiKey.isNotBlank()) { "Gemini API key is not configured" }
@@ -32,6 +39,11 @@ internal class GeminiLiveClient(
         val request = Request.Builder().url(url).build()
         socket = http.newWebSocket(request, object : WebSocketListener() {
             override fun onOpen(webSocket: WebSocket, response: Response) {
+                setupTimeout = setupTimer.schedule({
+                    if (!setupComplete && !closed) {
+                        onClosed("Gemini setup timeout: no setupComplete received within 20 seconds")
+                    }
+                }, 20, TimeUnit.SECONDS)
                 val setup = JSONObject()
                     .put("setup", JSONObject()
                         .put("model", "models/$model")
@@ -44,22 +56,42 @@ internal class GeminiLiveClient(
             }
 
             override fun onMessage(webSocket: WebSocket, text: String) {
-                runCatching { handle(JSONObject(text)) }
-                    .onFailure { onClosed("Gemini message error: ${it.javaClass.simpleName}") }
+                runCatching {
+                    val message = JSONObject(text)
+                    val error = message.optJSONObject("error")
+                    if (error != null) {
+                        onClosed(formatServerError(error))
+                    } else {
+                        handle(message)
+                    }
+                }.onFailure {
+                    AppLog.w("Gemini Live response could not be parsed (${it.javaClass.simpleName})")
+                }
             }
 
             override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
-                if (!closed) onClosed("Gemini connection failed: ${t.javaClass.simpleName}")
+                if (!closed) {
+                    val detail = response?.let(::formatHttpFailure)
+                        ?: "WebSocket transport failed (${t.javaClass.simpleName})"
+                    AppLog.w("Gemini Live connection failed: $detail")
+                    onClosed(detail)
+                }
             }
 
             override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
-                if (!closed) onClosed("Gemini connection closed: $code")
+                if (!closed) onClosed("Gemini WebSocket closed (code $code)")
             }
         })
     }
 
     private fun handle(message: JSONObject) {
-        if (message.has("setupComplete")) { onReady(); return }
+        if (message.has("setupComplete")) {
+            setupComplete = true
+            setupTimeout?.cancel(false)
+            AppLog.i("Gemini Live setup completed")
+            onReady()
+            return
+        }
         val content = message.optJSONObject("serverContent") ?: return
         content.optJSONObject("inputTranscription")?.optString("text")?.takeIf { it.isNotBlank() }?.let(onInputTranscript)
         content.optJSONObject("outputTranscription")?.optString("text")?.takeIf { it.isNotBlank() }?.let(onOutputTranscript)
@@ -70,6 +102,35 @@ internal class GeminiLiveClient(
             if (data.isNotBlank()) onAudio24k(Base64.decode(data, Base64.DEFAULT))
         }
     }
+
+    private fun formatHttpFailure(response: Response): String {
+        val error = runCatching { JSONObject(response.body.string()).optJSONObject("error") }.getOrNull()
+        val status = error?.optString("status")?.takeIf { it.isNotBlank() }
+        val message = error?.optString("message")?.takeIf { it.isNotBlank() }?.let(::redactSecrets)
+        return buildString {
+            append("HTTP ${response.code}")
+            if (status != null) append(" $status")
+            if (message != null) append(": ${message.take(240)}")
+        }
+    }
+
+    private fun formatServerError(error: JSONObject): String {
+        val code = error.optInt("code", 0)
+        val status = error.optString("status").takeIf { it.isNotBlank() }
+        val message = error.optString("message").takeIf { it.isNotBlank() }?.let(::redactSecrets)
+        return buildString {
+            append("Gemini API error")
+            if (code > 0) append(" $code")
+            if (status != null) append(" $status")
+            if (message != null) append(": ${message.take(240)}")
+        }
+    }
+
+    private fun redactSecrets(value: String): String = value
+        .replace(apiKey, "[REDACTED]", ignoreCase = true)
+        .replace(Regex("(?i)AQ\\.[A-Za-z0-9_-]{12,}"), "[REDACTED_API_KEY]")
+        .replace(Regex("(?i)AIza[A-Za-z0-9_-]{20,}"), "[REDACTED_API_KEY]")
+        .replace(Regex("https?://\\S+"), "[URL]")
 
     /** Sends one 20 ms, 8 kHz PCM frame after simple 8->16 kHz duplication. */
     fun sendPcm8(frame: ShortArray) {
@@ -87,6 +148,8 @@ internal class GeminiLiveClient(
 
     fun close(reason: String = "stopped") {
         closed = true
+        setupTimeout?.cancel(false)
+        setupTimer.shutdownNow()
         socket?.close(1000, reason.take(120))
         socket = null
         http.dispatcher.executorService.shutdown()
