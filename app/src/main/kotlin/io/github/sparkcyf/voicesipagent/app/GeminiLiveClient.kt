@@ -117,13 +117,18 @@ internal class GeminiLiveClient(
         if (content.optBoolean("interrupted", false)) onInterrupted()
         content.optJSONObject("inputTranscription")?.optString("text")?.takeIf { it.isNotBlank() }?.let(onInputTranscript)
         content.optJSONObject("outputTranscription")?.optString("text")?.takeIf { it.isNotBlank() }?.let(onOutputTranscript)
-        if (content.optBoolean("turnComplete", false)) onTurnComplete()
-        val parts = content.optJSONObject("modelTurn")?.optJSONArray("parts") ?: return
-        for (i in 0 until parts.length()) {
-            val inline = parts.optJSONObject(i)?.optJSONObject("inlineData") ?: continue
-            val data = inline.optString("data")
-            if (data.isNotBlank()) onAudio24k(Base64.decode(data, Base64.DEFAULT))
+        // Gemini may deliver the final audio parts and turnComplete in the same
+        // serverContent message. Deliver audio first so latency/transcript accounting
+        // can associate the first output with the still-open input turn.
+        val parts = content.optJSONObject("modelTurn")?.optJSONArray("parts")
+        if (parts != null) {
+            for (i in 0 until parts.length()) {
+                val inline = parts.optJSONObject(i)?.optJSONObject("inlineData") ?: continue
+                val data = inline.optString("data")
+                if (data.isNotBlank()) onAudio24k(Base64.decode(data, Base64.DEFAULT))
+            }
         }
+        if (content.optBoolean("turnComplete", false)) onTurnComplete()
     }
 
     private fun formatHttpFailure(response: Response): String {
