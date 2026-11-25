@@ -17,6 +17,7 @@ from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, sta
 from fastapi.responses import HTMLResponse, JSONResponse
 from pymongo.errors import DuplicateKeyError
 from sms_provider import SmsProviderError, SmsProviderNotConfigured, send_adasms
+from evolution_provider import (EvolutionError, EvolutionNotConfigured, send_evolution_text, verify_webhook_secret, organization_for_instance, forward_n8n_event)
 from pydantic import BaseModel, Field
 
 DB = os.getenv("DATABASE_PATH", "./calls.sqlite3")
@@ -104,6 +105,22 @@ def init_db():
         );
         CREATE INDEX IF NOT EXISTS idx_audit_org_created
           ON admin_audit_events(organization_id, created_at DESC);
+        CREATE TABLE IF NOT EXISTS whatsapp_messages (
+          id TEXT PRIMARY KEY, organization_id TEXT NOT NULL, idempotency_key TEXT,
+          payload_hash TEXT, phone_number TEXT NOT NULL, message TEXT NOT NULL,
+          channel TEXT NOT NULL, direction TEXT NOT NULL, status TEXT NOT NULL,
+          actor_id TEXT, provider_message_id TEXT, provider_http_status INTEGER,
+          error_code TEXT, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
+          sent_at INTEGER, delivered_at INTEGER, read_at INTEGER,
+          UNIQUE(organization_id, idempotency_key)
+        );
+        CREATE INDEX IF NOT EXISTS idx_whatsapp_org_created
+          ON whatsapp_messages(organization_id, created_at DESC);
+        CREATE TABLE IF NOT EXISTS whatsapp_events (
+          id TEXT PRIMARY KEY, organization_id TEXT NOT NULL, channel TEXT NOT NULL,
+          instance TEXT NOT NULL, event_type TEXT NOT NULL, provider_event_id TEXT,
+          payload_json TEXT NOT NULL, received_at INTEGER NOT NULL
+        );
         """)
         columns = {row["name"] for row in c.execute("PRAGMA table_info(calls)")}
         if "claimed_at" not in columns:
@@ -271,6 +288,13 @@ class CreateCall(BaseModel):
 class SendSms(BaseModel):
     phone: str = Field(min_length=3, max_length=32)
     message: str = Field(min_length=1, max_length=1000)
+    consentConfirmed: bool
+
+
+class SendWhatsApp(BaseModel):
+    phone: str = Field(min_length=3, max_length=32)
+    message: str = Field(min_length=1, max_length=4096)
+    channel: Literal["baileys", "cloud_api"]
     consentConfirmed: bool
 
 
@@ -1483,6 +1507,276 @@ def list_organization_sms(limit: int = Query(default=50, ge=1, le=200),
                 (organization_id, limit),
             ).fetchall()]
     return {"messages": [_sms_public(row) for row in rows], "count": len(rows)}
+
+
+
+def normalize_whatsapp_number(raw: str) -> str:
+    value = re.sub(r"[\\s().-]", "", raw)
+    if value.startswith("00"):
+        value = "+" + value[2:]
+    elif re.fullmatch(r"7[0-9]{8}", value):
+        value = "+967" + value
+    if not re.fullmatch(r"\\+[1-9][0-9]{7,14}", value):
+        raise HTTPException(status_code=422, detail="invalid_phone_number")
+    prefixes = tuple(p.strip() for p in os.getenv("WHATSAPP_ALLOWED_PREFIXES", "+9677").split(",") if p.strip())
+    if not prefixes or not any(value.startswith(prefix) for prefix in prefixes):
+        raise HTTPException(status_code=403, detail="whatsapp_number_not_allowed")
+    return value
+
+
+def _whatsapp_public(row: dict) -> dict:
+    phone = str(row.get("phone_number", ""))
+    masked = phone[:4] + "****" + phone[-3:] if len(phone) >= 8 else "****"
+    return {
+        "messageId": str(row.get("_id") or row.get("id")),
+        "channel": row.get("channel"), "direction": row.get("direction"),
+        "status": row.get("status"), "phoneMasked": masked,
+        "providerMessageId": row.get("provider_message_id"),
+        "errorCode": row.get("error_code"), "createdAt": row.get("created_at"),
+        "sentAt": row.get("sent_at"), "deliveredAt": row.get("delivered_at"),
+        "readAt": row.get("read_at"),
+    }
+
+
+def _send_whatsapp_for_organization(*, organization_id: str, actor_id: str,
+                                    body: SendWhatsApp, idempotency_key: str):
+    if not body.consentConfirmed:
+        raise HTTPException(status_code=422, detail="recipient_consent_required")
+    phone = normalize_whatsapp_number(body.phone)
+    payload_hash = hashlib.sha256(
+        (body.channel + "\\0" + phone + "\\0" + body.message).encode("utf-8")
+    ).hexdigest()
+    message_id = str(uuid.uuid4())
+    now = int(time.time())
+    created = False
+    if mongodb_enabled():
+        from mongodb_store import collection
+        records = collection("whatsapp_messages")
+        document = {
+            "_id": message_id, "organization_id": organization_id,
+            "idempotency_key": idempotency_key, "payload_hash": payload_hash,
+            "phone_number": phone, "message": body.message, "channel": body.channel,
+            "direction": "outbound", "status": "sending", "actor_id": actor_id,
+            "provider_message_id": None, "provider_http_status": None,
+            "error_code": None, "created_at": now, "updated_at": now,
+            "sent_at": None, "delivered_at": None, "read_at": None,
+        }
+        try:
+            records.insert_one(document)
+            row, created = document, True
+        except DuplicateKeyError:
+            row = records.find_one({"organization_id": organization_id,
+                                    "idempotency_key": idempotency_key})
+            if not row:
+                raise HTTPException(status_code=503, detail="whatsapp_idempotency_store_unavailable")
+            if row.get("payload_hash") != payload_hash:
+                raise HTTPException(status_code=409, detail="idempotency_key_reused")
+    else:
+        with db() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            old = connection.execute(
+                "SELECT * FROM whatsapp_messages WHERE organization_id=? AND idempotency_key=?",
+                (organization_id, idempotency_key),
+            ).fetchone()
+            if old:
+                row = dict(old)
+                if row["payload_hash"] != payload_hash:
+                    connection.rollback()
+                    raise HTTPException(status_code=409, detail="idempotency_key_reused")
+            else:
+                connection.execute(
+                    """INSERT INTO whatsapp_messages
+                       (id,organization_id,idempotency_key,payload_hash,phone_number,message,
+                        channel,direction,status,actor_id,created_at,updated_at)
+                       VALUES(?,?,?,?,?,?,?,'outbound','sending',?,?,?)""",
+                    (message_id, organization_id, idempotency_key, payload_hash, phone,
+                     body.message, body.channel, actor_id, now, now),
+                )
+                row = {"id": message_id, "organization_id": organization_id,
+                       "payload_hash": payload_hash, "phone_number": phone,
+                       "channel": body.channel, "direction": "outbound", "status": "sending",
+                       "actor_id": actor_id, "created_at": now}
+                created = True
+            connection.commit()
+    if not created:
+        return {**_whatsapp_public(row), "duplicate": True}
+
+    try:
+        provider_result = send_evolution_text(body.channel, phone, body.message)
+        status_value = "sent"
+        provider_id = provider_result.get("providerMessageId")
+        provider_status = provider_result.get("httpStatus")
+        error_code = None
+    except EvolutionNotConfigured as exc:
+        status_value, provider_id, provider_status, error_code = "failed", None, None, exc.code
+    except EvolutionError as exc:
+        status_value, provider_id, provider_status, error_code = (
+            "unknown" if exc.code == "evolution_provider_outcome_unknown" else "failed",
+            None, exc.http_status, exc.code,
+        )
+    except Exception:
+        status_value, provider_id, provider_status, error_code = "unknown", None, None, "evolution_provider_unexpected_error"
+
+    updated = int(time.time())
+    sent_at = updated if status_value == "sent" else None
+    if mongodb_enabled():
+        from mongodb_store import collection
+        collection("whatsapp_messages").update_one(
+            {"_id": message_id, "organization_id": organization_id},
+            {"$set": {"status": status_value, "provider_message_id": provider_id,
+                      "provider_http_status": provider_status, "error_code": error_code,
+                      "updated_at": updated, "sent_at": sent_at}},
+        )
+        row.update({"status": status_value, "provider_message_id": provider_id,
+                    "provider_http_status": provider_status, "error_code": error_code,
+                    "updated_at": updated, "sent_at": sent_at})
+    else:
+        with db() as connection:
+            connection.execute(
+                """UPDATE whatsapp_messages SET status=?,provider_message_id=?,
+                   provider_http_status=?,error_code=?,updated_at=?,sent_at=?
+                   WHERE id=? AND organization_id=?""",
+                (status_value, provider_id, provider_status, error_code, updated,
+                 sent_at, message_id, organization_id),
+            )
+        row.update({"status": status_value, "provider_message_id": provider_id,
+                    "provider_http_status": provider_status, "error_code": error_code,
+                    "updated_at": updated, "sent_at": sent_at})
+    if status_value != "sent":
+        raise HTTPException(status_code=503 if error_code == "whatsapp_sending_disabled"
+                            or error_code == "evolution_provider_not_configured" else 502,
+                            detail=error_code or "whatsapp_send_failed")
+    return {**_whatsapp_public(row), "duplicate": False}
+
+
+@app.post("/v1/organizations/{organization_id}/whatsapp/send", status_code=202)
+def send_organization_whatsapp(
+    organization_id: str, body: SendWhatsApp,
+    idempotency_key: str = Header(alias="Idempotency-Key", min_length=16, max_length=128),
+    principal=Depends(organization_principal),
+):
+    if principal["organization_id"] != organization_id:
+        raise HTTPException(status_code=404, detail="organization_not_found")
+    if principal["role"] not in {"owner", "admin"}:
+        raise HTTPException(status_code=403, detail="insufficient_role")
+    return _send_whatsapp_for_organization(
+        organization_id=organization_id, actor_id=principal["user_id"],
+        body=body, idempotency_key=idempotency_key,
+    )
+
+
+@app.get("/v1/admin/whatsapp")
+def list_organization_whatsapp(limit: int = Query(default=50, ge=1, le=200),
+                               principal=Depends(organization_principal)):
+    organization_id = principal["organization_id"]
+    if mongodb_enabled():
+        from mongodb_store import collection
+        rows = list(collection("whatsapp_messages").find(
+            {"organization_id": organization_id},
+            {"message": 0, "payload_hash": 0, "idempotency_key": 0},
+        ).sort("created_at", -1).limit(limit))
+    else:
+        with db() as connection:
+            rows = [dict(row) for row in connection.execute(
+                """SELECT id,organization_id,phone_number,channel,direction,status,actor_id,
+                          provider_message_id,error_code,created_at,sent_at,delivered_at,read_at
+                   FROM whatsapp_messages WHERE organization_id=?
+                   ORDER BY created_at DESC LIMIT ?""",
+                (organization_id, limit),
+            ).fetchall()]
+    return {"messages": [_whatsapp_public(row) for row in rows], "count": len(rows)}
+
+
+@app.post("/v1/webhooks/evolution/{channel}", status_code=202)
+async def evolution_webhook(channel: Literal["baileys", "cloud_api"], request: Request,
+                            x_evolution_webhook_secret: str | None = Header(default=None, alias="X-Evolution-Webhook-Secret")):
+    if not verify_webhook_secret(channel, x_evolution_webhook_secret):
+        raise HTTPException(status_code=401, detail="invalid_evolution_webhook_secret")
+    try:
+        payload = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="invalid_webhook_json")
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="invalid_webhook_payload")
+    instance = str(payload.get("instance") or payload.get("instanceName") or "")
+    organization_id = organization_for_instance(instance)
+    if not organization_id:
+        raise HTTPException(status_code=404, detail="evolution_instance_not_mapped")
+    event_type = str(payload.get("event") or payload.get("type") or "unknown")[:120]
+    data = payload.get("data") if isinstance(payload.get("data"), dict) else {}
+    key = data.get("key") if isinstance(data.get("key"), dict) else {}
+    provider_message_id = str(key.get("id") or data.get("id") or payload.get("id") or "")
+    canonical = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    event_id = hashlib.sha256(
+        (channel + "\\0" + instance + "\\0" + event_type + "\\0" + canonical).encode("utf-8")
+    ).hexdigest()
+    now = int(time.time())
+    event_doc = {
+        "_id": event_id, "organization_id": organization_id, "channel": channel,
+        "instance": instance, "event_type": event_type,
+        "provider_event_id": provider_message_id or None,
+        "received_at": now, "payload": payload,
+    }
+    inserted = False
+    if mongodb_enabled():
+        from mongodb_store import collection
+        result = collection("whatsapp_events").update_one(
+            {"_id": event_id}, {"$setOnInsert": event_doc}, upsert=True,
+        )
+        inserted = result.upserted_id is not None
+    else:
+        with db() as connection:
+            cursor = connection.execute(
+                """INSERT OR IGNORE INTO whatsapp_events
+                   (id,organization_id,channel,instance,event_type,provider_event_id,payload_json,received_at)
+                   VALUES(?,?,?,?,?,?,?,?)""",
+                (event_id, organization_id, channel, instance, event_type,
+                 provider_message_id or None, canonical, now),
+            )
+            inserted = cursor.rowcount == 1
+
+    message = data.get("message") if isinstance(data.get("message"), dict) else {}
+    text_value = message.get("conversation")
+    if not text_value and isinstance(message.get("extendedTextMessage"), dict):
+        text_value = message["extendedTextMessage"].get("text")
+    remote_jid = str(key.get("remoteJid") or "")
+    from_me = bool(key.get("fromMe", False))
+    if inserted and provider_message_id and not from_me and text_value:
+        phone = remote_jid.split("@", 1)[0]
+        msg_doc = {
+            "_id": "evo:" + channel + ":" + provider_message_id,
+            "organization_id": organization_id, "phone_number": phone,
+            "message": str(text_value)[:4096], "channel": channel,
+            "direction": "inbound", "status": "received", "actor_id": "evolution_webhook",
+            "provider_message_id": provider_message_id, "created_at": now, "updated_at": now,
+        }
+        if mongodb_enabled():
+            from mongodb_store import collection
+            collection("whatsapp_messages").update_one(
+                {"_id": msg_doc["_id"], "organization_id": organization_id},
+                {"$setOnInsert": msg_doc}, upsert=True,
+            )
+        else:
+            with db() as connection:
+                connection.execute(
+                    """INSERT OR IGNORE INTO whatsapp_messages
+                       (id,organization_id,phone_number,message,channel,direction,status,
+                        actor_id,provider_message_id,created_at,updated_at)
+                       VALUES(?,?,?,?,?,'inbound','received','evolution_webhook',?,?,?)""",
+                    (msg_doc["_id"], organization_id, phone, msg_doc["message"],
+                     channel, provider_message_id, now, now),
+                )
+    normalized_event = {
+        "eventId": event_id, "organizationId": organization_id, "channel": channel,
+        "instance": instance, "eventType": event_type,
+        "providerMessageId": provider_message_id or None,
+        "direction": "outbound" if from_me else "inbound",
+        "phone": remote_jid.split("@", 1)[0] if remote_jid else None,
+        "message": str(text_value)[:4096] if text_value else None,
+        "receivedAt": now,
+    }
+    forwarded = forward_n8n_event(normalized_event) if inserted else False
+    return {"accepted": True, "duplicate": not inserted, "n8nForwarded": forwarded}
 
 
 @app.post("/v1/organizations/{organization_id}/calls", status_code=202)
