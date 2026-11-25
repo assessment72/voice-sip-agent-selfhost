@@ -42,6 +42,10 @@ export async function handleCrmRoute(req, res, url, ctx) {
       const limit = Math.min(200, Math.max(1, Number(url.searchParams.get("limit") || 100)));
       return ok(res, 200, { [key]: crm[key].slice(-limit).reverse() }), true;
     }
+    if (req.method === "GET" && itemId === "today" && resource === "tasks") {
+      const today = new Date().toISOString().slice(0,10);
+      return ok(res, 200, { tasks: crm.tasks.filter(x => String(x.dueAt || "").slice(0,10) === today && !["done","cancelled"].includes(x.status)) }), true;
+    }
     if (req.method === "GET" && itemId) {
       const found = crm[key].find(x => x.id === itemId);
       return found ? ok(res, 200, { [resource.slice(0,-1)]: found }) : fail(res, 404, "not_found"), true;
