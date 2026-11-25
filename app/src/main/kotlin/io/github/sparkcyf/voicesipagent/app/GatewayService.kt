@@ -40,6 +40,9 @@ class GatewayService : Service() {
     private var bridgeSettingsJob: Job? = null
     private var telegramSettingsJob: Job? = null
     private var telegramCommandJob: Job? = null
+    private var telegramClient: TelegramBotClient? = null
+    private var telegramConfigToken: String? = null
+    private var telegramConfigUserId: Long = 0L
     private var telegramUpdateOffset: Long = 0L
     private var bridgeHeartbeatJob: Job? = null
     private var bridgeCommandJob: Job? = null
@@ -150,7 +153,9 @@ class GatewayService : Service() {
         telegramSettingsJob?.cancel()
         bridgeHeartbeatJob?.cancel()
         bridgeCommandJob?.cancel()
+        telegramClient?.cancelPoll()
         telegramCommandJob?.cancel()
+        telegramClient = null
         scope.cancel()
         stopForeground(STOP_FOREGROUND_REMOVE)
         releaseWakeLock()
@@ -236,13 +241,30 @@ class GatewayService : Service() {
      * Only the configured numeric user ID in a private chat can execute commands.
      */
     private fun syncTelegramControl(token: String, allowedUserId: Long) {
-        telegramCommandJob?.cancel()
-        telegramCommandJob = null
-        if (!foreground || token.isBlank() || allowedUserId <= 0L) return
-        val client = runCatching { TelegramBotClient(token) }.getOrElse {
-            AppLog.w("Telegram configuration invalid: ${it.javaClass.simpleName}")
+        if (!foreground || token.isBlank() || allowedUserId <= 0L) {
+            telegramClient?.cancelPoll()
+            telegramCommandJob?.cancel()
+            telegramCommandJob = null
+            telegramClient = null
+            telegramConfigToken = null
+            telegramConfigUserId = 0L
             return
         }
+        if (telegramConfigToken == token && telegramConfigUserId == allowedUserId && telegramCommandJob?.isActive == true) return
+        // getUpdates is a long poll. Coroutine cancellation alone cannot interrupt blocking I/O.
+        telegramClient?.cancelPoll()
+        telegramCommandJob?.cancel()
+        telegramCommandJob = null
+        telegramClient = null
+        val client = runCatching { TelegramBotClient(token) }.getOrElse {
+            AppLog.w("Telegram configuration invalid: ${it.javaClass.simpleName}")
+            telegramConfigToken = null
+            telegramConfigUserId = 0L
+            return
+        }
+        telegramClient = client
+        telegramConfigToken = token
+        telegramConfigUserId = allowedUserId
         val runtime = GatewayRuntime.get(this)
         runtime.onAiReport = { report ->
             scope.launch(Dispatchers.IO) { runCatching { client.sendMessage(allowedUserId, report) } }
@@ -356,7 +378,7 @@ class GatewayService : Service() {
                 } catch (e: CancellationException) {
                     throw e
                 } catch (e: Exception) {
-                    AppLog.w("Telegram polling failed: ${e.javaClass.simpleName}")
+                    AppLog.w("Telegram polling failed: ${e.javaClass.simpleName}: ${e.message?.take(180) ?: "no detail"}")
                     delay(5_000)
                 }
             }
