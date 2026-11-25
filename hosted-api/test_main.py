@@ -324,3 +324,112 @@ def test_atlas_test_credentials_are_preview_only(monkeypatch):
     assert main.mongodb_enabled() is True
     monkeypatch.setenv("VERCEL_ENV", "production")
     assert main.mongodb_enabled() is False
+
+
+def test_adasms_send_is_tenant_scoped_persisted_and_idempotent(tmp_path, monkeypatch):
+    client = setup_client(tmp_path, monkeypatch)
+    monkeypatch.setattr(main, "mongodb_enabled", lambda: False)
+    monkeypatch.setattr(main, "REQUIRE_DISTRIBUTED_RATE_LIMIT", False)
+    monkeypatch.setattr(main, "_rate_limit_check", lambda **kwargs: (True, 1))
+    monkeypatch.setattr(main, "SMS_ALLOWED_PREFIXES", ("+9677",))
+    monkeypatch.setenv("ADASMS_API_KEY", "test-provider-key")
+    calls = []
+
+    def fake_send(phone, message):
+        calls.append((phone, message))
+        return {"httpStatus": 200, "providerMessageId": "provider-123"}
+
+    monkeypatch.setattr(main, "send_adasms", fake_send)
+    client.app.dependency_overrides[main.organization_principal] = lambda: {
+        "organization_id": "org-1", "user_id": "owner-1", "role": "owner"
+    }
+    key = str(uuid.uuid4())
+    request_headers = {"Idempotency-Key": key, "X-Organization-ID": "org-1"}
+    payload = {
+        "phone": "777405578",
+        "message": "رسالة اختبار لا يتم إرسالها إلى مزود حقيقي",
+        "consentConfirmed": True,
+    }
+
+    first = client.post("/v1/organizations/org-1/sms/send", json=payload, headers=request_headers)
+    replay = client.post("/v1/organizations/org-1/sms/send", json=payload, headers=request_headers)
+    assert first.status_code == 202
+    assert first.json()["status"] == "sent"
+    assert first.json()["phoneMasked"] == "+967****578"
+    assert replay.status_code == 202
+    assert replay.json()["duplicate"] is True
+    assert len(calls) == 1
+    with main.db() as connection:
+        rows = connection.execute(
+            "SELECT organization_id,status,provider_message_id FROM sms_messages"
+        ).fetchall()
+    assert len(rows) == 1
+    assert rows[0]["organization_id"] == "org-1"
+    assert rows[0]["status"] == "sent"
+    assert rows[0]["provider_message_id"] == "provider-123"
+
+
+def test_adasms_rejects_changed_idempotency_payload_and_missing_consent(tmp_path, monkeypatch):
+    client = setup_client(tmp_path, monkeypatch)
+    monkeypatch.setattr(main, "mongodb_enabled", lambda: False)
+    monkeypatch.setattr(main, "REQUIRE_DISTRIBUTED_RATE_LIMIT", False)
+    monkeypatch.setattr(main, "_rate_limit_check", lambda **kwargs: (True, 1))
+    monkeypatch.setattr(main, "SMS_ALLOWED_PREFIXES", ("+9677",))
+    monkeypatch.setenv("ADASMS_API_KEY", "test-provider-key")
+    calls = []
+    monkeypatch.setattr(main, "send_adasms", lambda phone, message: calls.append(phone) or {"httpStatus": 200})
+    client.app.dependency_overrides[main.organization_principal] = lambda: {
+        "organization_id": "org-1", "user_id": "owner-1", "role": "owner"
+    }
+    key = str(uuid.uuid4())
+    headers_value = {"Idempotency-Key": key, "X-Organization-ID": "org-1"}
+    payload = {"phone": "+967777405578", "message": "Hello", "consentConfirmed": True}
+    assert client.post("/v1/organizations/org-1/sms/send", json=payload, headers=headers_value).status_code == 202
+    changed = {**payload, "message": "Different message"}
+    conflict = client.post("/v1/organizations/org-1/sms/send", json=changed, headers=headers_value)
+    assert conflict.status_code == 409
+    no_consent = {**payload, "consentConfirmed": False}
+    rejected = client.post("/v1/organizations/org-1/sms/send",
+                           json=no_consent, headers={"Idempotency-Key": str(uuid.uuid4()), "X-Organization-ID": "org-1"})
+    assert rejected.status_code == 422
+    assert rejected.json()["detail"] == "recipient_consent_required"
+    assert len(calls) == 1
+
+
+def test_adasms_requires_provider_secret_and_yemen_mobile_allowlist(tmp_path, monkeypatch):
+    client = setup_client(tmp_path, monkeypatch)
+    monkeypatch.setattr(main, "mongodb_enabled", lambda: False)
+    monkeypatch.setattr(main, "REQUIRE_DISTRIBUTED_RATE_LIMIT", False)
+    monkeypatch.setattr(main, "_rate_limit_check", lambda **kwargs: (True, 1))
+    monkeypatch.setattr(main, "SMS_ALLOWED_PREFIXES", ("+9677",))
+    monkeypatch.delenv("ADASMS_API_KEY", raising=False)
+    client.app.dependency_overrides[main.organization_principal] = lambda: {
+        "organization_id": "org-1", "user_id": "owner-1", "role": "owner"
+    }
+    headers_value = {"Idempotency-Key": str(uuid.uuid4()), "X-Organization-ID": "org-1"}
+    payload = {"phone": "+967777405578", "message": "Hello", "consentConfirmed": True}
+    missing_secret = client.post("/v1/organizations/org-1/sms/send", json=payload, headers=headers_value)
+    assert missing_secret.status_code == 503
+    assert missing_secret.json()["detail"] == "sms_provider_not_configured"
+
+    monkeypatch.setenv("ADASMS_API_KEY", "test-provider-key")
+    blocked = client.post("/v1/organizations/org-1/sms/send",
+                          json={**payload, "phone": "+966500000000"},
+                          headers={"Idempotency-Key": str(uuid.uuid4()), "X-Organization-ID": "org-1"})
+    assert blocked.status_code == 403
+    assert blocked.json()["detail"] == "sms_number_not_allowed"
+
+
+def test_adasms_device_send_is_disabled_by_default(tmp_path, monkeypatch):
+    client = setup_client(tmp_path, monkeypatch)
+    monkeypatch.setattr(main, "SMS_DEVICE_SEND_ENABLED", False)
+    client.app.dependency_overrides[main.authenticated_device] = lambda: {
+        "organization_id": "org-1", "device_id": "device-1"
+    }
+    response = client.post(
+        "/v1/device/sms/send",
+        json={"phone": "+967777405578", "message": "Hello", "consentConfirmed": True},
+        headers={"Idempotency-Key": str(uuid.uuid4())},
+    )
+    assert response.status_code == 403
+    assert response.json()["detail"] == "device_sms_send_disabled"
