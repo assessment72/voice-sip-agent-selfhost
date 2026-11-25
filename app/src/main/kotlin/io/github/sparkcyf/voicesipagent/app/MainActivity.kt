@@ -318,6 +318,7 @@ private fun SettingsSection(rt: GatewayRuntime) {
     var user by remember(cur) { mutableStateOf(cur.username) }
     var password by remember(cur) { mutableStateOf(cur.password) }
     var target by remember(cur) { mutableStateOf(cur.inboundTarget) }
+    var humanHandoffTarget by remember(cur) { mutableStateOf(cur.humanHandoffTarget) }
     var prefixes by remember(cur) { mutableStateOf(cur.allowedPrefixes) }
     var domain by remember(cur) { mutableStateOf(cur.domain) }
     var stack by remember(cur) { mutableStateOf(cur.sipStack) }
@@ -465,6 +466,9 @@ private fun SettingsSection(rt: GatewayRuntime) {
             visualTransformation = PasswordVisualTransformation(), singleLine = true, modifier = Modifier.fillMaxWidth(),
         )
         Field(t("Куда переводить входящие (пусто = логин)", "Cellular inbound -> SIP target (blank = username)"), target, info = "inbound_target") { target = it }
+        Field(t("امتداد الموظف للتحويل من Gemini عبر SIP", "SIP employee extension for Gemini handoff"), humanHandoffTarget) { humanHandoffTarget = it }
+        Text(t("أدخل الرقم الداخلي أو SIP URI للموظف. يبقى العميل مع Gemini حتى يرد الموظف؛ وإذا لم يرد يعود الاتصال إلى Gemini.",
+            "Enter the employee extension or SIP URI. The caller stays with Gemini until the employee answers; if unanswered, the AI call is restored."), style = MaterialTheme.typography.bodySmall)
         Field(t("Префиксы для исходящих (через запятую, пусто = любой)", "Allowed dial-out prefixes (comma separated, empty = any)"), prefixes, info = "prefixes") { prefixes = it }
         Choice(t("Второй звонок при занятости", "Second call while busy"), BusyPolicy.entries, busy,
             { when (it) { BusyPolicy.REJECT -> t("Отклонять", "Reject"); BusyPolicy.IGNORE -> t("Отдать звонилке", "Leave to phone") } }, info = "busy") {
@@ -478,7 +482,7 @@ private fun SettingsSection(rt: GatewayRuntime) {
                     registrarLeaseSec = lease.toIntOrNull()?.takeIf { it in 30..86400 } ?: cur.registrarLeaseSec,
                     registrarPassword = regPassword,
                     server = server, port = port.toIntOrNull() ?: transport.defaultPort, username = user, password = password,
-                    inboundTarget = target, allowedPrefixes = prefixes, domain = domain,
+                    inboundTarget = target, humanHandoffTarget = humanHandoffTarget, allowedPrefixes = prefixes, domain = domain,
                     sipStack = stack, sipTransport = transport.id, srtp = srtp.id, busyPolicy = busy,
                 ),
             )
