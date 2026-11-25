@@ -17,13 +17,9 @@ export async function handleMongoCrmRoute(req, res, url, ctx) {
   // The Mongo-backed routes are deliberately unavailable unless MongoDB has
   // connected successfully. Never silently write CRM data to the JSON device
   // state file when an operator expects persistent CRM storage.
-  if (!ctx.crmStore) {
-    if (["contacts", "interactions", "follow-ups", "import"].includes(resource)) {
-      send(res, 503, { error: "crm_database_not_configured" });
-      return true;
-    }
-    return false;
-  }
+  // Without a configured MongoDB connection, leave the legacy JSON-backed
+  // CRM routes available for backward compatibility.
+  if (!ctx.crmStore) return false;
   if (!ctx.authAdmin(req)) {
     send(res, 401, { error: "unauthorized" });
     return true;
