@@ -1,0 +1,28 @@
+name: Control Bridge tests
+
+on:
+  push:
+    branches:
+      - feature/voicx-crm-customer-followups
+  pull_request:
+    paths:
+      - "control-bridge/**"
+      - ".github/workflows/control-bridge-ci.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Install bridge dependencies
+        run: npm install --prefix control-bridge --ignore-scripts --no-audit --no-fund
+      - name: Check server JavaScript syntax
+        run: node --check control-bridge/server.mjs
+      - name: Run control bridge smoke tests
+        run: npm test --prefix control-bridge
