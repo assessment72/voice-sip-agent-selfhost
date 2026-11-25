@@ -192,6 +192,7 @@ internal class GeminiAiEndpoint(
         private var turnCompleteAt: Long? = null
         private val openingTurnStarted = AtomicBoolean(false)
         private val callerIntentHandled = AtomicBoolean(false)
+        private var intentTranscriptBuffer = ""
         private val hangupScheduler = Executors.newSingleThreadScheduledExecutor { task ->
             Thread(task, "GeminiSpokenHangup").apply { isDaemon = true }
         }
@@ -266,8 +267,9 @@ ${context.salesInfo}
             client = GeminiLiveClient(key(), model(), prompt, port::addOutput,
                 { text ->
                     inputText = (inputText + " " + text).trim().takeLast(1200)
+                    intentTranscriptBuffer = (intentTranscriptBuffer + " " + text).trim().takeLast(240)
                     if (state == LegState.ENDED || !callerIntentHandled.compareAndSet(false, true)) return@GeminiLiveClient
-                    when (VoiceCallIntentDetector.detect(text)) {
+                    when (VoiceCallIntentDetector.detect(intentTranscriptBuffer)) {
                         VoiceCallIntent.HANDOFF_TO_EMPLOYEE -> {
                             if (requestHandoff()) {
                                 client?.sendClientText("قل للعميل باختصار: سأحولك الآن إلى أحد الموظفين، وابقَ على الخط.")
