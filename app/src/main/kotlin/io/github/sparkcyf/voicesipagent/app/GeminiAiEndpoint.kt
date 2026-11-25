@@ -477,7 +477,6 @@ ${context.salesInfo}
                 if (isSpeechLike(frame)) {
                     if (turnSpeechStartedAt == null) turnSpeechStartedAt = now
                     lastSpeechAt = now
-                    speechEndSignaled = false
                 } else if (turnSpeechStartedAt != null && lastSpeechAt != null && !speechEndSignaled &&
                     now - lastSpeechAt!! >= 600) {
                     // Hybrid VAD: preserve automatic server VAD, but finalize promptly after
