@@ -1706,10 +1706,26 @@ async def evolution_webhook(channel: Literal["baileys", "cloud_api"], request: R
     data = payload.get("data") if isinstance(payload.get("data"), dict) else {}
     key = data.get("key") if isinstance(data.get("key"), dict) else {}
     provider_message_id = str(key.get("id") or data.get("id") or payload.get("id") or "")
-    canonical = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    raw_canonical = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     event_id = hashlib.sha256(
-        (channel + "\\0" + instance + "\\0" + event_type + "\\0" + canonical).encode("utf-8")
+        (channel + "\\0" + instance + "\\0" + event_type + "\\0" + raw_canonical).encode("utf-8")
     ).hexdigest()
+    message = data.get("message") if isinstance(data.get("message"), dict) else {}
+    text_value = message.get("conversation")
+    if not text_value and isinstance(message.get("extendedTextMessage"), dict):
+        text_value = message["extendedTextMessage"].get("text")
+    # Persist only normalized text and delivery metadata; never store base64 media blobs.
+    safe_payload = {
+        "event": event_type, "instance": instance,
+        "data": {
+            "key": {k: key.get(k) for k in ("id", "remoteJid", "fromMe") if k in key},
+            "messageType": data.get("messageType"),
+            "messageTimestamp": data.get("messageTimestamp"),
+            "status": data.get("status"), "ack": data.get("ack"),
+            "text": str(text_value)[:4096] if text_value else None,
+        },
+    }
+    canonical = json.dumps(safe_payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     now = int(time.time())
     event_doc = {
         "_id": event_id, "organization_id": organization_id, "channel": channel,
@@ -1735,10 +1751,6 @@ async def evolution_webhook(channel: Literal["baileys", "cloud_api"], request: R
             )
             inserted = cursor.rowcount == 1
 
-    message = data.get("message") if isinstance(data.get("message"), dict) else {}
-    text_value = message.get("conversation")
-    if not text_value and isinstance(message.get("extendedTextMessage"), dict):
-        text_value = message["extendedTextMessage"].get("text")
     remote_jid = str(key.get("remoteJid") or "")
     from_me = bool(key.get("fromMe", False))
     if inserted and provider_message_id and not from_me and text_value:
@@ -1766,6 +1778,34 @@ async def evolution_webhook(channel: Literal["baileys", "cloud_api"], request: R
                     (msg_doc["_id"], organization_id, phone, msg_doc["message"],
                      channel, provider_message_id, now, now),
                 )
+    raw_status = data.get("status", data.get("ack"))
+    status_map = {1: "sent", 2: "delivered", 3: "read", "SERVER_ACK": "sent",
+                  "DELIVERY_ACK": "delivered", "READ": "read", "PLAYED": "read",
+                  "ERROR": "failed"}
+    mapped_status = status_map.get(raw_status, status_map.get(str(raw_status).upper()))
+    if provider_message_id and mapped_status:
+        if mongodb_enabled():
+            from mongodb_store import collection
+            updates = {"status": mapped_status, "updated_at": now}
+            if mapped_status == "delivered": updates["delivered_at"] = now
+            if mapped_status == "read": updates["read_at"] = now
+            collection("whatsapp_messages").update_one(
+                {"organization_id": organization_id, "channel": channel,
+                 "provider_message_id": provider_message_id, "direction": "outbound"},
+                {"$set": updates},
+            )
+        else:
+            with db() as connection:
+                if mapped_status == "delivered":
+                    connection.execute("UPDATE whatsapp_messages SET status=?,updated_at=?,delivered_at=? WHERE organization_id=? AND channel=? AND provider_message_id=? AND direction='outbound'",
+                                       (mapped_status, now, now, organization_id, channel, provider_message_id))
+                elif mapped_status == "read":
+                    connection.execute("UPDATE whatsapp_messages SET status=?,updated_at=?,read_at=? WHERE organization_id=? AND channel=? AND provider_message_id=? AND direction='outbound'",
+                                       (mapped_status, now, now, organization_id, channel, provider_message_id))
+                else:
+                    connection.execute("UPDATE whatsapp_messages SET status=?,updated_at=? WHERE organization_id=? AND channel=? AND provider_message_id=? AND direction='outbound'",
+                                       (mapped_status, now, organization_id, channel, provider_message_id))
+
     normalized_event = {
         "eventId": event_id, "organizationId": organization_id, "channel": channel,
         "instance": instance, "eventType": event_type,
