@@ -1,4 +1,4 @@
-const collections = ["contacts", "filters", "outbox", "calls", "automations", "publications", "tasks", "reports"];
+const collections = ["contacts", "filters", "outbox", "calls", "automations", "publications", "tasks", "reports", "campaigns", "templates"];
 
 function ensure(state) {
   state.crm ||= {};
@@ -27,13 +27,22 @@ export async function handleCrmRoute(req, res, url, ctx) {
   const action = parts[2] || "";
   const b = ["POST", "PUT", "PATCH"].includes(req.method) ? await ctx.body(req) : {};
 
+  // This route must precede generic task-id lookup so /tasks/today is not
+  // interpreted as a task whose id is literally "today".
+  if (resource === "tasks" && itemId === "today" && req.method === "GET") {
+    const today = new Date().toISOString().slice(0, 10);
+    return ok(res, 200, { tasks: crm.tasks.filter(x => String(x.dueAt || "").slice(0, 10) === today && !["done", "cancelled"].includes(x.status)) }), true;
+  }
+
   const specs = {
     contacts: ["contacts", ["name","phone","email","jobTitle","company","professionalEmail","previousMessages","previousCallSummary","nextSendAt","tags","notes"]],
     filters: ["filters", ["name","description","rules","enabled"]],
     tasks: ["tasks", ["title","description","dueAt","status","priority","contactId","channel"]],
     automations: ["automations", ["name","channel","trigger","enabled","config","replyPolicy"]],
     publications: ["publications", ["channel","title","description","content","url","scheduledAt","status","externalId"]],
-    reports: ["reports", ["periodStart","periodEnd","summary","metrics","createdAt"]]
+    reports: ["reports", ["periodStart","periodEnd","summary","metrics","createdAt"]],
+    campaigns: ["campaigns", ["name","channel","filterId","message","status","scheduledAt","createdAt","updatedAt"]],
+    templates: ["templates", ["name","channel","subject","message","variables","enabled"]]
   };
 
   if (specs[resource] && (req.method === "GET" || req.method === "POST")) {
@@ -100,12 +109,21 @@ export async function handleCrmRoute(req, res, url, ctx) {
     if (!to && !contactId) return fail(res, 400, "recipient_required"), true;
     const contact = contactId ? crm.contacts.find(x => x.id === contactId) : null;
     if (contactId && !contact) return fail(res, 404, "contact_not_found"), true;
+    const scheduledAt = b.scheduledAt || new Date().toISOString();
+    if (Number.isNaN(Date.parse(scheduledAt))) return fail(res, 400, "invalid_scheduled_at"), true;
+    if (contact?.doNotContact === true || contact?.optedOut === true)
+      return fail(res, 409, "contact_opted_out"), true;
     const job = { id: id(), channel, to: to || contact.phone, contactId: contact?.id || null,
-      content: cleanString(b.message || b.prompt, 4000), scheduledAt: b.scheduledAt || new Date().toISOString(),
+      content: cleanString(b.message || b.prompt, 4000), scheduledAt,
       status: "queued", provider: "not_configured", createdAt: new Date().toISOString() };
     if (channel !== "call" && !job.content) return fail(res, 400, "message_required"), true;
     crm.outbox.push(job);
     if (channel === "call") crm.calls.push(job);
+    if (contact && channel !== "call") {
+      contact.previousMessages = [...(Array.isArray(contact.previousMessages) ? contact.previousMessages : []),
+        { id: job.id, channel, direction: "outbound", message: job.content, scheduledAt, status: "queued" }].slice(-100);
+      contact.updatedAt = new Date().toISOString();
+    }
     ctx.audit("crm." + channel + ".queued", "api-client", { jobId: job.id });
     await ctx.save();
     return ok(res, 202, { job, delivery: "queued_only_provider_not_configured" }), true;
@@ -122,6 +140,15 @@ export async function handleCrmRoute(req, res, url, ctx) {
     job.status = b.status; job.updatedAt = new Date().toISOString();
     if (b.providerMessageId) job.providerMessageId = cleanString(b.providerMessageId, 200);
     if (b.error) job.error = cleanString(b.error, 500);
+    if (job.contactId) {
+      const contact = crm.contacts.find(x => x.id === job.contactId);
+      if (contact) {
+        const history = Array.isArray(contact.previousMessages) ? contact.previousMessages : [];
+        const entry = history.find(x => x.id === job.id);
+        if (entry) entry.status = job.status;
+        contact.updatedAt = new Date().toISOString();
+      }
+    }
     await ctx.save();
     return ok(res, 200, { job }), true;
   }
@@ -145,10 +172,60 @@ export async function handleCrmRoute(req, res, url, ctx) {
 
   if (resource === "marketing" && itemId === "status" && req.method === "GET") {
     const count = channel => crm.outbox.filter(x => x.channel === channel);
-    return ok(res, 200, { contacts: crm.contacts.length, queued: crm.outbox.filter(x => x.status === "queued").length,
+    const byStatus = Object.fromEntries(["queued","sent","delivered","failed","replied","cancelled"].map(s =>
+      [s, crm.outbox.filter(x => x.status === s).length]));
+    return ok(res, 200, { contacts: crm.contacts.length, queued: byStatus.queued, byStatus,
       sms: count("sms").length, whatsapp: count("whatsapp").length, calls: count("call").length,
       tasksOpen: crm.tasks.filter(x => !["done","cancelled"].includes(x.status)).length,
+      tasksToday: crm.tasks.filter(x => String(x.dueAt || "").slice(0,10) === new Date().toISOString().slice(0,10) && !["done","cancelled"].includes(x.status)).length,
+      filters: crm.filters.length, campaigns: crm.campaigns.length, templates: crm.templates.length,
       publications: crm.publications.length, generatedAt: new Date().toISOString() }), true;
+  }
+
+  if (resource === "dashboard" && !itemId && req.method === "GET") {
+    const today = new Date().toISOString().slice(0,10);
+    return ok(res, 200, {
+      contacts: crm.contacts.length,
+      dueToday: crm.tasks.filter(x => String(x.dueAt || "").slice(0,10) === today && !["done","cancelled"].includes(x.status)),
+      upcomingSends: crm.outbox.filter(x => x.status === "queued").sort((a,b) => Date.parse(a.scheduledAt) - Date.parse(b.scheduledAt)).slice(0,100),
+      recentCalls: crm.calls.slice(-50).reverse(),
+      recentMessages: crm.outbox.slice(-100).reverse(),
+      marketing: { queued: crm.outbox.filter(x => x.status === "queued").length, failed: crm.outbox.filter(x => x.status === "failed").length }
+    }), true;
+  }
+
+  if (resource === "contacts" && itemId && action === "messages" && req.method === "GET") {
+    const contact = crm.contacts.find(x => x.id === itemId);
+    return contact ? ok(res, 200, { messages: Array.isArray(contact.previousMessages) ? contact.previousMessages : [] }) : fail(res, 404, "contact_not_found"), true;
+  }
+
+  if (resource === "contacts" && itemId && action === "call-summary" && req.method === "PATCH") {
+    const contact = crm.contacts.find(x => x.id === itemId);
+    if (!contact) return fail(res, 404, "contact_not_found"), true;
+    contact.previousCallSummary = cleanString(b.summary, 4000);
+    contact.lastCallAt = b.lastCallAt || new Date().toISOString();
+    contact.updatedAt = new Date().toISOString();
+    await ctx.save();
+    return ok(res, 200, { contact }), true;
+  }
+
+  if (resource === "reports" && itemId === "generate" && req.method === "POST") {
+    const start = b.periodStart ? Date.parse(b.periodStart) : Date.now() - 7 * 86400000;
+    const end = b.periodEnd ? Date.parse(b.periodEnd) : Date.now();
+    if (!Number.isFinite(start) || !Number.isFinite(end) || start > end) return fail(res, 400, "invalid_report_period"), true;
+    const jobs = crm.outbox.filter(x => Date.parse(x.createdAt) >= start && Date.parse(x.createdAt) <= end);
+    const report = { id: id(), periodStart: new Date(start).toISOString(), periodEnd: new Date(end).toISOString(),
+      summary: "Marketing activity report", metrics: {
+        contacts: crm.contacts.length, messagesQueued: jobs.length,
+        sms: jobs.filter(x => x.channel === "sms").length,
+        whatsapp: jobs.filter(x => x.channel === "whatsapp").length,
+        calls: jobs.filter(x => x.channel === "call").length,
+        delivered: jobs.filter(x => x.status === "delivered").length,
+        failed: jobs.filter(x => x.status === "failed").length,
+        replies: jobs.filter(x => x.direction === "inbound").length
+      }, createdAt: new Date().toISOString() };
+    crm.reports.push(report); await ctx.save();
+    return ok(res, 201, { report }), true;
   }
 
   if (resource === "tasks" && itemId === "today" && req.method === "GET") {
