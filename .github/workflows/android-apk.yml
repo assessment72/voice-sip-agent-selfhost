@@ -12,6 +12,17 @@ on:
       - '*.gradle.kts'
       - 'gradle.properties'
       - '.github/workflows/android-apk.yml'
+  pull_request:
+    branches:
+      - feat/telegram-voice-fallback
+    paths:
+      - 'app/**'
+      - 'gradle/**'
+      - 'gradlew'
+      - '*.gradle'
+      - '*.gradle.kts'
+      - 'gradle.properties'
+      - '.github/workflows/android-apk.yml'
   workflow_dispatch:
 
 permissions:
