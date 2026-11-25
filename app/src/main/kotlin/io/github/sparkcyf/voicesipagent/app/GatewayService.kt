@@ -260,7 +260,7 @@ class GatewayService : Service() {
                         val reply = try {
                             when (command) {
                                 "/start", "/help" ->
-                                    "Voicx control جاهز. الأوامر:\n/status - حالة البوابة\n/sip - حالة SIP\n/calls - حالة المكالمات\n/simcall <رقم> - اتصال SIM وربطه بـ SIP\n/call رقم | اسم | وظيفة | شركة - اتصال SIM مع Gemini\n/auto_answer_on - الرد الآلي بواسطة Gemini\n/auto_answer_off - إيقاف الرد الآلي\n/ai_stop - إيقاف مكالمة Gemini\n/simcall_cancel - إنهاء الاتصال الجاري\n/account - سجل المكالمات والصوت والبطارية\n/simcall_delete <id> - حذف سجل\n/service_on - تشغيل البوابة\n/service_off - إيقاف التحويل"
+                                    "Voicx control جاهز. الأوامر:\n/status - حالة البوابة\n/sip - حالة SIP\n/calls - حالة المكالمات\n/simcall <رقم> - اتصال SIM وربطه بـ SIP\n/call رقم | اسم | وظيفة | شركة - اتصال SIM مع Gemini\n/ai_status - اختبار اتصال Gemini Live API\n/ai_errors - آخر تشخيصات Gemini\n/auto_answer_on - الرد الآلي بواسطة Gemini\n/auto_answer_off - إيقاف الرد الآلي\n/ai_stop - إيقاف مكالمة Gemini\n/simcall_cancel - إنهاء الاتصال الجاري\n/account - سجل المكالمات والصوت والبطارية\n/simcall_delete <id> - حذف سجل\n/service_on - تشغيل البوابة\n/service_off - إيقاف التحويل"
                                 "/status" -> {
                                     val h = GatewayRuntime.get(this@GatewayService).health.value
                                     "Gateway: ${if (h.takeover) "ON" else "OFF"}\nSIP: ${if (h.sip.ready) "ready" else "not ready"}\nActive call: ${h.session != null || h.calls.owned > 0}"
@@ -289,6 +289,22 @@ class GatewayService : Service() {
                                     "تم حذف سجل المكالمة #$argument."
                                 } else "لم أعثر على سجل بالمعرّف المحدد."
                                 "/account" -> GatewayRuntime.get(this@GatewayService).telegramAccountReport()
+                                "/ai_status" -> {
+                                    val chatId = update.chatId
+                                    runtime.checkAiConnection { result ->
+                                        scope.launch(Dispatchers.IO) {
+                                            runCatching { client.sendMessage(chatId, result) }
+                                        }
+                                    }
+                                    "جارٍ اختبار اتصال Gemini Live API؛ سأرسل النتيجة حالما يكتمل الفحص."
+                                }
+                                "/ai_errors" -> {
+                                    val diagnostics = AppLog.tail.value
+                                        .filter { it.contains("Gemini Live", ignoreCase = true) }
+                                        .takeLast(10)
+                                    if (diagnostics.isEmpty()) "لا توجد تشخيصات Gemini مسجلة منذ تشغيل التطبيق."
+                                    else "آخر تشخيصات Gemini Live (لا تتضمن المفتاح أو الصوت):\n${diagnostics.joinToString("\n")}".take(3_800)
+                                }
                                 "/auto_answer_on" -> { runtime.setAiAutoAnswer(true); "تم قبول تشغيل الرد الآلي بواسطة Gemini." }
                                 "/auto_answer_off" -> { runtime.setAiAutoAnswer(false); "تم إيقاف الرد الآلي بواسطة Gemini." }
                                 "/ai_stop" -> { runtime.stopAiCall(); "تم قبول طلب إيقاف مكالمة Gemini." }

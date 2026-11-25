@@ -749,6 +749,10 @@ class GatewayRuntime private constructor(context: Context) {
 
     fun stopAiCall() = worker.execute { gemini.stop() }
 
+    fun checkAiConnection(callback: (String) -> Unit) = worker.execute {
+        gemini.checkConnection(callback)
+    }
+
     /** Starts an authenticated Telegram-originated SIM call and bridges it to the registered SIP phone. */
     fun startTelegramSimCall(rawNumber: String, notify: (String) -> Unit) = worker.execute {
         val raw = rawNumber.trim().filterNot { it.isWhitespace() || it == '(' || it == ')' || it == '-' }

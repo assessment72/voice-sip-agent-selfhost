@@ -6,6 +6,7 @@ import okhttp3.Request
 import okhttp3.Response
 import okhttp3.WebSocket
 import okhttp3.WebSocketListener
+import okio.ByteString
 import org.json.JSONObject
 import java.util.concurrent.Executors
 import java.util.concurrent.ScheduledFuture
@@ -31,6 +32,7 @@ internal class GeminiLiveClient(
     @Volatile private var socket: WebSocket? = null
     @Volatile private var closed = false
     @Volatile private var setupComplete = false
+    @Volatile private var setupQueued = false
     @Volatile private var setupTimeout: ScheduledFuture<*>? = null
 
     fun connect() {
@@ -39,9 +41,10 @@ internal class GeminiLiveClient(
         val request = Request.Builder().url(url).build()
         socket = http.newWebSocket(request, object : WebSocketListener() {
             override fun onOpen(webSocket: WebSocket, response: Response) {
+                AppLog.i("Gemini Live WebSocket opened (HTTP ${response.code}); sending setup for $model")
                 setupTimeout = setupTimer.schedule({
                     if (!setupComplete && !closed) {
-                        onClosed("Gemini setup timeout: no setupComplete received within 20 seconds")
+                        onClosed("Gemini setup timeout: setupQueued=$setupQueued, no setupComplete received within 20 seconds")
                     }
                 }, 20, TimeUnit.SECONDS)
                 val setup = JSONObject()
@@ -52,12 +55,15 @@ internal class GeminiLiveClient(
                             .put(JSONObject().put("text", instructions))))
                         .put("inputAudioTranscription", JSONObject())
                         .put("outputAudioTranscription", JSONObject()))
-                webSocket.send(setup.toString())
+                setupQueued = webSocket.send(setup.toString())
+                AppLog.i("Gemini Live setup queued=$setupQueued")
+                if (!setupQueued) onClosed("Gemini setup could not be queued on WebSocket")
             }
 
             override fun onMessage(webSocket: WebSocket, text: String) {
                 runCatching {
                     val message = JSONObject(text)
+                    AppLog.i("Gemini Live server message fields=${message.keys().asSequence().toList().sorted().joinToString(",")}")
                     val error = message.optJSONObject("error")
                     if (error != null) {
                         onClosed(formatServerError(error))
@@ -67,6 +73,11 @@ internal class GeminiLiveClient(
                 }.onFailure {
                     AppLog.w("Gemini Live response could not be parsed (${it.javaClass.simpleName})")
                 }
+            }
+
+            override fun onMessage(webSocket: WebSocket, bytes: ByteString) {
+                AppLog.i("Gemini Live received binary WebSocket frame (${bytes.size} bytes)")
+                onMessage(webSocket, bytes.utf8())
             }
 
             override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {

@@ -15,6 +15,7 @@ import io.github.sparkcyf.voicesipagent.voice.PcmFormat
 import io.github.sparkcyf.voicesipagent.gateway.MediaBridge
 import java.util.concurrent.ArrayBlockingQueue
 import java.util.concurrent.CopyOnWriteArrayList
+import java.util.concurrent.atomic.AtomicBoolean
 
 internal data class AiCallReport(
     val number: String?, val name: String?, val role: String?, val company: String?,
@@ -46,6 +47,7 @@ internal class GeminiAiEndpoint(
     override val name = "gemini"
     override val status: EndpointStatus get() = EndpointStatus(apiKey().isNotBlank(), if (apiKey().isBlank()) "Gemini API key not configured" else "Gemini ready")
     private val statuses = CopyOnWriteArrayList<EndpointStatusListener>()
+    private val statusProbeRunning = AtomicBoolean(false)
     @Volatile private var handler: ((CallLeg) -> Unit)? = null
     @Volatile private var active: AiLeg? = null
     @Volatile private var context = CallContext()
@@ -68,6 +70,42 @@ internal class GeminiAiEndpoint(
     }
 
     fun stop() { active?.hangup(HangupCause.CANCELLED) }
+
+    /** Opens a short Live session and reports only after Gemini confirms setupComplete. */
+    fun checkConnection(callback: (String) -> Unit) {
+        val key = apiKey()
+        if (key.isBlank()) {
+            callback("Gemini Live API غير متصل: لم يتم حفظ مفتاح API.")
+            return
+        }
+        if (!statusProbeRunning.compareAndSet(false, true)) {
+            callback("فحص اتصال Gemini Live جارٍ بالفعل.")
+            return
+        }
+        val selectedModel = model()
+        val completed = AtomicBoolean(false)
+        lateinit var probe: GeminiLiveClient
+        fun finish(message: String) {
+            if (completed.compareAndSet(false, true)) {
+                statusProbeRunning.set(false)
+                probe.close("status check complete")
+                callback(message)
+            }
+        }
+        probe = GeminiLiveClient(
+            apiKey = key,
+            model = selectedModel,
+            instructions = "Connectivity check only. Do not speak unless audio is received.",
+            onAudio24k = {},
+            onInputTranscript = {},
+            onOutputTranscript = {},
+            onReady = { finish("اتصال Gemini Live API ناجح. النموذج: $selectedModel") },
+            onClosed = { detail -> finish("Gemini Live API غير متصل: $detail") },
+        )
+        runCatching { probe.connect() }.onFailure {
+            finish("فشل فحص Gemini Live API (${it.javaClass.simpleName}).")
+        }
+    }
 
     /** Places a SIM call and directly cross-connects it to a new Gemini leg. */
     fun startOutbound(cellular: CallEndpoint, number: String, caller: Party) {
