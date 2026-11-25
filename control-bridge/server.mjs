@@ -14,6 +14,11 @@ const DEVICE_CONFIG = JSON.parse(process.env.VOICX_DEVICES || "[]");
 const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN || "";
 const TELEGRAM_ADMIN_IDS = new Set((process.env.TELEGRAM_ADMIN_IDS || "").split(",").map(x => x.trim()).filter(x => /^\d+$/.test(x)));
 const CRM_TELEGRAM_ADMIN_IDS = new Set((process.env.VOICX_CRM_TELEGRAM_ADMIN_IDS || "").split(",").map(x => x.trim()).filter(x => /^\d+$/.test(x)));
+const SMS_TELEGRAM_ADMIN_IDS = new Set((process.env.VOICX_SMS_TELEGRAM_ADMIN_IDS || "").split(",").map(x => x.trim()).filter(x => /^\d+$/.test(x)));
+const HOSTED_SMS_API_URL = (process.env.VOICX_HOSTED_API_URL || "").replace(/\/+$/, "");
+const HOSTED_SMS_ORGANIZATION_ID = process.env.VOICX_SMS_ORGANIZATION_ID || "";
+const HOSTED_SMS_ORGANIZATION_TOKEN = process.env.VOICX_SMS_ORGANIZATION_TOKEN || "";
+const HOSTED_SMS_DEPLOYMENT_BYPASS = process.env.VOICX_HOSTED_API_BYPASS_TOKEN || "";
 const MAX_BODY = 16 * 1024;
 const COMMAND_TTL_MS = 60_000;
 const DEVICE_ID = /^[a-zA-Z0-9_-]{1,64}$/;
@@ -147,6 +152,83 @@ function isCrmTelegramAdmin(update) {
     CRM_TELEGRAM_ADMIN_IDS.has(String(sender?.id));
 }
 
+
+function isSmsTelegramAdmin(update) {
+  const message = update.message;
+  const sender = message?.from;
+  return !!message && message.chat?.type === "private" &&
+    String(message.chat.id) === String(sender?.id) &&
+    SMS_TELEGRAM_ADMIN_IDS.has(String(sender?.id));
+}
+
+async function hostedSmsRequest(method, route, payload = undefined, idempotencyKey = undefined) {
+  if (!HOSTED_SMS_API_URL.startsWith("https://") ||
+      !HOSTED_SMS_ORGANIZATION_ID || HOSTED_SMS_ORGANIZATION_TOKEN.length < 32) {
+    throw Object.assign(new Error("hosted_sms_not_configured"), { code: "hosted_sms_not_configured" });
+  }
+  const headers = {
+    "Authorization": "Bearer " + HOSTED_SMS_ORGANIZATION_TOKEN,
+    "X-Organization-ID": HOSTED_SMS_ORGANIZATION_ID,
+    "Accept": "application/json"
+  };
+  if (payload !== undefined) headers["Content-Type"] = "application/json";
+  if (idempotencyKey) headers["Idempotency-Key"] = idempotencyKey;
+  if (HOSTED_SMS_DEPLOYMENT_BYPASS) headers["x-vercel-protection-bypass"] = HOSTED_SMS_DEPLOYMENT_BYPASS;
+  const response = await fetch(HOSTED_SMS_API_URL + route, {
+    method, headers, body: payload === undefined ? undefined : JSON.stringify(payload),
+    signal: AbortSignal.timeout(20_000)
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw Object.assign(new Error("hosted_sms_request_failed"), {
+      code: typeof data.detail === "string" ? data.detail : "hosted_sms_request_failed",
+      status: response.status
+    });
+  }
+  return data;
+}
+
+async function handleTelegramSmsCommand(message, command, args) {
+  const chatId = message.chat.id;
+  if (command === "/sms_help") {
+    await telegramMessage(chatId,
+      "أوامر SMS عبر Adasms:\\n/sms_send الرقم | نص الرسالة | موافق\\n/sms_history [عدد]\\nيشترط وجود موافقة المستلم. مفتاح المزود محفوظ في Vercel ولا يظهر في Telegram أو التطبيق.");
+    return true;
+  }
+  if (command === "/sms_send") {
+    const fields = String(args || "").split("|").map(x => x.trim());
+    if (fields.length !== 3 || !fields[0] || !fields[1] ||
+        !["موافق", "نعم", "CONFIRM"].includes(fields[2].toUpperCase() === "CONFIRM" ? "CONFIRM" : fields[2])) {
+      await telegramMessage(chatId, "الصيغة: /sms_send +9677xxxxxxx | نص الرسالة | موافق");
+      return true;
+    }
+    if (fields[1].length > 1000) {
+      await telegramMessage(chatId, "نص الرسالة يتجاوز الحد المسموح (1000 حرف).");
+      return true;
+    }
+    const result = await hostedSmsRequest(
+      "POST",
+      "/v1/organizations/" + encodeURIComponent(HOSTED_SMS_ORGANIZATION_ID) + "/sms/send",
+      { phone: fields[0], message: fields[1], consentConfirmed: true },
+      randomUUID()
+    );
+    await telegramMessage(chatId,
+      "حالة طلب SMS: " + result.status + "\\nالرقم: " + result.phoneMasked +
+      "\\nرقم العملية: " + result.smsId);
+    return true;
+  }
+  if (command === "/sms_history") {
+    const limit = Math.max(1, Math.min(50, Number.parseInt(args || "10", 10) || 10));
+    const result = await hostedSmsRequest("GET", "/v1/admin/sms?limit=" + limit);
+    const rows = (result.messages || []).map(x =>
+      "• " + x.phoneMasked + " — " + x.status + " — " + x.smsId
+    );
+    await telegramMessage(chatId, rows.length ? rows.join("\\n") : "لا توجد رسائل مسجلة.");
+    return true;
+  }
+  return false;
+}
+
 function splitCrmFields(value, expected) {
   const fields = String(value || "").split("|").map(x => x.trim());
   if (fields.length < expected || fields.slice(0, expected).some(x => !x)) return null;
@@ -220,6 +302,23 @@ async function telegramQueueCommand(chatId, deviceId, type) {
 }
 
 async function handleTelegramUpdate(update) {
+  if (update.message && isSmsTelegramAdmin(update)) {
+    const raw = String(update.message.text || "").trim();
+    const match = raw.match(/^(\\/sms_(?:help|send|history))(?:\\s+([\\s\\S]*))?$/i);
+    if (match) {
+      try {
+        if (await handleTelegramSmsCommand(update.message, match[1].toLowerCase(), match[2] || "")) return;
+      } catch (error) {
+        const message = error?.code === "hosted_sms_not_configured"
+          ? "تكامل SMS غير مهيأ على الخادم. راجع إعدادات Vercel وبيانات المؤسسة."
+          : error?.code === "recipient_consent_required"
+            ? "يلزم تأكيد موافقة المستلم قبل الإرسال."
+            : "تعذر تنفيذ طلب SMS. لم يتم تأكيد الإرسال؛ راجع سجل الرسائل قبل إعادة المحاولة.";
+        await telegramMessage(update.message.chat.id, message);
+        return;
+      }
+    }
+  }
   if (update.message && isCrmTelegramAdmin(update)) {
     const raw = String(update.message.text || "").trim();
     const match = raw.match(/^(\/crm_[a-z_]+)(?:\s+([\s\S]*))?$/i);
@@ -294,7 +393,7 @@ async function handleTelegramUpdate(update) {
 }
 
 async function telegramPoll() {
-  if (!TELEGRAM_BOT_TOKEN || (TELEGRAM_ADMIN_IDS.size === 0 && CRM_TELEGRAM_ADMIN_IDS.size === 0)) {
+  if (!TELEGRAM_BOT_TOKEN || (TELEGRAM_ADMIN_IDS.size === 0 && CRM_TELEGRAM_ADMIN_IDS.size === 0 && SMS_TELEGRAM_ADMIN_IDS.size === 0)) {
     console.log("Telegram control disabled (bot token/admin allowlist not configured)");
     return;
   }
