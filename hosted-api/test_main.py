@@ -330,7 +330,7 @@ def test_adasms_send_is_tenant_scoped_persisted_and_idempotent(tmp_path, monkeyp
     client = setup_client(tmp_path, monkeypatch)
     monkeypatch.setattr(main, "mongodb_enabled", lambda: False)
     monkeypatch.setattr(main, "REQUIRE_DISTRIBUTED_RATE_LIMIT", False)
-    monkeypatch.setattr(main, "_rate_limit_check", lambda **kwargs: (True, 1))
+    monkeypatch.setattr(main, "_rate_limit_check", lambda *args, **kwargs: (True, 1))
     monkeypatch.setattr(main, "SMS_ALLOWED_PREFIXES", ("+9677",))
     monkeypatch.setenv("ADASMS_API_KEY", "test-provider-key")
     calls = []
@@ -340,9 +340,9 @@ def test_adasms_send_is_tenant_scoped_persisted_and_idempotent(tmp_path, monkeyp
         return {"httpStatus": 200, "providerMessageId": "provider-123"}
 
     monkeypatch.setattr(main, "send_adasms", fake_send)
-    client.app.dependency_overrides[main.organization_principal] = lambda: {
+    monkeypatch.setitem(client.app.dependency_overrides, main.organization_principal, lambda: {
         "organization_id": "org-1", "user_id": "owner-1", "role": "owner"
-    }
+    })
     key = str(uuid.uuid4())
     request_headers = {"Idempotency-Key": key, "X-Organization-ID": "org-1"}
     payload = {
@@ -373,14 +373,14 @@ def test_adasms_rejects_changed_idempotency_payload_and_missing_consent(tmp_path
     client = setup_client(tmp_path, monkeypatch)
     monkeypatch.setattr(main, "mongodb_enabled", lambda: False)
     monkeypatch.setattr(main, "REQUIRE_DISTRIBUTED_RATE_LIMIT", False)
-    monkeypatch.setattr(main, "_rate_limit_check", lambda **kwargs: (True, 1))
+    monkeypatch.setattr(main, "_rate_limit_check", lambda *args, **kwargs: (True, 1))
     monkeypatch.setattr(main, "SMS_ALLOWED_PREFIXES", ("+9677",))
     monkeypatch.setenv("ADASMS_API_KEY", "test-provider-key")
     calls = []
     monkeypatch.setattr(main, "send_adasms", lambda phone, message: calls.append(phone) or {"httpStatus": 200})
-    client.app.dependency_overrides[main.organization_principal] = lambda: {
+    monkeypatch.setitem(client.app.dependency_overrides, main.organization_principal, lambda: {
         "organization_id": "org-1", "user_id": "owner-1", "role": "owner"
-    }
+    })
     key = str(uuid.uuid4())
     headers_value = {"Idempotency-Key": key, "X-Organization-ID": "org-1"}
     payload = {"phone": "+967777405578", "message": "Hello", "consentConfirmed": True}
@@ -400,12 +400,12 @@ def test_adasms_requires_provider_secret_and_yemen_mobile_allowlist(tmp_path, mo
     client = setup_client(tmp_path, monkeypatch)
     monkeypatch.setattr(main, "mongodb_enabled", lambda: False)
     monkeypatch.setattr(main, "REQUIRE_DISTRIBUTED_RATE_LIMIT", False)
-    monkeypatch.setattr(main, "_rate_limit_check", lambda **kwargs: (True, 1))
+    monkeypatch.setattr(main, "_rate_limit_check", lambda *args, **kwargs: (True, 1))
     monkeypatch.setattr(main, "SMS_ALLOWED_PREFIXES", ("+9677",))
     monkeypatch.delenv("ADASMS_API_KEY", raising=False)
-    client.app.dependency_overrides[main.organization_principal] = lambda: {
+    monkeypatch.setitem(client.app.dependency_overrides, main.organization_principal, lambda: {
         "organization_id": "org-1", "user_id": "owner-1", "role": "owner"
-    }
+    })
     headers_value = {"Idempotency-Key": str(uuid.uuid4()), "X-Organization-ID": "org-1"}
     payload = {"phone": "+967777405578", "message": "Hello", "consentConfirmed": True}
     missing_secret = client.post("/v1/organizations/org-1/sms/send", json=payload, headers=headers_value)
@@ -423,9 +423,9 @@ def test_adasms_requires_provider_secret_and_yemen_mobile_allowlist(tmp_path, mo
 def test_adasms_device_send_is_disabled_by_default(tmp_path, monkeypatch):
     client = setup_client(tmp_path, monkeypatch)
     monkeypatch.setattr(main, "SMS_DEVICE_SEND_ENABLED", False)
-    client.app.dependency_overrides[main.authenticated_device] = lambda: {
+    monkeypatch.setitem(client.app.dependency_overrides, main.authenticated_device, lambda: {
         "organization_id": "org-1", "device_id": "device-1"
-    }
+    })
     response = client.post(
         "/v1/device/sms/send",
         json={"phone": "+967777405578", "message": "Hello", "consentConfirmed": True},
