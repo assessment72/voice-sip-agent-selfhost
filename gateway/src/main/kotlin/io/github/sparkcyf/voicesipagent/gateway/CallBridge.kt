@@ -288,7 +288,9 @@ class CallBridge(
         s.endedAtMs = System.currentTimeMillis()
         s.answerTimer?.cancel(false)
         s.mediaTimer?.cancel(false)
-        s.media?.stop()
+        val finalMedia = s.media
+        finalMedia?.stop()
+        if (finalMedia != null) log("$s media diagnostics: ${finalMedia.diagnostics()}")
         s.media = null
         if (s.inbound.state != LegState.ENDED) s.inbound.hangup(cause)
         s.outbound?.let { if (it.state != LegState.ENDED) it.hangup(if (cause == HangupCause.CANCELLED) HangupCause.CANCELLED else cause) }
