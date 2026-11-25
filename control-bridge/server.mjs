@@ -12,8 +12,8 @@ const STORE = path.resolve(process.env.VOICX_STORE || "./data/voicx-store.json")
 const ADMIN_TOKEN = process.env.VOICX_ADMIN_TOKEN || "";
 const DEVICE_CONFIG = JSON.parse(process.env.VOICX_DEVICES || "[]");
 const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN || "";
-const TELEGRAM_ADMIN_IDS = new Set((process.env.TELEGRAM_ADMIN_IDS || "").split(",").map(x => x.trim()).filter(x => /^\\d+$/.test(x)));
-const CRM_TELEGRAM_ADMIN_IDS = new Set((process.env.VOICX_CRM_TELEGRAM_ADMIN_IDS || "").split(",").map(x => x.trim()).filter(x => /^\\d+$/.test(x)));
+const TELEGRAM_ADMIN_IDS = new Set((process.env.TELEGRAM_ADMIN_IDS || "").split(",").map(x => x.trim()).filter(x => /^\d+$/.test(x)));
+const CRM_TELEGRAM_ADMIN_IDS = new Set((process.env.VOICX_CRM_TELEGRAM_ADMIN_IDS || "").split(",").map(x => x.trim()).filter(x => /^\d+$/.test(x)));
 const MAX_BODY = 16 * 1024;
 const COMMAND_TTL_MS = 60_000;
 const DEVICE_ID = /^[a-zA-Z0-9_-]{1,64}$/;
@@ -161,7 +161,7 @@ async function handleTelegramCrmCommand(message, command, args) {
   }
   if (command === "/crm_help") {
     await telegramMessage(chatId,
-      "أوامر CRM:\\n/crm_add الاسم | الهاتف | الشركة | المدينة\\n/crm_search كلمة البحث\\n/crm_never العملاء الذين لم يتم التواصل معهم\\n/crm_due المتابعات المستحقة\\n/crm_log الهاتف | النتيجة | الملخص | موعد المتابعة ISO اختياري");
+      "أوامر CRM:\n/crm_add الاسم | الهاتف | الشركة | المدينة\n/crm_search كلمة البحث\n/crm_never العملاء الذين لم يتم التواصل معهم\n/crm_due المتابعات المستحقة\n/crm_log الهاتف | النتيجة | الملخص | موعد المتابعة ISO اختياري");
     return true;
   }
   if (command === "/crm_add") {
@@ -171,20 +171,20 @@ async function handleTelegramCrmCommand(message, command, args) {
       return true;
     }
     const contact = await crmStore.addContact({ name: fields[0], phone: fields[1], company: fields[2] || "", city: fields[3] || "" });
-    await telegramMessage(chatId, "تمت إضافة العميل: " + contact.name + "\\nالهاتف: " + contact.phone + "\\nالمعرّف: " + contact.id);
+    await telegramMessage(chatId, "تمت إضافة العميل: " + contact.name + "\nالهاتف: " + contact.phone + "\nالمعرّف: " + contact.id);
     return true;
   }
   if (command === "/crm_search" || command === "/crm_never") {
     const rows = await crmStore.searchContacts(command === "/crm_never"
       ? { neverContacted: true, limit: 20 } : { query: args, limit: 20 });
     const lines = rows.map(x => "• " + x.name + " — " + x.phone + (x.company ? " — " + x.company : ""));
-    await telegramMessage(chatId, lines.length ? lines.join("\\n") : "لا توجد نتائج.");
+    await telegramMessage(chatId, lines.length ? lines.join("\n") : "لا توجد نتائج.");
     return true;
   }
   if (command === "/crm_due") {
     const rows = await crmStore.listFollowUps(true, 30);
     const lines = rows.map(x => "• " + (x.contact?.name || "عميل غير معروف") + " — " + x.dueAt + " — " + x.title);
-    await telegramMessage(chatId, lines.length ? lines.join("\\n") : "لا توجد متابعات مستحقة حتى الآن.");
+    await telegramMessage(chatId, lines.length ? lines.join("\n") : "لا توجد متابعات مستحقة حتى الآن.");
     return true;
   }
   if (command === "/crm_log") {
@@ -286,11 +286,11 @@ async function handleTelegramUpdate(update) {
 }
 
 async function telegramPoll() {
-  if (!TELEGRAM_BOT_TOKEN || TELEGRAM_ADMIN_IDS.size === 0) {
+  if (!TELEGRAM_BOT_TOKEN || (TELEGRAM_ADMIN_IDS.size === 0 && CRM_TELEGRAM_ADMIN_IDS.size === 0)) {
     console.log("Telegram control disabled (bot token/admin allowlist not configured)");
     return;
   }
-  console.log("Telegram control enabled for " + TELEGRAM_ADMIN_IDS.size + " admin account(s)");
+  console.log("Telegram polling enabled; device admins=" + TELEGRAM_ADMIN_IDS.size + ", CRM admins=" + CRM_TELEGRAM_ADMIN_IDS.size);
   while (true) {
     try {
       const updates = await telegram("getUpdates", {
@@ -401,7 +401,7 @@ const server = http.createServer(async (req, res) => {
       if (c.telegramChatId && b.status !== "running") {
         const outcome = b.status === "succeeded" ? "اكتمل الأمر بنجاح" : "فشل تنفيذ الأمر";
         const details = c.result ? String(c.result).slice(0, 1200) : String(b.error || "");
-        telegramMessage(c.telegramChatId, outcome + " على " + id + ".\\n" + details).catch(() => {});
+        telegramMessage(c.telegramChatId, outcome + " على " + id + ".\n" + details).catch(() => {});
       }
       return json(res, 200, { ok: true });
     }
