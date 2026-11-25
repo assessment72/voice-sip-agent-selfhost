@@ -113,7 +113,7 @@ internal class GeminiPcmOutputBuffer(private val frameSamples: Int) {
 }
 
 
-/** One audioStreamEnd per caller turn; reset only when Gemini confirms turn completion. */
+/** One local speech-end metric per caller turn; reset only when Gemini confirms turn completion. */
 internal class GeminiTurnEndGate {
     private val signalled = java.util.concurrent.atomic.AtomicBoolean(false)
 
