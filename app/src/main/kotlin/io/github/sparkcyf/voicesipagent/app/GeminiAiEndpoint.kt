@@ -42,8 +42,12 @@ internal data class AiCallReport(
     val averageTurnResponseMs: Long? = null,
     val lastTurnSpeechDurationMs: Long? = null,
     val averageTurnSpeechDurationMs: Long? = null,
+    val turnCount: Int = 0,
+    val conversationTranscript: String = "",
+    val lastSpeechEndAt: Long? = null,
 ) {
-    fun telegramText() = buildString {
+    fun telegramMessages(): List<String> {
+        val summary = buildString {
         appendLine("تقرير مكالمة الذكاء الاصطناعي")
         appendLine("الرقم: ${number ?: "غير معروف"}")
         if (!name.isNullOrBlank()) appendLine("الاسم: $name")
@@ -57,18 +61,26 @@ internal data class AiCallReport(
         appendLine("إطارات صوت أُسقطت: ${outputDroppedFrames}؛ أقصى امتلاء للطابور: ${outputQueuePeak}/1000")
         // The opening greeting may arrive before any caller audio, while lastInputSentAt
         // is updated throughout the call. Do not report a negative cross-call duration.
-        val responseMs = if (lastInputSentAt != null && firstOutputAt != null) (firstOutputAt - lastInputSentAt).takeIf { it >= 0 } else null
-        val queuedMs = if (lastInputSentAt != null && firstOutputQueuedAt != null) (firstOutputQueuedAt - lastInputSentAt).takeIf { it >= 0 } else null
-        val playbackMs = if (lastInputSentAt != null && firstOutputPlayedAt != null) (firstOutputPlayedAt - lastInputSentAt).takeIf { it >= 0 } else null
+        val responseMs = if (lastSpeechEndAt != null && firstOutputAt != null) (firstOutputAt - lastSpeechEndAt).takeIf { it >= 0 } else null
+        val queuedMs = if (lastSpeechEndAt != null && firstOutputQueuedAt != null) (firstOutputQueuedAt - lastSpeechEndAt).takeIf { it >= 0 } else null
+        val playbackMs = if (lastSpeechEndAt != null && firstOutputPlayedAt != null) (firstOutputPlayedAt - lastSpeechEndAt).takeIf { it >= 0 } else null
         appendLine("زمن وصول أول صوت Gemini بعد آخر إطار دخل: ${responseMs?.let { "$it مللي ثانية" } ?: "غير متاح"}")
         appendLine("زمن وضع أول صوت في الطابور: ${queuedMs?.let { "$it مللي ثانية" } ?: "غير متاح"}")
         appendLine("زمن أول تشغيل بعد آخر إطار دخل: ${playbackMs?.let { "$it مللي ثانية" } ?: "غير متاح"}")
-        if (turnResponseCount > 0) appendLine("زمن استجابة Gemini بعد نهاية كلام العميل: ${lastTurnResponseMs} مللي ثانية؛ المتوسط: ${averageTurnResponseMs} مللي ثانية؛ عدد الجولات: $turnResponseCount")
+        appendLine("عدد جولات الحوار المكتملة: $turnCount")
+        if (turnResponseCount > 0) appendLine("زمن استجابة Gemini بعد نهاية كلام العميل: ${lastTurnResponseMs} مللي ثانية؛ المتوسط: ${averageTurnResponseMs} مللي ثانية؛ عدد الجولات المقاسة: $turnResponseCount")
         if (lastTurnSpeechDurationMs != null) appendLine("مدة كلام العميل في آخر جولة: ${lastTurnSpeechDurationMs} مللي ثانية؛ المتوسط: ${averageTurnSpeechDurationMs} مللي ثانية")
         if (turnCompleteAt != null) appendLine("إشارة اكتمال دور Gemini: مسجلة (لا تمثل بالضرورة نهاية كلام الطرف الآخر)")
         if (inputText.isNotBlank()) appendLine("آخر كلام الطرف الآخر: ${inputText.take(500)}")
         if (outputText.isNotBlank()) appendLine("آخر رد Gemini: ${outputText.take(500)}")
-    }.take(3900)
+        }.toString().take(3900)
+        val transcript = conversationTranscript.trim()
+        if (transcript.isBlank()) return listOf(summary)
+        val chunks = transcript.chunked(3_500).mapIndexed { index, part ->
+            "تفريغ المحادثة ${index + 1}:\n$part"
+        }
+        return listOf(summary) + chunks
+    }
 }
 
 internal class GeminiAiEndpoint(
@@ -268,6 +280,9 @@ internal class GeminiAiEndpoint(
         @Volatile private var failureDetail = ""
         private var inputText = ""
         private var outputText = ""
+        private val conversationTranscript = StringBuilder()
+        private val transcriptLock = Any()
+        private val completedTurns = AtomicInteger(0)
         private var turnCompleteAt: Long? = null
         private val openingTurnStarted = AtomicBoolean(false)
         private val callerIntentHandled = AtomicBoolean(false)
@@ -345,7 +360,8 @@ ${context.salesInfo}
             transition(LegState.PROCEEDING)
             client = GeminiLiveClient(key(), model(), prompt, port::addOutput,
                 { text ->
-                    inputText = (inputText + " " + text).trim().takeLast(1200)
+                    inputText = (inputText + " " + text).trim().takeLast(12_000)
+                    appendTranscript("العميل", text)
                     intentTranscriptBuffer = (intentTranscriptBuffer + " " + text).trim().takeLast(240)
                     if (state != LegState.ENDED && callerIntentHandled.compareAndSet(false, true)) {
                         when (VoiceCallIntentDetector.detect(intentTranscriptBuffer)) {
@@ -366,14 +382,17 @@ ${context.salesInfo}
                         }
                     }
                 },
-                { outputText = (outputText + " " + it).trim().takeLast(1200) },
+                { text ->
+                    outputText = (outputText + " " + text).trim().takeLast(12_000)
+                    appendTranscript("Gemini", text)
+                },
                 { transition(LegState.CONNECTED); publishMedia(port) },
                 { detail ->
                     failureDetail = detail
                     AppLog.w("Gemini Live call failed: $detail")
                     if (state != LegState.ENDED) hangup(HangupCause.NETWORK_ERROR)
                 },
-                { turnCompleteAt = SystemClock.elapsedRealtime(); port.completeTurn() },
+                { completedTurns.incrementAndGet(); turnCompleteAt = SystemClock.elapsedRealtime(); port.completeTurn() },
                 { port.interruptOutput() })
             runCatching { client?.connect() }.onFailure {
                 failureDetail = "Gemini client setup failed (${it.javaClass.simpleName})"
@@ -397,9 +416,19 @@ ${context.salesInfo}
                 failureDetail, port.inputAttempts, port.inputSendFailures, port.outputAudioChunks, port.outputAudioBytes,
                 port.outputDroppedFrames, port.outputQueuePeak, port.lastInputSentAt, port.firstOutputAt,
                 port.firstOutputQueuedAt, port.firstOutputPlayedAt, turnCompleteAt,
-                turnStats.first, turnStats.second, turnStats.third, speechStats.first, speechStats.second))
+                turnStats.first, turnStats.second, turnStats.third, speechStats.first, speechStats.second,
+                completedTurns.get(), synchronized(transcriptLock) { conversationTranscript.toString() }, port.lastSpeechEndAt))
             onEnd()
         }
+        private fun appendTranscript(speaker: String, text: String) {
+            val clean = text.trim().replace(Regex("\\s+"), " ")
+            if (clean.isBlank()) return
+            synchronized(transcriptLock) {
+                if (conversationTranscript.isNotEmpty()) conversationTranscript.append('\\n')
+                conversationTranscript.append(speaker).append(": ").append(clean)
+            }
+        }
+
         fun notifyHandoffFailed() {
             client?.sendClientText("اعتذر للعميل: الموظف غير متاح حالياً. سأكمل مساعدتك أو يمكنك طلب إنهاء المكالمة.")
         }
@@ -423,6 +452,7 @@ ${context.salesInfo}
             @Volatile var firstOutputAt: Long? = null
             @Volatile var firstOutputQueuedAt: Long? = null
             @Volatile var firstOutputPlayedAt: Long? = null
+            @Volatile var lastSpeechEndAt: Long? = null
             private var turnSpeechStartedAt: Long? = null
             private var lastSpeechAt: Long? = null
             private var speechEndSignaled = false
@@ -437,7 +467,7 @@ ${context.salesInfo}
                 outputFrames++
                 if (firstOutputPlayedAt == null) firstOutputPlayedAt = SystemClock.elapsedRealtime()
             } ?: format.silence()
-            override fun writeFrame(frame: ShortArray) {
+            @Synchronized override fun writeFrame(frame: ShortArray) {
                 if (openingTurnStarted.compareAndSet(false, true)) {
                     val queued = client?.sendClientText("ابدأ بتحية قصيرة وطبيعية باللهجة اليمنية الخفيفة. عرّف بنفسك كمساعد مبيعات للديزل دون اختراع اسم شركة، واسأل بلطف إن كان الوقت مناسباً لدقيقة واحدة. إذا قال الشخص إنه مشغول فلا تبدأ الأسئلة؛ اعرض وقتاً مناسباً للمتابعة أو أنهِ المكالمة باحترام، ثم توقف واستمع.") == true
                     AppLog.i("Gemini Live call opening turn started=$queued")
@@ -451,7 +481,10 @@ ${context.salesInfo}
                     now - lastSpeechAt!! >= 600) {
                     // Hybrid VAD: preserve automatic server VAD, but finalize promptly after
                     // a locally detected speech end instead of waiting for the full server window.
-                    speechEndSignaled = client?.sendAudioStreamEnd() == true
+                    speechEndSignaled = true
+                    lastSpeechEndAt = now
+                    val queued = client?.sendAudioStreamEnd() == true
+                    AppLog.i("Gemini Live audio stream end queued=$queued")
                 }
                 inputAttempts++
                 if (client?.sendPcm8(frame) == true) {
@@ -464,7 +497,7 @@ ${context.salesInfo}
                 if (firstOutputAt == null) firstOutputAt = now
                 if (currentTurnFirstOutputAt == null) {
                     currentTurnFirstOutputAt = now
-                    lastSpeechAt?.let { speechEndAt -> turnResponseLatencies += (now - speechEndAt).coerceAtLeast(0) }
+                    lastSpeechEndAt?.let { speechEndAt -> turnResponseLatencies += (now - speechEndAt).coerceAtLeast(0) }
                 }
                 outputAudioChunks++
                 outputAudioBytes += bytes24k.size
