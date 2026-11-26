@@ -337,6 +337,7 @@ private fun SettingsSection(rt: GatewayRuntime) {
     var firebaseApiKey by remember { mutableStateOf("") }
     var firebaseApplicationId by remember(cur) { mutableStateOf(cur.firebaseApplicationId) }
     var firebaseResult by remember { mutableStateOf("") }
+    var smsApiKey by remember { mutableStateOf("") }
     var telegramTestRunning by remember { mutableStateOf(false) }
     var telegramTestResult by remember { mutableStateOf("") }
     val telegramScope = rememberCoroutineScope()

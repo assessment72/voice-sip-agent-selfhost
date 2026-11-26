@@ -116,24 +116,25 @@ internal class VoicxCustomerRepository(private val store: VoicxFirebaseStore) {
     }
     fun addMemory(customerId: String, text: String, source: String) { val id = UUID.randomUUID().toString(); save("customer_memories", id, mapOf("customerId" to customerId, "text" to text.take(4000), "source" to source, "createdAt" to System.currentTimeMillis())) }
     fun instructionFor(phone: String): String = findByPhone(phone)?.instructions.orEmpty()
-    fun memoriesFor(phone: String, limit: Int = 10): String { val customerId = findByPhone(phone)?.id ?: return ""; return query("customer_memories") { whereEqualTo("customerId", customerId).orderBy("createdAt", Query.Direction.DESCENDING).limit(limit.coerceIn(1, 20)) }.map { it.text("text") }.filter(String::isNotBlank).asReversed().joinToString("\n") { "- $it" } }
+    fun memoriesFor(phone: String, limit: Int = 10): String { val customerId = findByPhone(phone)?.id ?: return ""; return query("customer_memories") { whereEqualTo("customerId", customerId).orderBy("createdAt", Query.Direction.DESCENDING).limit(limit.coerceIn(1, 20).toLong()) }.map { it.text("text") }.filter(String::isNotBlank).asReversed().joinToString("\n") { "- $it" } }
 
     fun saveSchedule(s: CallSchedule): String { val existing = s.idempotencyKey?.takeIf(String::isNotBlank)?.let { query("call_schedules") { whereEqualTo("idempotencyKey", it).limit(1) }.firstOrNull()?.id }; val id = existing ?: idOrNew(s.id); save("call_schedules", id, mapOf("customerId" to s.customerId, "phone" to s.phone, "runAt" to s.runAt, "status" to s.status, "note" to s.note, "campaignId" to s.campaignId, "campaignCustomerId" to s.campaignCustomerId, "idempotencyKey" to s.idempotencyKey, "attempts" to s.attempts)); return id }
     fun claimDueSchedule(now: Long = System.currentTimeMillis()): CallSchedule? = claim("call_schedules", "pending", now, ::scheduleFrom)?.second
-    fun updateScheduleStatus(id: String, status: String, error: String) { if (id.isNotBlank()) save("call_schedules", id, mapOf("status" to status, "error" to error.takeIf(String::isNotBlank))) }
+    fun updateScheduleStatus(id: String, status: String, error: String = "") { if (id.isNotBlank()) save("call_schedules", id, mapOf("status" to status, "error" to error.takeIf(String::isNotBlank))) }
     fun saveSmsSchedule(s: SmsSchedule): String { val existing = s.idempotencyKey?.takeIf(String::isNotBlank)?.let { query("sms_schedules") { whereEqualTo("idempotencyKey", it).limit(1) }.firstOrNull()?.id }; val id = existing ?: idOrNew(s.id); save("sms_schedules", id, mapOf("customerId" to s.customerId, "phone" to s.phone, "runAt" to s.runAt, "message" to s.message, "status" to s.status, "campaignId" to s.campaignId, "note" to s.note, "campaignCustomerId" to s.campaignCustomerId, "idempotencyKey" to s.idempotencyKey, "attempts" to s.attempts)); return id }
     fun claimDueSmsSchedule(now: Long = System.currentTimeMillis()): SmsSchedule? = claim("sms_schedules", "queued", now, ::smsScheduleFrom)?.second
-    fun updateSmsScheduleStatus(id: String, status: String, error: String) { if (id.isNotBlank()) save("sms_schedules", id, mapOf("status" to status, "error" to error.takeIf(String::isNotBlank))) }
+    fun updateSmsScheduleStatus(id: String, status: String, error: String = "") { if (id.isNotBlank()) save("sms_schedules", id, mapOf("status" to status, "error" to error.takeIf(String::isNotBlank))) }
 
     private fun <T> claim(name: String, status: String, now: Long, mapper: (DocumentSnapshot) -> T): Pair<String, T>? {
         val stale = query(name) { whereEqualTo("status", "running").limit(50) }.filter { it.long("claimedAt") in 1..(now - 600_000L) }
         stale.forEach { save(name, it.id, mapOf("status" to status, "claimedAt" to null)) }
         val ref = c(name)
+        val candidate = Tasks.await(ref.whereEqualTo("status", status).limit(50).get()).documents
+            .filter { it.long("runAt") <= now }.minByOrNull { it.long("runAt") } ?: return null
         val id = Tasks.await(store.requireDatabase().runTransaction { tx: Transaction ->
-            val found = tx.get(ref.whereEqualTo("status", status).limit(50)).documents
-                .filter { it.long("runAt") <= now }.minByOrNull { it.long("runAt") }
-                ?: return@runTransaction null
-            tx.update(found.reference, mapOf("status" to "running", "claimedAt" to now, "attempts" to (found.int("attempts") + 1)))
+            val found = tx.get(ref.document(candidate.id))
+            if (!found.exists() || found.text("status") != status || found.long("runAt") > now) return@runTransaction null
+            tx.update(found.reference, mapOf("status" to "running", "claimedAt" to now, "attempts" to (found.int("attempts") + 1).toLong()))
             found.id
         }, 8, TimeUnit.SECONDS) ?: return null
         val snapshot = Tasks.await(ref.document(id).get()); return id to mapper(snapshot)
@@ -142,8 +143,8 @@ internal class VoicxCustomerRepository(private val store: VoicxFirebaseStore) {
     fun campaignCustomerBlocked(id: String?): Boolean = id?.takeIf(String::isNotBlank)?.let { read("campaign_customers", it).text("status") in listOf("admin", "opted_out", "paused") } ?: false
     fun latestCampaignCustomer(phone: String): String? = query("campaign_customers") { whereEqualTo("phone", phone.trim()).orderBy("createdAt", Query.Direction.DESCENDING).limit(1) }.firstOrNull()?.id
     fun saveCallReport(report: AiCallReport) { val id = UUID.randomUUID().toString(); save("call_summaries", id, mapOf("phone" to report.number.orEmpty(), "name" to report.name.orEmpty(), "role" to report.role.orEmpty(), "company" to report.company.orEmpty(), "startedAt" to report.startedAt, "endedAt" to report.endedAt, "cause" to report.cause?.name.orEmpty(), "failureDetail" to report.failureDetail.take(500), "inputText" to report.inputText.take(12000), "outputText" to report.outputText.take(12000), "conversationTranscript" to report.conversationTranscript.take(24000), "inputFrames" to report.inputFrames, "outputFrames" to report.outputFrames, "createdAt" to System.currentTimeMillis())); report.number?.let(::findByPhone)?.id?.let { addMemory(it, "نتيجة مكالمة ${report.endedAt}: ${report.cause?.name ?: "NORMAL"}\n${report.conversationTranscript.ifBlank { report.outputText }}", "gemini_call") } }
-    fun listSchedules(limit: Int = 20): List<CallSchedule> = query("call_schedules") { orderBy("runAt").limit(limit) }.map(::scheduleFrom)
-    fun listSmsSchedules(limit: Int = 20): List<SmsSchedule> = query("sms_schedules") { orderBy("runAt").limit(limit) }.map(::smsScheduleFrom)
+    fun listSchedules(limit: Int = 20): List<CallSchedule> = query("call_schedules") { orderBy("runAt").limit(limit.toLong()) }.map(::scheduleFrom)
+    fun listSmsSchedules(limit: Int = 20): List<SmsSchedule> = query("sms_schedules") { orderBy("runAt").limit(limit.toLong()) }.map(::smsScheduleFrom)
 
     fun createCampaign(campaign: Campaign): String {
         val id = idOrNew(campaign.id)
