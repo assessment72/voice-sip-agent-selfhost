@@ -52,4 +52,17 @@ class AndroidMongoDnsTest {
         assertTrue(calls.contains("_mongodb._tcp.cluster.example.com" to "SRV"))
         assertTrue(calls.contains("cluster.example.com" to "TXT"))
     }
+
+    @Test
+    fun resolvesAtlasHostAddressesWithoutSystemGetaddrinfo() {
+        val resolver = AndroidInetAddressResolver { _, type ->
+            when (type) {
+                "A" -> """{"Status":0,"Answer":[{"type":1,"data":"192.0.2.10"}]}"""
+                "AAAA" -> """{"Status":3}"""
+                else -> error("unexpected DNS type")
+            }
+        }
+
+        assertEquals(listOf("192.0.2.10"), resolver.lookupByName("shard.example.com").map { it.hostAddress })
+    }
 }

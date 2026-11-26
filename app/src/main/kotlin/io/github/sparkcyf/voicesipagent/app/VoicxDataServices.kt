@@ -17,6 +17,8 @@ import org.bson.Document
 import org.bson.BsonRegularExpression
 import org.bson.conversions.Bson
 import org.bson.types.ObjectId
+import java.net.InetAddress
+import java.net.UnknownHostException
 import java.util.Date
 import java.util.Locale
 import java.util.concurrent.TimeUnit
@@ -115,6 +117,7 @@ internal class VoicxMongoStore {
         return MongoClientSettings.builder()
             .applyConnectionString(connectionString)
             .dnsClient(dnsClient)
+            .inetAddressResolver(AndroidInetAddressResolver())
     }
 
     private fun safeError(e: Throwable): String {
@@ -128,6 +131,10 @@ internal class VoicxMongoStore {
             return "Missing runtime class: ${missingName.take(180)}"
         }
         val root = chain.lastOrNull() ?: e
+        val message = root.message.orEmpty()
+        if (message.contains("EAI_NODATA", ignoreCase = true) || message.contains("UnknownHost", ignoreCase = true)) {
+            return "تعذر حل اسم خادم MongoDB عبر DNS Android؛ تحقق من الشبكة أو إعدادات Atlas ثم أعد المحاولة."
+        }
         return when (root) {
             is IllegalArgumentException -> root.message.orEmpty().take(240)
             else -> "${root.javaClass.simpleName}: ${root.message?.take(180).orEmpty().ifBlank { "connection failed" }}".take(240)
@@ -158,6 +165,27 @@ internal class AndroidDnsClient(
     }
 }
 
+/** Resolves Atlas SRV targets without Android's getaddrinfo/JVM JNDI path. */
+internal class AndroidInetAddressResolver(
+    private val query: AndroidDnsQuery = AndroidDnsQuery { name, type -> AndroidDnsOverHttps.query(name, type) },
+) : com.mongodb.spi.dns.InetAddressResolver {
+    override fun lookupByName(host: String): List<InetAddress> {
+        val resolved = buildList {
+            for (type in listOf("A", "AAAA")) {
+                runCatching { AndroidDnsJson.parse(query.query(host, type), type) }
+                    .getOrElse { emptyList() }
+                    .forEach { address ->
+                        runCatching { InetAddress.getByName(address) }.getOrNull()?.let(::add)
+                    }
+            }
+        }.distinctBy(InetAddress::getHostAddress)
+        if (resolved.isEmpty()) {
+            throw UnknownHostException("Android DNS returned no A/AAAA records for $host")
+        }
+        return resolved
+    }
+}
+
 /** Parses the JSON wire representation returned by DNS-over-HTTPS providers. */
 internal object AndroidDnsJson {
     fun parse(body: String, type: String): List<String> {
@@ -172,6 +200,7 @@ internal object AndroidDnsJson {
                 when (type) {
                     "SRV" -> add(normalizeSrv(raw))
                     "TXT" -> add(decodeTxt(raw))
+                    "A", "AAAA" -> add(raw)
                 }
             }
         }
