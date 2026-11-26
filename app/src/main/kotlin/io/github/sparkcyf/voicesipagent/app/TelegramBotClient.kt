@@ -34,6 +34,8 @@ internal class TelegramBotClient(
         val text: String,
         val callbackQueryId: String? = null,
         val callbackData: String? = null,
+        val bridgeCommandId: String? = null,
+        val bridgeLeaseToken: String? = null,
     )
 
     /** Validates the token with Telegram without starting long polling or exposing the token. */
@@ -68,6 +70,25 @@ internal class TelegramBotClient(
                 callbackData = callbackData,
             ).takeIf { it.updateId >= 0 && it.senderId >= 0 && it.chatId >= 0 }
         }
+    }
+
+    fun fromQueuedCommand(command: JSONObject): Incoming? {
+        val update = command.optJSONObject("payload") ?: return null
+        val callback = update.optJSONObject("callback_query")
+        val message = if (callback == null) update.optJSONObject("message") else callback.optJSONObject("message")
+            ?: return null
+        val from = (callback?.optJSONObject("from") ?: message.optJSONObject("from")) ?: return null
+        val chat = message.optJSONObject("chat") ?: return null
+        val text = if (callback == null) message.optString("text").trim() else ""
+        val callbackData = callback?.optString("data")?.takeIf(String::isNotBlank)
+        val commandId = command.optString("id").takeIf(String::isNotBlank) ?: return null
+        val lease = command.optString("leaseToken").takeIf(String::isNotBlank) ?: return null
+        return Incoming(
+            updateId = update.optLong("update_id", -1L), senderId = from.optLong("id", -1L),
+            chatId = chat.optLong("id", -1L), privateChat = chat.optString("type") == "private",
+            text = text, callbackQueryId = callback?.optString("id")?.takeIf(String::isNotBlank),
+            callbackData = callbackData, bridgeCommandId = commandId, bridgeLeaseToken = lease,
+        ).takeIf { it.updateId >= 0 && it.senderId >= 0 && it.chatId >= 0 && (text.isNotBlank() || callbackData != null) }
     }
 
     fun sendMessage(chatId: Long, text: String, buttons: List<List<AdminButton>> = emptyList()) {

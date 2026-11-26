@@ -37,7 +37,11 @@ internal class ControlBridgeClient(
         base = uri.toString().trimEnd('/')
     }
 
-    fun heartbeat(battery: Int?, charging: Boolean?, serviceState: String, appVersion: String): JSONObject {
+    fun heartbeat(
+        battery: Int?, charging: Boolean?, serviceState: String, appVersion: String,
+        sipReady: Boolean = false, sipDetail: String = "", activeCall: Boolean = false,
+        takeover: Boolean = false, takeoverPending: Boolean = false,
+    ): JSONObject {
         require(battery == null || battery in 0..100)
         require(serviceState in setOf("running", "stopped", "starting", "unknown"))
         val body = JSONObject()
@@ -45,6 +49,11 @@ internal class ControlBridgeClient(
             .putIfNotNull("charging", charging)
             .put("serviceState", serviceState)
             .put("appVersion", appVersion.take(40))
+            .put("sipReady", sipReady)
+            .put("sipDetail", sipDetail.take(200))
+            .put("activeCall", activeCall)
+            .put("takeover", takeover)
+            .put("takeoverPending", takeoverPending)
         return request("POST", "/api/v1/devices/$deviceId/heartbeat", body)
     }
 
@@ -54,12 +63,13 @@ internal class ControlBridgeClient(
         return (0 until commands.length()).mapNotNull { commands.optJSONObject(it) }
     }
 
-    fun reportResult(commandId: String, status: String, result: JSONObject? = null, error: String? = null): JSONObject {
+    fun reportResult(commandId: String, status: String, result: JSONObject? = null, error: String? = null, leaseToken: String? = null): JSONObject {
         require(runCatching { UUID.fromString(commandId) }.isSuccess) { "Invalid command id" }
         require(status in setOf("running", "succeeded", "failed")) { "Invalid command status" }
         val body = JSONObject().put("status", status)
         if (result != null) body.put("result", result)
         if (error != null) body.put("error", error.take(500))
+        if (leaseToken != null) body.put("leaseToken", leaseToken)
         return request("POST", "/api/v1/devices/$deviceId/commands/$commandId/result", body)
     }
 
@@ -70,6 +80,7 @@ internal class ControlBridgeClient(
             readTimeout = readTimeoutMs
             instanceFollowRedirects = false
             setRequestProperty("Authorization", "Bearer $deviceToken")
+            setRequestProperty("X-Voicx-Device-Id", deviceId)
             setRequestProperty("Accept", "application/json")
             if (body != null) {
                 doOutput = true

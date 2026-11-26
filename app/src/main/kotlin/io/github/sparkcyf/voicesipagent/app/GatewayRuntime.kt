@@ -14,6 +14,7 @@ import android.content.ComponentName
 import android.content.pm.PackageManager
 import android.app.role.RoleManager
 import android.Manifest
+import java.util.concurrent.atomic.AtomicBoolean
 import io.github.sparkcyf.voicesipagent.gateway.BridgeSession
 import io.github.sparkcyf.voicesipagent.gateway.CallBridge
 import io.github.sparkcyf.voicesipagent.gateway.EchoEndpoint
@@ -99,13 +100,16 @@ data class HealthState(
 class GatewayRuntime private constructor(context: Context) {
     private val app = context.applicationContext
     private val worker = newWorker()
+    private val databaseWorker = newWorker("voicx-data")
     val settingsStore = SettingsStore(app)
     private val salesAdminStore = SalesAdminStore(app)
     private val _settings = MutableStateFlow(settingsStore.load())
     val settingsFlow: StateFlow<GatewaySettings> = _settings
     val settings: GatewaySettings get() = _settings.value
-    private val mongoStore = VoicxMongoStore()
-    private val customers = VoicxCustomerRepository(mongoStore)
+    private val mongoStore = VoicxDatabaseApi()
+    private val customers = VoicxCustomerRepository(mongoStore, settingsStore)
+    private val reportRetryScheduled = AtomicBoolean(false)
+    private val dueSchedulesRunning = AtomicBoolean(false)
 
     // Service entry points can run before the worker initializes. Use the actual saved switch and
     // role immediately so opening the app or receiving BOOT_COMPLETED cannot flash an idle notification.
@@ -132,10 +136,12 @@ class GatewayRuntime private constructor(context: Context) {
         salesContext = { salesAdminStore.assistantContext() },
         report = { report ->
             onAiReport?.invoke(report.telegramMessages())
-            worker.execute {
+            databaseWorker.execute {
+                val payload = customers.callReportPayload(report)
+                val reportId = org.json.JSONObject(payload).optString("reportId")
+                settingsStore.enqueueCallReport(reportId, payload)
+                flushCallReportOutbox()
                 if (mongoStore.state == MongoState.CONNECTED) {
-                    runCatching { customers.saveCallReport(report) }
-                        .onFailure { AppLog.w("could not save Gemini call report", it) }
                     scheduledCampaignCustomerId?.let { ccId ->
                         val text = (report.conversationTranscript + "\n" + report.outputText + "\n" + report.failureDetail).lowercase()
                         val outcome = when {
@@ -261,7 +267,13 @@ class GatewayRuntime private constructor(context: Context) {
             }
         }
         configureCallAccess()
-        if (settings.mongoEnabled && settings.mongoUri.isNotBlank()) mongoStore.connect(settings.mongoUri, settings.mongoDatabaseName)
+        if (settings.mongoEnabled && settings.mongoApiUrl.isNotBlank()) {
+            databaseWorker.execute {
+                mongoStore.connect(settings.mongoApiUrl, settings.mongoDatabaseName, settings.mongoDeviceId, settings.mongoDeviceToken)
+                    .onSuccess(::flushCallReportOutbox)
+                    .onFailure { scheduleCallReportRetry() }
+            }
+        }
         _health.update { it.copy(takeover = settings.takeover) }
         updateReadiness()
         if (!_health.value.takeover) shizuku.stop()
@@ -825,49 +837,74 @@ class GatewayRuntime private constructor(context: Context) {
     fun startAiCall(number: String, name: String, role: String, company: String) = worker.execute {
         require(settings.geminiApiKey.isNotBlank()) { "Gemini API key is not configured" }
         val clean = number.trim(); require(clean.isNotEmpty()) { "phone number is required" }
-        val customer = runCatching { customers.findByPhone(clean) }.getOrNull()
-        val instructions = customer?.instructions.orEmpty()
-        val memories = runCatching { customers.memoriesFor(clean) }.getOrDefault("")
-        gemini.setContext(GeminiAiEndpoint.CallContext(
-            name = name.trim(), role = role.trim(), company = company.trim(),
-            instructions = instructions, memories = memories,
+        val cached = customers.cachedCallContext(clean)
+        gemini.setContext((cached ?: GeminiAiEndpoint.CallContext()).copy(
+            name = cached?.name?.ifBlank { name.trim() } ?: name.trim(),
+            role = cached?.role?.ifBlank { role.trim() } ?: role.trim(),
+            company = cached?.company?.ifBlank { company.trim() } ?: company.trim(),
         ))
-        gemini.startOutbound(cellular, clean, Party(clean, name.trim().ifBlank { null }))
+        gemini.startOutbound(cellular, clean, Party(clean, name.trim().takeIf { it.isNotEmpty() }))
+        if (settings.mongoEnabled && settings.mongoApiUrl.isNotBlank()) databaseWorker.execute {
+            if (mongoStore.state != MongoState.CONNECTED) runCatching {
+                mongoStore.connect(settings.mongoApiUrl, settings.mongoDatabaseName, settings.mongoDeviceId, settings.mongoDeviceToken).getOrThrow()
+            }.onFailure { AppLog.w("customer context refresh deferred; call continues using local context", it) }
+            if (mongoStore.state == MongoState.CONNECTED) runCatching { customers.refreshCallContext(clean) }
+                .onFailure { AppLog.w("could not refresh cached customer context", it) }
+        }
     }
 
     private fun runDueSchedules() {
-        if (mongoStore.state != MongoState.CONNECTED || !gatewayEnabled) return
-        runDueSmsSchedules()
-        repeat(3) {
-            val schedule = runCatching { customers.claimDueSchedule() }.getOrElse {
-                AppLog.w("could not claim scheduled call", it)
-                return
-            } ?: return
-            if (customers.campaignCustomerBlocked(schedule.campaignCustomerId)) {
-                customers.updateScheduleStatus(schedule.id.orEmpty(), "cancelled", "campaign customer is blocked")
-                return@repeat
-            }
-            if (hasActiveWork()) {
-                customers.updateScheduleStatus(schedule.id.orEmpty(), "failed", "gateway busy")
-                AppLog.w("scheduled call ${schedule.id} skipped because gateway is busy")
-                return@repeat
-            }
+        if (!gatewayEnabled || !settings.mongoEnabled || !dueSchedulesRunning.compareAndSet(false, true)) return
+        databaseWorker.execute {
             try {
-                require(settings.geminiApiKey.isNotBlank()) { "Gemini API key is not configured" }
-                val customer = customers.findById(schedule.customerId) ?: customers.findByPhone(schedule.phone)
-                gemini.setContext(GeminiAiEndpoint.CallContext(
-                    name = customer?.name.orEmpty(), role = customer?.role.orEmpty(), company = customer?.company.orEmpty(),
-                    instructions = customer?.instructions.orEmpty(), memories = customers.memoriesFor(schedule.phone),
-                ))
-                scheduledCallId = schedule.id
-                scheduledCampaignCustomerId = schedule.campaignCustomerId
-                gemini.startOutbound(cellular, schedule.phone, Party(schedule.phone, customer?.name?.ifBlank { null }))
-                customers.updateScheduleStatus(schedule.id.orEmpty(), "running")
-                AppLog.i("scheduled Gemini call started: ${schedule.id}")
+                if (mongoStore.state != MongoState.CONNECTED && runCatching {
+                    mongoStore.connect(settings.mongoApiUrl, settings.mongoDatabaseName, settings.mongoDeviceId, settings.mongoDeviceToken).getOrThrow()
+                }.isFailure) return@execute
+                runDueSmsSchedules()
+                val schedule = runCatching { customers.claimDueSchedule() }.getOrElse {
+                    AppLog.w("could not claim scheduled call", it)
+                    return@execute
+                } ?: return@execute
+                val blocked = runCatching { customers.campaignCustomerBlocked(schedule.campaignCustomerId) }.getOrElse {
+                    AppLog.w("could not check campaign eligibility", it)
+                    return@execute
+                }
+                if (blocked) {
+                    runCatching { customers.updateScheduleStatus(schedule.id.orEmpty(), "cancelled", "campaign customer is blocked") }
+                    return@execute
+                }
+                if (hasActiveWork()) {
+                    runCatching { customers.updateScheduleStatus(schedule.id.orEmpty(), "failed", "gateway busy") }
+                    AppLog.i("scheduled call ${schedule.id} skipped because gateway is busy")
+                    return@execute
+                }
+                val context = customers.cachedCallContext(schedule.phone)
+                    ?: runCatching { customers.refreshCallContext(schedule.phone) }.getOrNull()
+                    ?: GeminiAiEndpoint.CallContext()
+                worker.execute startCall@{
+                    if (!gatewayEnabled || hasActiveWork()) {
+                        databaseWorker.execute { runCatching { customers.updateScheduleStatus(schedule.id.orEmpty(), "failed", "gateway busy") } }
+                        return@startCall
+                    }
+                    try {
+                        require(settings.geminiApiKey.isNotBlank()) { "Gemini API key is not configured" }
+                        gemini.setContext(context)
+                        scheduledCallId = schedule.id
+                        scheduledCampaignCustomerId = schedule.campaignCustomerId
+                        gemini.startOutbound(cellular, schedule.phone, Party(schedule.phone, context.name.takeIf { it.isNotBlank() }))
+                        databaseWorker.execute { runCatching { customers.updateScheduleStatus(schedule.id.orEmpty(), "running") } }
+                        AppLog.i("scheduled Gemini call started: ${schedule.id}")
+                    } catch (e: Exception) {
+                        scheduledCallId = null
+                        scheduledCampaignCustomerId = null
+                        databaseWorker.execute { runCatching { customers.updateScheduleStatus(schedule.id.orEmpty(), "failed", e.message ?: e.javaClass.simpleName) } }
+                        AppLog.w("scheduled Gemini call failed: ${schedule.id}", e)
+                    }
+                }
             } catch (e: Exception) {
-                scheduledCallId = null
-                customers.updateScheduleStatus(schedule.id.orEmpty(), "failed", e.message ?: e.javaClass.simpleName)
-                AppLog.w("scheduled Gemini call failed: ${schedule.id}", e)
+                AppLog.w("scheduled work failed without affecting SIP", e)
+            } finally {
+                dueSchedulesRunning.set(false)
             }
         }
     }
@@ -884,11 +921,12 @@ class GatewayRuntime private constructor(context: Context) {
                 return@repeat
             }
             try {
-                SmsApiClient(settings.smsApiKey).send(schedule.phone, schedule.message).getOrThrow()
+                SmsApiClient(settings.smsApiKey).send(schedule.phone, schedule.message, schedule.id.orEmpty()).getOrThrow()
                 customers.updateSmsScheduleStatus(schedule.id.orEmpty(), "sent")
                 AppLog.i("scheduled SMS sent: ${schedule.id}")
             } catch (e: Exception) {
-                customers.updateSmsScheduleStatus(schedule.id.orEmpty(), "failed", e.message ?: e.javaClass.simpleName)
+                runCatching { customers.retrySmsSchedule(schedule.id.orEmpty(), e.message ?: e.javaClass.simpleName) }
+                    .onFailure { AppLog.w("could not record scheduled SMS retry", it) }
                 AppLog.w("scheduled SMS failed: ${schedule.id}", e)
             }
         }
@@ -896,55 +934,98 @@ class GatewayRuntime private constructor(context: Context) {
 
     fun stopAiCall() = worker.execute { gemini.stop() }
 
+    private fun flushCallReportOutbox() {
+        val pending = settingsStore.pendingCallReports()
+        if (pending.isEmpty() || !settings.mongoEnabled || settings.mongoApiUrl.isBlank()) return
+        if (mongoStore.state != MongoState.CONNECTED) {
+            mongoStore.connect(settings.mongoApiUrl, settings.mongoDatabaseName, settings.mongoDeviceId, settings.mongoDeviceToken)
+                .onFailure { scheduleCallReportRetry(); return }
+        }
+        for ((id, payload) in pending) {
+            try {
+                customers.saveCallReportPayload(payload)
+                settingsStore.removePendingCallReport(id)
+            } catch (failure: Throwable) {
+                AppLog.w("Gemini report remains in encrypted local outbox", failure)
+                scheduleCallReportRetry()
+                return
+            }
+        }
+    }
+
+    private fun scheduleCallReportRetry() {
+        if (reportRetryScheduled.compareAndSet(false, true)) {
+            databaseWorker.schedule({ reportRetryScheduled.set(false); flushCallReportOutbox() }, 30, TimeUnit.SECONDS)
+        }
+    }
+
     fun checkAiConnection(callback: (String) -> Unit) = worker.execute {
         gemini.checkConnection(callback)
     }
 
-    fun testMongoConnection(uri: String, databaseName: String, callback: (String) -> Unit) = worker.execute {
-        val result = mongoStore.test(uri.trim(), databaseName.trim())
-        callback(result.fold({ "نجح اختبار الاتصال خلال ${it} ms" }, { mongoStore.lastError.ifBlank { "فشل اختبار الاتصال" } }))
+    fun testMongoConnection(apiUrl: String, databaseName: String, deviceId: String, token: String, callback: (String) -> Unit) = databaseWorker.execute {
+        val result = mongoStore.test(apiUrl.trim(), databaseName.trim(), deviceId.trim(), token.trim())
+        callback(result.fold({ "نجح اتصال Vercel API وMongoDB خلال ${it} ms" }, { mongoStore.lastError.ifBlank { "فشل الاتصال بالخادم" } }))
     }
-    fun saveMongoSettings(uri: String, databaseName: String, enable: Boolean, callback: (String) -> Unit = {}) = worker.execute {
-        val cleanUri = uri.trim(); val cleanDb = databaseName.trim()
-        require(cleanUri.isEmpty() || cleanUri.startsWith("mongodb")) { "MongoDB URI غير صالح" }
+    fun saveMongoSettings(apiUrl: String, databaseName: String, deviceId: String, token: String, enable: Boolean, callback: (String) -> Unit = {}) = worker.execute {
+        val cleanUrl = apiUrl.trim().trimEnd('/'); val cleanDb = databaseName.trim()
+        val cleanId = deviceId.trim(); val cleanToken = token.trim()
+        require(cleanUrl.isEmpty() || cleanUrl.startsWith("https://", ignoreCase = true)) { "يجب استخدام عنوان HTTPS" }
         require(cleanDb.matches(Regex("[A-Za-z0-9_-]{1,64}"))) { "اسم قاعدة البيانات غير صالح" }
-        if (enable) mongoStore.connect(cleanUri, cleanDb).getOrElse { error(mongoStore.lastError.ifBlank { "تعذر الاتصال بقاعدة البيانات" }) } else mongoStore.disconnect()
-        val updated = settings.copy(mongoUri = cleanUri, mongoDatabaseName = cleanDb, mongoEnabled = enable, mongoLastSuccessAt = mongoStore.lastSuccessAt ?: settings.mongoLastSuccessAt)
-        settingsStore.save(updated); _settings.value = updated
-        callback(if (enable) "تم تفعيل اتصال MongoDB" else "تم حفظ الإعدادات دون تفعيل الاتصال")
+        require(cleanId.isEmpty() || cleanId.matches(Regex("[A-Za-z0-9_-]{1,64}"))) { "معرّف الجهاز غير صالح" }
+        require(!enable || (cleanUrl.isNotBlank() && cleanId.isNotBlank() && cleanToken.length >= 32)) { "أدخل رابط Vercel ومعرّف الجهاز ورمزاً بطول 32 حرفاً على الأقل" }
+        databaseWorker.execute {
+            val result = if (enable) mongoStore.connect(cleanUrl, cleanDb, cleanId, cleanToken) else {
+                mongoStore.disconnect(); Result.success(Unit)
+            }
+            worker.execute {
+                if (result.isFailure) {
+                    callback(mongoStore.lastError.ifBlank { "تعذر الاتصال بخادم Vercel" })
+                    return@execute
+                }
+                val updated = settings.copy(mongoApiUrl = cleanUrl, mongoDatabaseName = cleanDb, mongoDeviceId = cleanId,
+                    mongoDeviceToken = cleanToken, mongoEnabled = enable, mongoLastSuccessAt = mongoStore.lastSuccessAt ?: settings.mongoLastSuccessAt)
+                settingsStore.save(updated); _settings.value = updated
+                callback(if (enable) "تم تفعيل الاتصال عبر Vercel API" else "تم حفظ إعدادات API دون تفعيل الاتصال")
+                if (enable) databaseWorker.execute { flushCallReportOutbox() }
+            }
+        }
     }
-    fun disconnectMongo() = worker.execute { mongoStore.disconnect(); settingsStore.save(settings.copy(mongoEnabled = false).also { _settings.value = it }) }
+    fun disconnectMongo() = worker.execute {
+        databaseWorker.execute { mongoStore.disconnect() }
+        settingsStore.save(settings.copy(mongoEnabled = false).also { _settings.value = it })
+    }
     fun mongoStatus(): String = when (mongoStore.state) {
-        MongoState.CONNECTED -> "MongoDB متصل؛ آخر نجاح: ${mongoStore.lastSuccessAt ?: 0L}"
+        MongoState.CONNECTED -> "MongoDB متاحة عبر Vercel؛ آخر نجاح: ${mongoStore.lastSuccessAt ?: 0L}"
         MongoState.ERROR -> "MongoDB خطأ: ${mongoStore.lastError}"
-        MongoState.DISCONNECTED -> "MongoDB غير مفعّل"
+        MongoState.DISCONNECTED -> "واجهة Vercel غير مفعّلة"
     }
-    fun saveCustomer(customer: VoicxCustomer, callback: (String) -> Unit = {}) = worker.execute { callback(runCatching { customers.upsert(customer) }.getOrElse { "خطأ حفظ العميل: ${it.javaClass.simpleName}" }) }
-    fun createCampaign(campaign: Campaign, callback: (String) -> Unit = {}) = worker.execute {
+    fun saveCustomer(customer: VoicxCustomer, callback: (String) -> Unit = {}) = databaseWorker.execute { callback(runCatching { customers.upsert(customer) }.getOrElse { "خطأ حفظ العميل: ${it.javaClass.simpleName}" }) }
+    fun createCampaign(campaign: Campaign, callback: (String) -> Unit = {}) = databaseWorker.execute {
         callback(runCatching { customers.createCampaign(campaign) }.getOrElse { "خطأ إنشاء الحملة: ${it.javaClass.simpleName}" })
     }
-    fun followUp(phone: String, nextCallAt: Long?, nextSmsAt: Long?, note: String, callback: (String) -> Unit = {}) = worker.execute {
+    fun followUp(phone: String, nextCallAt: Long?, nextSmsAt: Long?, note: String, callback: (String) -> Unit = {}) = databaseWorker.execute {
         val cc = customers.latestCampaignCustomer(phone)
         callback(if (cc == null) "لم أعثر على عضوية حملة لهذا الرقم." else if (customers.scheduleFollowUp(cc, nextCallAt, nextSmsAt, note)) "تم حفظ متابعة العميل." else "تعذر حفظ المتابعة؛ قد يكون العميل في الإدارة أو ألغى الاشتراك.")
     }
-    fun markInterested(phone: String, note: String, callback: (String) -> Unit = {}) = worker.execute {
+    fun markInterested(phone: String, note: String, callback: (String) -> Unit = {}) = databaseWorker.execute {
         val cc = customers.latestCampaignCustomer(phone)
         if (cc == null) callback("لم أعثر على عضوية حملة لهذا الرقم.") else { customers.setCampaignDecision(cc, "interested", note); callback("تم تحويل العميل إلى مجموعة المهتمين وإيقاف تذكيراته.") }
     }
-    fun pauseCustomer(phone: String, reason: String, callback: (String) -> Unit = {}) = worker.execute {
+    fun pauseCustomer(phone: String, reason: String, callback: (String) -> Unit = {}) = databaseWorker.execute {
         val cc = customers.latestCampaignCustomer(phone)
         if (cc == null) callback("لم أعثر على عضوية حملة لهذا الرقم.") else { customers.setCampaignDecision(cc, "paused", reason); callback("تم إيقاف تذكيرات العميل.") }
     }
-    fun resumeCustomer(phone: String, callAt: Long, smsAt: Long?, note: String, callback: (String) -> Unit = {}) = worker.execute {
+    fun resumeCustomer(phone: String, callAt: Long, smsAt: Long?, note: String, callback: (String) -> Unit = {}) = databaseWorker.execute {
         val cc = customers.latestCampaignCustomer(phone)
         callback(if (cc == null) "لم أعثر على عضوية حملة لهذا الرقم." else if (customers.scheduleFollowUp(cc, callAt, smsAt, note)) "تم استئناف العميل بموعد صريح." else "تعذر استئناف العميل.")
     }
-    fun searchCustomers(query: String, callback: (String) -> Unit) = worker.execute { callback(runCatching { customers.search(query).joinToString("\n") { "${it.id} | ${it.name} | ${it.phone} | ${it.company}" } }.getOrElse { "خطأ البحث: ${it.javaClass.simpleName}" }.ifBlank { "لا توجد نتائج" }) }
-    fun saveCallSchedule(schedule: CallSchedule, callback: (String) -> Unit) = worker.execute { callback(runCatching { customers.saveSchedule(schedule) }.getOrElse { "خطأ جدولة الاتصال: ${it.javaClass.simpleName}" }) }
-    fun listCallSchedules(callback: (String) -> Unit) = worker.execute { callback(runCatching { customers.listSchedules().joinToString("\n") { "${it.id} | ${it.phone} | ${it.runAt} | ${it.status} | ${it.note}" } }.getOrElse { "خطأ قراءة الجدولة: ${it.javaClass.simpleName}" }.ifBlank { "لا توجد مواعيد" }) }
-    fun saveSmsSchedule(schedule: SmsSchedule, callback: (String) -> Unit) = worker.execute { callback(runCatching { customers.saveSmsSchedule(schedule) }.getOrElse { "خطأ جدولة SMS: ${it.javaClass.simpleName}" }) }
-    fun listSmsSchedules(callback: (String) -> Unit) = worker.execute { callback(runCatching { customers.listSmsSchedules().joinToString("\n") { "${it.id} | ${it.phone} | ${it.runAt} | ${it.status} | ${it.note} | ${it.message.take(80)}" } }.getOrElse { "خطأ قراءة جدولة SMS: ${it.javaClass.simpleName}" }.ifBlank { "لا توجد رسائل مجدولة" }) }
-    fun sendSms(phone: String, message: String, callback: (String) -> Unit) = worker.execute { callback(SmsApiClient(settings.smsApiKey).send(phone, message).fold({ it }, { "فشل SMS: ${it.message ?: it.javaClass.simpleName}" })) }
+    fun searchCustomers(query: String, callback: (String) -> Unit) = databaseWorker.execute { callback(runCatching { customers.search(query).joinToString("\n") { "${it.id} | ${it.name} | ${it.phone} | ${it.company}" } }.getOrElse { "خطأ البحث: ${it.javaClass.simpleName}" }.ifBlank { "لا توجد نتائج" }) }
+    fun saveCallSchedule(schedule: CallSchedule, callback: (String) -> Unit) = databaseWorker.execute { callback(runCatching { customers.saveSchedule(schedule) }.getOrElse { "خطأ جدولة الاتصال: ${it.javaClass.simpleName}" }) }
+    fun listCallSchedules(callback: (String) -> Unit) = databaseWorker.execute { callback(runCatching { customers.listSchedules().joinToString("\n") { "${it.id} | ${it.phone} | ${it.runAt} | ${it.status} | ${it.note}" } }.getOrElse { "خطأ قراءة الجدولة: ${it.javaClass.simpleName}" }.ifBlank { "لا توجد مواعيد" }) }
+    fun saveSmsSchedule(schedule: SmsSchedule, callback: (String) -> Unit) = databaseWorker.execute { callback(runCatching { customers.saveSmsSchedule(schedule) }.getOrElse { "خطأ جدولة SMS: ${it.javaClass.simpleName}" }) }
+    fun listSmsSchedules(callback: (String) -> Unit) = databaseWorker.execute { callback(runCatching { customers.listSmsSchedules().joinToString("\n") { "${it.id} | ${it.phone} | ${it.runAt} | ${it.status} | ${it.note} | ${it.message.take(80)}" } }.getOrElse { "خطأ قراءة جدولة SMS: ${it.javaClass.simpleName}" }.ifBlank { "لا توجد رسائل مجدولة" }) }
+    fun sendSms(phone: String, message: String, callback: (String) -> Unit) = databaseWorker.execute { callback(SmsApiClient(settings.smsApiKey).send(phone, message).fold({ it }, { "فشل SMS: ${it.message ?: it.javaClass.simpleName}" })) }
     fun updateSmsApiKey(key: String) = worker.execute { settingsStore.save(settings.copy(smsApiKey = key.trim()).also { _settings.value = it }) }
 
     /** Starts an authenticated Telegram-originated SIM call and bridges it to the registered SIP phone. */
@@ -1167,8 +1248,8 @@ class GatewayRuntime private constructor(context: Context) {
     companion object {
         @Volatile private var instance: GatewayRuntime? = null
 
-        internal fun newWorker() = ScheduledThreadPoolExecutor(1) { task ->
-            Thread(task, "gateway-runtime").apply { isDaemon = true }
+        internal fun newWorker(name: String = "gateway-runtime") = ScheduledThreadPoolExecutor(1) { task ->
+            Thread(task, name).apply { isDaemon = true }
         }.apply {
             removeOnCancelPolicy = true
             setKeepAliveTime(1, TimeUnit.SECONDS)

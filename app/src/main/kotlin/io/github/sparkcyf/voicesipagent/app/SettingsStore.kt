@@ -4,6 +4,8 @@ import android.content.Context
 import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyProperties
 import android.util.Base64
+import org.json.JSONArray
+import org.json.JSONObject
 import io.github.sparkcyf.voicesipagent.gateway.BusyPolicy
 import io.github.sparkcyf.voicesipagent.privileged.AudioMethod
 import io.github.sparkcyf.voicesipagent.privileged.CallAccess
@@ -72,8 +74,12 @@ data class GatewaySettings(
     val geminiModel: String = "gemini-2.5-flash-native-audio-preview-12-2025",
     /** Answer incoming cellular calls with Gemini instead of routing them to SIP. */
     val aiAutoAnswer: Boolean = false,
-    /** MongoDB Atlas URI, encrypted with Android Keystore; never shown after save. */
-    val mongoUri: String = "",
+    /** Vercel API endpoint; Atlas credentials remain server-side. */
+    val mongoApiUrl: String = "",
+    val mongoDeviceId: String = "",
+    /** Per-device API token, encrypted with Android Keystore. */
+    val mongoDeviceToken: String = "",
+    /** Expected database name configured in Vercel (not sent in database operations). */
     val mongoDatabaseName: String = "voicx_sip_prod",
     val mongoEnabled: Boolean = false,
     val mongoLastSuccessAt: Long = 0L,
@@ -141,7 +147,9 @@ class SettingsStore(context: Context) {
         geminiApiKey = prefs.getString("gemini_api_key_sealed", null)?.let(::unseal).orEmpty(),
         geminiModel = prefs.getString("gemini_model", "gemini-2.5-flash-native-audio-preview-12-2025")!!,
         aiAutoAnswer = prefs.getBoolean("ai_auto_answer", false),
-        mongoUri = prefs.getString("mongo_uri_sealed", null)?.let(::unseal).orEmpty(),
+        mongoApiUrl = prefs.getString("mongo_api_url", "")!!,
+        mongoDeviceId = prefs.getString("mongo_device_id", "")!!,
+        mongoDeviceToken = prefs.getString("mongo_device_token_sealed", null)?.let(::unseal).orEmpty(),
         mongoDatabaseName = prefs.getString("mongo_database_name", "voicx_sip_prod")!!,
         mongoEnabled = prefs.getBoolean("mongo_enabled", false),
         mongoLastSuccessAt = prefs.getLong("mongo_last_success_at", 0L),
@@ -183,7 +191,10 @@ class SettingsStore(context: Context) {
             .putString("gemini_api_key_sealed", seal(s.geminiApiKey))
             .putString("gemini_model", s.geminiModel.trim())
             .putBoolean("ai_auto_answer", s.aiAutoAnswer)
-            .putString("mongo_uri_sealed", seal(s.mongoUri))
+            .putString("mongo_api_url", s.mongoApiUrl.trim())
+            .putString("mongo_device_id", s.mongoDeviceId.trim())
+            .putString("mongo_device_token_sealed", seal(s.mongoDeviceToken))
+            .remove("mongo_uri_sealed")
             .putString("mongo_database_name", s.mongoDatabaseName.trim())
             .putBoolean("mongo_enabled", s.mongoEnabled)
             .putLong("mongo_last_success_at", s.mongoLastSuccessAt)
@@ -198,6 +209,66 @@ class SettingsStore(context: Context) {
     fun saveTelegramUpdateOffset(offset: Long) {
         if (offset >= 0L) prefs.edit().putLong("telegram_update_offset", offset).apply()
     }
+
+    /** Keeps a small, encrypted offline snapshot so a call can start without Vercel. */
+    @Synchronized
+    fun cacheCustomerContext(phone: String, context: JSONObject) {
+        val normalized = phone.trim()
+        if (normalized.isBlank()) return
+        val cache = readSealedJsonObject("customer_context_cache_sealed")
+        context.put("cachedAt", System.currentTimeMillis())
+        cache.put(normalized, context)
+        if (cache.length() > 250) {
+            val oldest = cache.keys().asSequence().mapNotNull { key ->
+                val savedAt = cache.optJSONObject(key)?.optLong("cachedAt") ?: 0L
+                key to savedAt
+            }.sortedBy { it.second }.take(cache.length() - 250).map { it.first }.toList()
+            oldest.forEach(cache::remove)
+        }
+        prefs.edit().putString("customer_context_cache_sealed", seal(cache.toString())).commit()
+    }
+
+    @Synchronized
+    fun cachedCustomerContext(phone: String): JSONObject? =
+        readSealedJsonObject("customer_context_cache_sealed").optJSONObject(phone.trim())
+
+    /** Encrypted durable outbox: failed report uploads survive process death and are retried later. */
+    @Synchronized
+    fun enqueueCallReport(reportId: String, payload: String) {
+        val queue = readSealedJsonArray("call_report_outbox_sealed")
+        if ((0 until queue.length()).any { queue.optJSONObject(it)?.optString("id") == reportId }) return
+        queue.put(JSONObject().put("id", reportId).put("payload", payload).put("queuedAt", System.currentTimeMillis()))
+        prefs.edit().putString("call_report_outbox_sealed", seal(queue.toString())).commit()
+    }
+
+    @Synchronized
+    fun pendingCallReports(): List<Pair<String, String>> {
+        val queue = readSealedJsonArray("call_report_outbox_sealed")
+        return (0 until queue.length()).mapNotNull { index ->
+            queue.optJSONObject(index)?.let { item ->
+                val id = item.optString("id")
+                val payload = item.optString("payload")
+                if (id.isNotBlank() && payload.isNotBlank()) id to payload else null
+            }
+        }
+    }
+
+    @Synchronized
+    fun removePendingCallReport(reportId: String) {
+        val old = readSealedJsonArray("call_report_outbox_sealed")
+        val updated = JSONArray()
+        for (index in 0 until old.length()) {
+            val item = old.optJSONObject(index) ?: continue
+            if (item.optString("id") != reportId) updated.put(item)
+        }
+        prefs.edit().putString("call_report_outbox_sealed", seal(updated.toString())).commit()
+    }
+
+    private fun readSealedJsonObject(key: String): JSONObject =
+        prefs.getString(key, null)?.let(::unseal)?.let { runCatching { JSONObject(it) }.getOrNull() } ?: JSONObject()
+
+    private fun readSealedJsonArray(key: String): JSONArray =
+        prefs.getString(key, null)?.let(::unseal)?.let { runCatching { JSONArray(it) }.getOrNull() } ?: JSONArray()
 
     private fun key(): SecretKey {
         val ks = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }

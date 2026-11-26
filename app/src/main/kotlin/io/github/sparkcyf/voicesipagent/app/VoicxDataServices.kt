@@ -1,37 +1,19 @@
 package io.github.sparkcyf.voicesipagent.app
 
-import android.content.Context
-import com.mongodb.ConnectionString
-import com.mongodb.MongoClientSettings
-import com.mongodb.client.MongoClient
-import com.mongodb.client.MongoClients
-import com.mongodb.client.MongoCollection
-import com.mongodb.client.MongoDatabase
-import com.mongodb.client.model.Filters
-import com.mongodb.client.model.FindOneAndUpdateOptions
-import com.mongodb.client.model.ReturnDocument
-import com.mongodb.client.model.Updates
-import com.mongodb.spi.dns.DnsClient
-import com.mongodb.spi.dns.DnsException
-import org.bson.Document
-import org.bson.BsonRegularExpression
-import org.bson.conversions.Bson
-import org.bson.types.ObjectId
-import java.net.InetAddress
-import java.net.UnknownHostException
-import java.util.Date
-import java.util.Locale
-import java.util.concurrent.TimeUnit
-import okhttp3.MediaType.Companion.toMediaType
+import org.json.JSONArray
+import org.json.JSONObject
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.RequestBody.Companion.toRequestBody
-import org.json.JSONObject
+import java.net.HttpURLConnection
+import java.net.URI
+import java.net.URL
+import java.util.concurrent.TimeUnit
 
-/** Direct MongoDB Atlas access. Credentials are supplied at runtime and never logged. */
-internal class VoicxMongoStore {
-    @Volatile private var client: MongoClient? = null
-    @Volatile private var database: MongoDatabase? = null
+/** HTTPS-only client for the Vercel data API; this APK never opens a MongoDB connection. */
+internal class VoicxDatabaseApi {
+    @Volatile private var api: DbApiClient? = null
     @Volatile var state: MongoState = MongoState.DISCONNECTED
         private set
     @Volatile var lastSuccessAt: Long? = null
@@ -40,231 +22,101 @@ internal class VoicxMongoStore {
         private set
 
     @Synchronized
-    fun test(uri: String, databaseName: String): Result<Long> {
-        return runCatching {
-            require(uri.trim().startsWith("mongodb")) { "MongoDB URI is required" }
-            require(databaseName.matches(Regex("[A-Za-z0-9_-]{1,64}"))) { "Invalid database name" }
-            val started = System.currentTimeMillis()
-            val settings = buildSettings(uri)
-                .applyToClusterSettings { it.serverSelectionTimeout(8, TimeUnit.SECONDS) }
-                .applyToSocketSettings { it.connectTimeout(8, TimeUnit.SECONDS).readTimeout(8, TimeUnit.SECONDS) }
-                .build()
-            MongoClients.create(settings).use { it.getDatabase(databaseName).runCommand(Document("ping", 1)) }
-            val elapsed = System.currentTimeMillis() - started
-            lastError = ""
-            lastSuccessAt = System.currentTimeMillis()
-            elapsed
-        }.onFailure { e -> lastError = safeError(e) }
-    }
+    fun test(apiUrl: String, databaseName: String, deviceId: String, token: String): Result<Long> = runCatching {
+        val client = DbApiClient(apiUrl, deviceId, token, databaseName)
+        val started = System.currentTimeMillis()
+        val result = client.getStatus()
+        check(result.optBoolean("ok")) { "MongoDB غير متاحة" }
+        lastSuccessAt = System.currentTimeMillis()
+        lastError = ""
+        System.currentTimeMillis() - started
+    }.onFailure { lastError = safeError(it) }
 
     @Synchronized
-    fun connect(uri: String, databaseName: String): Result<Unit> = runCatching {
-        require(uri.trim().startsWith("mongodb")) { "MongoDB URI is required" }
-        require(databaseName.matches(Regex("[A-Za-z0-9_-]{1,64}"))) { "Invalid database name" }
-        disconnect()
-        val settings = buildSettings(uri)
-            .applyToClusterSettings { it.serverSelectionTimeout(8, TimeUnit.SECONDS) }
-            .applyToSocketSettings { it.connectTimeout(8, TimeUnit.SECONDS).readTimeout(8, TimeUnit.SECONDS) }
-            .build()
-        val c = MongoClients.create(settings)
-        try {
-            c.getDatabase(databaseName).runCommand(Document("ping", 1))
-            client = c
-            database = c.getDatabase(databaseName)
-            ensureIndexes()
-            state = MongoState.CONNECTED
-            lastError = ""
-            lastSuccessAt = System.currentTimeMillis()
-        } catch (failure: Throwable) {
-            c.close()
-            client = null
-            database = null
-            throw failure
-        }
-    }.onFailure { e -> state = MongoState.ERROR; lastError = safeError(e) }
-
-    @Synchronized fun disconnect() {
-        client?.close(); client = null; database = null; state = MongoState.DISCONNECTED
+    fun connect(apiUrl: String, databaseName: String, deviceId: String, token: String): Result<Unit> = runCatching {
+        val client = DbApiClient(apiUrl, deviceId, token, databaseName)
+        val result = client.getStatus()
+        check(result.optBoolean("ok")) { "MongoDB غير متاحة" }
+        api = client
+        state = MongoState.CONNECTED
+        lastError = ""
+        lastSuccessAt = System.currentTimeMillis()
+    }.onFailure {
+        api = null
+        state = MongoState.ERROR
+        lastError = safeError(it)
     }
 
-    fun requireDatabase(): MongoDatabase = database ?: error("MongoDB is not active")
-    fun customers(): MongoCollection<Document> = requireDatabase().getCollection("customers")
-    fun memories(): MongoCollection<Document> = requireDatabase().getCollection("customer_memories")
-    fun calls(): MongoCollection<Document> = requireDatabase().getCollection("call_summaries")
-    fun schedules(): MongoCollection<Document> = requireDatabase().getCollection("call_schedules")
-    fun smsSchedules(): MongoCollection<Document> = requireDatabase().getCollection("sms_schedules")
-    fun campaigns(): MongoCollection<Document> = requireDatabase().getCollection("campaigns")
-    fun campaignCustomers(): MongoCollection<Document> = requireDatabase().getCollection("campaign_customers")
-    fun interestedCustomers(): MongoCollection<Document> = requireDatabase().getCollection("interested_customers")
+    @Synchronized fun disconnect() { api = null; state = MongoState.DISCONNECTED }
 
-    private fun ensureIndexes() {
-        customers().createIndex(Document("createdAt", 1).append("_id", 1))
-        schedules().createIndex(Document("status", 1).append("runAt", 1))
-        schedules().createIndex(Document("idempotencyKey", 1))
-        smsSchedules().createIndex(Document("status", 1).append("runAt", 1))
-        smsSchedules().createIndex(Document("idempotencyKey", 1))
-        campaigns().createIndex(Document("status", 1).append("startAt", 1))
-        campaignCustomers().createIndex(Document("campaignId", 1).append("status", 1).append("sequence", 1))
-        campaignCustomers().createIndex(Document("phone", 1).append("createdAt", -1))
-        interestedCustomers().createIndex(Document("campaignCustomerId", 1), com.mongodb.client.model.IndexOptions().unique(true))
-    }
-
-    private fun buildSettings(uri: String): MongoClientSettings.Builder {
-        val dnsClient = AndroidDnsClient()
-        // The overload is essential: MongoDB otherwise creates its JVM/JNDI resolver while
-        // parsing mongodb+srv before the builder-level DNS client is installed.
-        val connectionString = ConnectionString(uri.trim(), dnsClient)
-        return MongoClientSettings.builder()
-            .applyConnectionString(connectionString)
-            .dnsClient(dnsClient)
-            .inetAddressResolver(AndroidInetAddressResolver())
-    }
-
-    private fun safeError(e: Throwable): String {
-        val chain = generateSequence(e) { it.cause }.toList()
-        val missingClass = chain.filterIsInstance<NoClassDefFoundError>().firstOrNull()
-        if (missingClass != null) {
-            val missingName = missingClass.message.orEmpty().replace('/', '.')
-            if (missingName.contains("javax.naming", ignoreCase = true)) {
-                return "Android DNS غير متاح؛ تعذر تحليل mongodb+srv. تحقق من الشبكة ثم أعد المحاولة."
-            }
-            return "Missing runtime class: ${missingName.take(180)}"
-        }
-        val root = chain.lastOrNull() ?: e
-        val message = root.message.orEmpty()
-        if (message.contains("EAI_NODATA", ignoreCase = true) || message.contains("UnknownHost", ignoreCase = true)) {
-            return "تعذر حل اسم خادم MongoDB عبر DNS Android؛ تحقق من الشبكة أو إعدادات Atlas ثم أعد المحاولة."
-        }
-        return when (root) {
-            is IllegalArgumentException -> root.message.orEmpty().take(240)
-            else -> "${root.javaClass.simpleName}: ${root.message?.take(180).orEmpty().ifBlank { "connection failed" }}".take(240)
-        }
-    }
-}
-
-/** Android has no JNDI DNS provider, so mongodb+srv must use an explicit Android DNS client. */
-internal fun interface AndroidDnsQuery {
-    fun query(name: String, type: String): String
-}
-
-internal class AndroidDnsClient(
-    private val query: AndroidDnsQuery = AndroidDnsQuery { name, type -> AndroidDnsOverHttps.query(name, type) },
-) : DnsClient {
-    override fun getResourceRecordData(name: String, type: String): List<String> {
-        val normalizedType = type.trim().uppercase(Locale.US)
-        require(normalizedType == "SRV" || normalizedType == "TXT") {
-            "Unsupported DNS record type: $type"
-        }
+    fun call(operation: String, args: JSONObject = JSONObject(), timeoutMs: Int = 25_000): JSONObject {
+        val client = api ?: error("اتصال Vercel غير مفعّل")
         return try {
-            AndroidDnsJson.parse(query.query(name.trim(), normalizedType), normalizedType)
-        } catch (failure: DnsException) {
-            throw failure
+            client.post(operation, args, timeoutMs).also { lastSuccessAt = System.currentTimeMillis(); lastError = "" }
         } catch (failure: Throwable) {
-            throw DnsException("Android DNS lookup failed for $name ($normalizedType)", failure)
+            lastError = safeError(failure)
+            state = MongoState.ERROR
+            throw failure
         }
+    }
+
+    private fun safeError(error: Throwable): String = when (error) {
+        is DbApiException -> when (error.status) {
+            401 -> "رمز المصادقة غير صالح أو الجهاز غير مصرح"
+            403 -> "لا تملك صلاحية تنفيذ العملية"
+            408, 504 -> "انتهت مهلة الاتصال بخادم Vercel"
+            503 -> "تعذر الوصول إلى MongoDB عبر الخادم"
+            else -> "تعذر الاتصال بخادم Vercel (HTTP ${error.status})"
+        }
+        else -> if (error is java.net.UnknownHostException || error is java.net.ConnectException)
+            "لا توجد شبكة أو تعذر الوصول إلى خادم Vercel" else error.message?.take(180) ?: "تعذر الاتصال بالخادم"
     }
 }
 
-/** Resolves Atlas SRV targets without Android's getaddrinfo/JVM JNDI path. */
-internal class AndroidInetAddressResolver(
-    private val query: AndroidDnsQuery = AndroidDnsQuery { name, type -> AndroidDnsOverHttps.query(name, type) },
-) : com.mongodb.spi.dns.InetAddressResolver {
-    override fun lookupByName(host: String): List<InetAddress> {
-        val resolved = buildList {
-            for (type in listOf("A", "AAAA")) {
-                runCatching { AndroidDnsJson.parse(query.query(host, type), type) }
-                    .getOrElse { emptyList() }
-                    .forEach { address ->
-                        runCatching { InetAddress.getByName(address) }.getOrNull()?.let(::add)
-                    }
+private class DbApiClient(apiUrl: String, private val deviceId: String, private val token: String, private val expectedDatabase: String) {
+    private val base: String
+    init {
+        val uri = URI(apiUrl.trim().trimEnd('/'))
+        require(uri.scheme.equals("https", ignoreCase = true)) { "يلزم استخدام عنوان HTTPS لخادم Vercel" }
+        require(!uri.host.isNullOrBlank() && uri.userInfo == null && uri.query == null && uri.fragment == null) { "عنوان API غير صالح" }
+        require(deviceId.matches(Regex("[A-Za-z0-9_-]{1,64}"))) { "معرّف الجهاز غير صالح" }
+        require(token.length >= 32) { "رمز الجهاز يجب ألا يقل عن 32 حرفاً" }
+        base = uri.toString().trimEnd('/')
+    }
+
+    fun getStatus(): JSONObject = request("GET", "/api/v1/db/status").also { result ->
+        val actual = result.optString("databaseName")
+        require(actual.isBlank() || actual == expectedDatabase) { "اسم قاعدة البيانات لا يطابق إعداد Vercel" }
+    }
+    fun post(operation: String, args: JSONObject, timeoutMs: Int = 25_000): JSONObject =
+        request("POST", "/api/v1/db", JSONObject().put("operation", operation).put("args", args), timeoutMs)
+
+    private fun request(method: String, path: String, payload: JSONObject? = null, timeoutMs: Int = 25_000): JSONObject {
+        val connection = (URL(base + path).openConnection() as HttpURLConnection).apply {
+            requestMethod = method
+            connectTimeout = timeoutMs.coerceIn(500, 25_000)
+            readTimeout = timeoutMs.coerceIn(500, 25_000)
+            instanceFollowRedirects = false
+            setRequestProperty("Authorization", "Bearer $token")
+            setRequestProperty("X-Voicx-Device-Id", deviceId)
+            setRequestProperty("Accept", "application/json")
+            if (payload != null) {
+                doOutput = true
+                setRequestProperty("Content-Type", "application/json; charset=utf-8")
             }
-        }.distinctBy(InetAddress::getHostAddress)
-        if (resolved.isEmpty()) {
-            throw UnknownHostException("Android DNS returned no A/AAAA records for $host")
         }
-        return resolved
+        try {
+            if (payload != null) connection.outputStream.use { it.write(payload.toString().toByteArray(Charsets.UTF_8)) }
+            val code = connection.responseCode
+            val stream = if (code in 200..299) connection.inputStream else connection.errorStream
+            val text = stream?.bufferedReader(Charsets.UTF_8)?.use { it.readText() }.orEmpty()
+            if (code !in 200..299) throw DbApiException(code, text.take(300))
+            return if (text.isBlank()) JSONObject() else JSONObject(text)
+        } finally { connection.disconnect() }
     }
 }
 
-/** Parses the JSON wire representation returned by DNS-over-HTTPS providers. */
-internal object AndroidDnsJson {
-    fun parse(body: String, type: String): List<String> {
-        val json = JSONObject(body)
-        val status = json.optInt("Status", 0)
-        if (status != 0) error("DNS resolver returned status $status")
-        val answers = json.optJSONArray("Answer") ?: return emptyList()
-        return buildList {
-            for (index in 0 until answers.length()) {
-                val raw = answers.optJSONObject(index)?.optString("data").orEmpty().trim()
-                if (raw.isBlank()) continue
-                when (type) {
-                    "SRV" -> add(normalizeSrv(raw))
-                    "TXT" -> add(decodeTxt(raw))
-                    "A", "AAAA" -> add(raw)
-                }
-            }
-        }
-    }
-
-    private fun normalizeSrv(raw: String): String {
-        val fields = raw.split(Regex("\\s+")).filter(String::isNotBlank)
-        require(fields.size == 4 && fields[0].toIntOrNull() != null && fields[1].toIntOrNull() != null) {
-            "Malformed SRV record"
-        }
-        val port = fields[2].toIntOrNull()
-        require(port != null && port in 1..65535 && fields[3].isNotBlank()) { "Malformed SRV record" }
-        return fields[0] + " " + fields[1] + " " + port + " " + fields[3].removeSuffix(".")
-    }
-
-    private fun decodeTxt(raw: String): String {
-        if (!raw.contains('"')) return raw
-        val decoded = StringBuilder()
-        var quoted = false
-        var escaped = false
-        for (character in raw) {
-            when {
-                escaped -> { decoded.append(character); escaped = false }
-                character == '\\' && quoted -> escaped = true
-                character == '"' -> quoted = !quoted
-                quoted -> decoded.append(character)
-            }
-        }
-        return decoded.toString()
-    }
-}
-
-/** Uses Android-compatible DNS-over-HTTPS and falls back if one public resolver is blocked. */
-private object AndroidDnsOverHttps {
-    private val endpoints = listOf(
-        "https://cloudflare-dns.com/dns-query",
-        "https://dns.google/resolve",
-    )
-    private val http = OkHttpClient.Builder()
-        .callTimeout(8, TimeUnit.SECONDS)
-        .retryOnConnectionFailure(true)
-        .build()
-
-    fun query(name: String, type: String): String {
-        var lastFailure: Throwable? = null
-        for (endpoint in endpoints) {
-            try {
-                val encodedName = java.net.URLEncoder.encode(name, "UTF-8")
-                val request = Request.Builder()
-                    .url("$endpoint?name=$encodedName&type=$type")
-                    .header("Accept", "application/dns-json")
-                    .get()
-                    .build()
-                http.newCall(request).execute().use { response ->
-                    if (!response.isSuccessful) error("DNS HTTPS request failed (${response.code})")
-                    return response.body.string()
-                }
-            } catch (failure: Throwable) {
-                lastFailure = failure
-            }
-        }
-        throw IllegalStateException("DNS-over-HTTPS providers are unavailable", lastFailure)
-    }
-}
+private class DbApiException(val status: Int, detail: String) : IllegalStateException("Vercel API HTTP $status: $detail")
 
 enum class MongoState { DISCONNECTED, CONNECTED, ERROR }
 
@@ -343,270 +195,125 @@ data class SmsSchedule(
     val attempts: Int = 0,
 )
 
-internal class VoicxCustomerRepository(private val store: VoicxMongoStore) {
+internal class VoicxCustomerRepository(private val store: VoicxDatabaseApi, private val settingsStore: SettingsStore) {
     fun upsert(customer: VoicxCustomer): String {
-        val id = customer.id?.takeIf { ObjectId.isValid(it) }?.let(::ObjectId) ?: ObjectId()
-        val doc = Document("phone", customer.phone.trim()).append("name", customer.name.trim())
-            .append("role", customer.role.trim()).append("company", customer.company.trim())
-            .append("instructions", customer.instructions.trim()).append("notes", customer.notes.trim())
-            .append("groups", customer.groups.distinct().filter { it.isNotBlank() })
-            .append("createdAt", Date(customer.createdAt)).append("updatedAt", Date(customer.updatedAt))
-        store.customers().replaceOne(Document("_id", id), doc, com.mongodb.client.model.ReplaceOptions().upsert(true))
-        return id.toHexString()
+        val id = store.call("customer.upsert", JSONObject().put("customer", customer.toJson())).optString("id")
+        cacheCustomer(customer.copy(id = id))
+        return id
     }
-    fun findById(id: String): VoicxCustomer? = if (!ObjectId.isValid(id)) null else from(store.customers().find(Document("_id", ObjectId(id))).first())
-    fun findByPhone(phone: String): VoicxCustomer? = from(store.customers().find(Document("phone", phone.trim())).first())
-    fun search(query: String, limit: Int = 20): List<VoicxCustomer> {
-        val q = query.trim()
-        val regex = BsonRegularExpression(".*${java.util.regex.Pattern.quote(q)}.*", "i")
-        val filter = if (q.isBlank()) Document() else Document("\$or", listOf(
-            Document("phone", regex),
-            Document("name", regex),
-            Document("company", regex),
-        ))
-        return store.customers().find(filter).limit(limit.coerceIn(1, 50)).map(::from).filterNotNull().toList()
-    }
+    fun findById(id: String): VoicxCustomer? = store.call("customer.findById", JSONObject().put("id", id)).optJSONObject("customer")?.toCustomer()?.also(::cacheCustomer)
+    fun findByPhone(phone: String): VoicxCustomer? = store.call("customer.findByPhone", JSONObject().put("phone", phone)).optJSONObject("customer")?.toCustomer()?.also(::cacheCustomer)
+    fun search(query: String, limit: Int = 20): List<VoicxCustomer> = store.call("customer.search", JSONObject().put("query", query).put("limit", limit))
+        .optJSONArray("customers").toObjects().mapNotNull { (it as? JSONObject)?.toCustomer() }.also { rows -> rows.forEach(::cacheCustomer) }
     fun addMemory(customerId: String, text: String, source: String = "call") {
-        store.memories().insertOne(Document("customerId", customerId).append("text", text.take(4000))
-            .append("source", source).append("createdAt", Date()))
+        store.call("memory.add", JSONObject().put("customerId", customerId).put("text", text.take(4000)).put("source", source))
     }
-    fun instructionFor(phone: String): String = findByPhone(phone)?.instructions.orEmpty()
-    fun memoriesFor(phone: String, limit: Int = 10): String {
-        val customerId = findByPhone(phone)?.id?.takeIf(ObjectId::isValid) ?: return ""
-        return store.memories().find(Filters.eq("customerId", customerId)).sort(Document("createdAt", -1))
-            .limit(limit.coerceIn(1, 20)).map { it.getString("text").orEmpty() }.filter(String::isNotBlank)
-            .toList().asReversed().joinToString("\n") { "- $it" }
+    fun instructionFor(phone: String): String = cachedCallContext(phone)?.instructions.orEmpty().ifBlank {
+        runCatching { refreshCallContext(phone)?.instructions.orEmpty() }.getOrDefault("")
     }
-    fun saveSchedule(schedule: CallSchedule): String {
-        schedule.idempotencyKey?.takeIf { it.isNotBlank() }?.let { key ->
-            store.schedules().find(Filters.eq("idempotencyKey", key)).first()?.getObjectId("_id")?.let { return it.toHexString() }
-        }
-        val id = schedule.id?.takeIf { ObjectId.isValid(it) }?.let(::ObjectId) ?: ObjectId()
-        store.schedules().replaceOne(Document("_id", id), Document("customerId", schedule.customerId)
-            .append("phone", schedule.phone).append("runAt", Date(schedule.runAt))
-            .append("status", schedule.status).append("note", schedule.note)
-            .append("campaignId", schedule.campaignId.orEmpty())
-            .append("campaignCustomerId", schedule.campaignCustomerId.orEmpty())
-            .append("idempotencyKey", schedule.idempotencyKey.orEmpty())
-            .append("attempts", schedule.attempts), com.mongodb.client.model.ReplaceOptions().upsert(true))
-        return id.toHexString()
+    fun memoriesFor(phone: String, limit: Int = 10): String = store.call("memory.forPhone", JSONObject().put("phone", phone).put("limit", limit))
+        .optJSONArray("memories").toObjects().map { it.toString() }.filter(String::isNotBlank).also { cacheMemories(phone, it) }.joinToString("\n") { "- $it" }
+    fun cachedCallContext(phone: String): GeminiAiEndpoint.CallContext? = settingsStore.cachedCustomerContext(phone)?.toCallContext()
+    fun refreshCallContext(phone: String): GeminiAiEndpoint.CallContext? {
+        val result = store.call("customer.callContext", JSONObject().put("phone", phone), timeoutMs = 1_500)
+        val customer = result.optJSONObject("customer")
+        val memories = result.optJSONArray("memories") ?: JSONArray()
+        if (customer == null) return null
+        settingsStore.cacheCustomerContext(phone, JSONObject().put("customer", customer).put("memories", memories))
+        return JSONObject().put("customer", customer).put("memories", memories).toCallContext()
     }
-    fun claimDueSchedule(now: Long = System.currentTimeMillis()): CallSchedule? {
-        store.schedules().updateMany(Filters.and(Filters.eq("status", "running"), Filters.lt("claimedAt", Date(now - 10 * 60 * 1000L))), Updates.combine(Updates.set("status", "pending"), Updates.unset("claimedAt")))
-        val doc = store.schedules().findOneAndUpdate(
-            Filters.and(
-                Filters.eq("status", "pending"),
-                Filters.lte("runAt", Date(now)),
-            ),
-            Updates.combine(Updates.set("status", "running"), Updates.set("claimedAt", Date(now)), Updates.inc("attempts", 1)),
-            FindOneAndUpdateOptions().sort(Document("runAt", 1)).returnDocument(ReturnDocument.AFTER),
-        ) ?: return null
-        return scheduleFrom(doc)
+    fun saveSchedule(schedule: CallSchedule): String = store.call("schedule.save", JSONObject().put("schedule", schedule.toJson())).optString("id")
+    fun claimDueSchedule(now: Long = System.currentTimeMillis()): CallSchedule? = store.call("schedule.claim", JSONObject().put("now", now)).optJSONObject("schedule")?.toCallSchedule()
+    fun updateScheduleStatus(id: String, status: String, error: String = "") { store.call("schedule.update", JSONObject().put("id", id).put("status", status).put("error", error)) }
+    fun saveSmsSchedule(schedule: SmsSchedule): String = store.call("smsSchedule.save", JSONObject().put("schedule", schedule.toJson())).optString("id")
+    fun claimDueSmsSchedule(now: Long = System.currentTimeMillis()): SmsSchedule? = store.call("smsSchedule.claim", JSONObject().put("now", now)).optJSONObject("schedule")?.toSmsSchedule()
+    fun campaignCustomerBlocked(id: String?): Boolean = store.call("campaignCustomer.blocked", JSONObject().put("id", id ?: "")).optBoolean("blocked")
+    fun latestCampaignCustomer(phone: String): String? = store.call("campaignCustomer.latestForPhone", JSONObject().put("phone", phone)).optString("id").takeIf { it.isNotBlank() && it != "null" }
+    fun updateSmsScheduleStatus(id: String, status: String, error: String = "") { store.call("smsSchedule.update", JSONObject().put("id", id).put("status", status).put("error", error)) }
+    fun retrySmsSchedule(id: String, error: String): String = store.call("smsSchedule.retry", JSONObject().put("id", id).put("error", error.take(500))).optString("status")
+    fun callReportPayload(report: AiCallReport, reportId: String = java.util.UUID.randomUUID().toString()): String =
+        JSONObject().put("reportId", reportId).put("report", report.toJson()).toString()
+    fun saveCallReport(report: AiCallReport) = saveCallReportPayload(callReportPayload(report))
+    fun saveCallReportPayload(payload: String) {
+        val envelope = JSONObject(payload)
+        store.call("call.report", JSONObject().put("reportId", envelope.optString("reportId")).put("report", envelope.getJSONObject("report")))
     }
-    fun updateScheduleStatus(id: String, status: String, error: String = "") {
-        if (!ObjectId.isValid(id)) return
-        val updates = mutableListOf<Bson>(Updates.set("status", status))
-        if (error.isBlank()) updates += Updates.unset("error") else updates += Updates.set("error", error.take(500))
-        store.schedules().updateOne(Filters.eq("_id", ObjectId(id)), Updates.combine(updates))
-    }
-    fun saveSmsSchedule(schedule: SmsSchedule): String {
-        schedule.idempotencyKey?.takeIf { it.isNotBlank() }?.let { key ->
-            store.smsSchedules().find(Filters.eq("idempotencyKey", key)).first()?.getObjectId("_id")?.let { return it.toHexString() }
-        }
-        val id = schedule.id?.takeIf { ObjectId.isValid(it) }?.let(::ObjectId) ?: ObjectId()
-        store.smsSchedules().replaceOne(Document("_id", id), Document("customerId", schedule.customerId)
-            .append("phone", schedule.phone).append("runAt", Date(schedule.runAt))
-            .append("message", schedule.message).append("status", schedule.status)
-            .append("campaignId", schedule.campaignId.orEmpty()).append("note", schedule.note)
-            .append("campaignCustomerId", schedule.campaignCustomerId.orEmpty())
-            .append("idempotencyKey", schedule.idempotencyKey.orEmpty())
-            .append("attempts", schedule.attempts),
-            com.mongodb.client.model.ReplaceOptions().upsert(true))
-        return id.toHexString()
-    }
-    fun claimDueSmsSchedule(now: Long = System.currentTimeMillis()): SmsSchedule? {
-        store.smsSchedules().updateMany(Filters.and(Filters.eq("status", "running"), Filters.lt("claimedAt", Date(now - 10 * 60 * 1000L))), Updates.combine(Updates.set("status", "queued"), Updates.unset("claimedAt")))
-        val doc = store.smsSchedules().findOneAndUpdate(
-            Filters.and(Filters.eq("status", "queued"), Filters.lte("runAt", Date(now))),
-            Updates.combine(Updates.set("status", "running"), Updates.set("claimedAt", Date(now)), Updates.inc("attempts", 1)),
-            FindOneAndUpdateOptions().sort(Document("runAt", 1)).returnDocument(ReturnDocument.AFTER),
-        ) ?: return null
-        return smsScheduleFrom(doc)
-    }
-    fun campaignCustomerBlocked(id: String?): Boolean {
-        if (id.isNullOrBlank() || !ObjectId.isValid(id)) return false
-        return store.campaignCustomers().find(Filters.eq("_id", ObjectId(id))).first()?.getString("status") in listOf("admin", "opted_out", "paused")
-    }
-    fun latestCampaignCustomer(phone: String): String? = store.campaignCustomers().find(Filters.eq("phone", phone.trim()))
-        .sort(Document("createdAt", -1)).first()?.getObjectId("_id")?.toHexString()
-    fun updateSmsScheduleStatus(id: String, status: String, error: String = "") {
-        if (!ObjectId.isValid(id)) return
-        val updates = mutableListOf<Bson>(Updates.set("status", status))
-        if (error.isBlank()) updates += Updates.unset("error") else updates += Updates.set("error", error.take(500))
-        store.smsSchedules().updateOne(Filters.eq("_id", ObjectId(id)), Updates.combine(updates))
-    }
-    fun saveCallReport(report: AiCallReport) {
-        store.calls().insertOne(Document("phone", report.number.orEmpty())
-            .append("name", report.name.orEmpty()).append("role", report.role.orEmpty()).append("company", report.company.orEmpty())
-            .append("startedAt", Date(report.startedAt)).append("endedAt", Date(report.endedAt))
-            .append("cause", report.cause?.name.orEmpty()).append("failureDetail", report.failureDetail.take(500))
-            .append("inputText", report.inputText.take(12000)).append("outputText", report.outputText.take(12000))
-            .append("conversationTranscript", report.conversationTranscript.take(24000))
-            .append("inputFrames", report.inputFrames).append("outputFrames", report.outputFrames)
-            .append("inputAttempts", report.inputAttempts).append("inputSendFailures", report.inputSendFailures)
-            .append("outputAudioChunks", report.outputAudioChunks).append("outputAudioBytes", report.outputAudioBytes)
-            .append("outputDroppedFrames", report.outputDroppedFrames).append("outputQueuePeak", report.outputQueuePeak)
-            .append("firstInputSentAt", report.firstInputSentAt ?: 0L).append("lastInputSentAt", report.lastInputSentAt ?: 0L)
-            .append("firstOutputAt", report.firstOutputAt ?: 0L).append("firstOutputQueuedAt", report.firstOutputQueuedAt ?: 0L)
-            .append("firstOutputPlayedAt", report.firstOutputPlayedAt ?: 0L).append("turnCompleteAt", report.turnCompleteAt ?: 0L)
-            .append("turnResponseCount", report.turnResponseCount).append("lastTurnResponseMs", report.lastTurnResponseMs ?: 0L)
-            .append("averageTurnResponseMs", report.averageTurnResponseMs ?: 0L)
-            .append("lastTurnSpeechDurationMs", report.lastTurnSpeechDurationMs ?: 0L)
-            .append("averageTurnSpeechDurationMs", report.averageTurnSpeechDurationMs ?: 0L)
-            .append("turnCount", report.turnCount).append("lastSpeechEndAt", report.lastSpeechEndAt ?: 0L)
-            .append("createdAt", Date()))
-        val customerId = report.number?.let(::findByPhone)?.id
-        if (!customerId.isNullOrBlank()) {
-            val memory = buildString {
-                append("نتيجة مكالمة ${Date(report.endedAt)}: ")
-                append(report.cause?.name ?: "NORMAL")
-                if (report.conversationTranscript.isNotBlank()) append("\n").append(report.conversationTranscript)
-                else if (report.outputText.isNotBlank()) append("\nرد Gemini: ").append(report.outputText)
-            }
-            addMemory(customerId, memory, "gemini_call")
-        }
-    }
-    fun listSchedules(limit: Int = 20): List<CallSchedule> = store.schedules().find().sort(Document("runAt", 1)).limit(limit)
-        .map(::scheduleFrom)
-        .toList()
-    fun listSmsSchedules(limit: Int = 20): List<SmsSchedule> = store.smsSchedules().find().sort(Document("runAt", 1)).limit(limit)
-        .map(::smsScheduleFrom)
-        .toList()
-
-    /** Creates a stable customer snapshot and schedules only the first call in a call campaign. */
-    fun createCampaign(campaign: Campaign): String {
-        val campaignId = campaign.id?.takeIf(ObjectId::isValid)?.let(::ObjectId) ?: ObjectId()
-        store.campaigns().insertOne(Document("_id", campaignId).append("name", campaign.name.trim())
-            .append("startAt", Date(campaign.startAt)).append("timezone", campaign.timezone)
-            .append("targetGroup", campaign.targetGroup.trim()).append("channel", campaign.channel)
-            .append("smsTemplate", campaign.smsTemplate.take(1000)).append("status", campaign.status)
-            .append("createdAt", Date(campaign.createdAt)).append("updatedAt", Date(campaign.updatedAt)))
-        val filter: Bson = Filters.and(Filters.ne("optedOut", true), if (campaign.targetGroup.isBlank() || campaign.targetGroup.equals("all", true))
-            Document() else Filters.eq("groups", campaign.targetGroup.trim()))
-        val customers = store.customers().find(filter).sort(Document("createdAt", 1).append("_id", 1)).toList()
-        customers.forEachIndexed { index, doc ->
-            val customerId = doc.getObjectId("_id")?.toHexString() ?: return@forEachIndexed
-            store.campaignCustomers().insertOne(Document("campaignId", campaignId.toHexString())
-                .append("customerId", customerId).append("phone", doc.getString("phone").orEmpty())
-                .append("sequence", index).append("status", "queued").append("attempts", 0)
-                .append("createdAt", Date()).append("updatedAt", Date()))
-        }
-        if (customers.isNotEmpty() && campaign.channel.contains("call")) {
-            val first = store.campaignCustomers().find(Filters.and(Filters.eq("campaignId", campaignId.toHexString()), Filters.eq("sequence", 0))).first()
-            if (first != null) {
-                val ccId = first.getObjectId("_id")?.toHexString().orEmpty()
-                val phone = first.getString("phone").orEmpty(); val customerId = first.getString("customerId").orEmpty()
-                saveSchedule(CallSchedule(customerId = customerId, phone = phone, runAt = campaign.startAt,
-                    campaignId = campaignId.toHexString(), campaignCustomerId = ccId,
-                    idempotencyKey = "${campaignId}:call:$ccId:${campaign.startAt}"))
-                if (campaign.channel == "call_sms" && campaign.smsTemplate.isNotBlank()) {
-                    saveSmsSchedule(SmsSchedule(customerId = customerId, phone = phone, runAt = campaign.startAt,
-                        message = campaign.smsTemplate, campaignId = campaignId.toHexString(), campaignCustomerId = ccId,
-                        idempotencyKey = "${campaignId}:sms:$ccId:${campaign.startAt}"))
-                }
-                store.campaignCustomers().updateOne(Filters.eq("_id", first.getObjectId("_id")), Updates.set("status", "call_scheduled"))
-            }
-        } else if (customers.isNotEmpty() && campaign.channel == "sms" && campaign.smsTemplate.isNotBlank()) {
-            customers.forEachIndexed { index, doc ->
-                val customerId = doc.getObjectId("_id")?.toHexString().orEmpty(); val phone = doc.getString("phone").orEmpty()
-                val cc = store.campaignCustomers().find(Filters.and(Filters.eq("campaignId", campaignId.toHexString()), Filters.eq("sequence", index))).first()
-                val ccId = cc?.getObjectId("_id")?.toHexString().orEmpty()
-                saveSmsSchedule(SmsSchedule(customerId = customerId, phone = phone, runAt = campaign.startAt,
-                    message = campaign.smsTemplate, campaignId = campaignId.toHexString(), campaignCustomerId = ccId,
-                    idempotencyKey = "${campaignId}:sms:$ccId:${campaign.startAt}"))
-                cc?.getObjectId("_id")?.let { store.campaignCustomers().updateOne(Filters.eq("_id", it), Updates.set("status", "sms_scheduled")) }
-            }
-        }
-        return campaignId.toHexString()
-    }
-
+    fun listSchedules(limit: Int = 20): List<CallSchedule> = store.call("schedule.list", JSONObject().put("limit", limit)).optJSONArray("schedules").toObjects().mapNotNull { (it as? JSONObject)?.toCallSchedule() }
+    fun listSmsSchedules(limit: Int = 20): List<SmsSchedule> = store.call("smsSchedule.list", JSONObject().put("limit", limit)).optJSONArray("schedules").toObjects().mapNotNull { (it as? JSONObject)?.toSmsSchedule() }
+    fun createCampaign(campaign: Campaign): String = store.call("campaign.create", JSONObject().put("campaign", campaign.toJson())).optString("id")
     fun setCampaignDecision(campaignCustomerId: String, outcome: String, note: String = "") {
-        if (!ObjectId.isValid(campaignCustomerId)) return
-        val now = Date(); val status = when (outcome) { "interested", "admin" -> "admin"; "opted_out" -> "opted_out"; "paused" -> "paused"; else -> "follow_up" }
-        val updates = mutableListOf<Bson>(Updates.set("status", status), Updates.set("lastOutcome", outcome), Updates.set("followUpNote", note.take(1000)), Updates.set("updatedAt", now))
-        if (status == "admin") { updates += Updates.set("interestedAt", now); updates += Updates.set("adminAt", now) }
-        if (status == "paused") updates += Updates.set("pausedAt", now)
-        if (status == "opted_out") updates += Updates.set("optedOutAt", now)
-        store.campaignCustomers().updateOne(Filters.eq("_id", ObjectId(campaignCustomerId)), Updates.combine(updates))
-        if (status == "admin" || status == "opted_out" || status == "paused") {
-            store.schedules().updateMany(Filters.and(Filters.eq("campaignCustomerId", campaignCustomerId), Filters.eq("status", "pending")), Updates.set("status", "cancelled"))
-            store.smsSchedules().updateMany(Filters.and(Filters.eq("campaignCustomerId", campaignCustomerId), Filters.eq("status", "queued")), Updates.set("status", "cancelled"))
-        }
-        if (status == "admin") store.interestedCustomers().updateOne(Filters.eq("campaignCustomerId", campaignCustomerId),
-            Updates.combine(Updates.set("campaignCustomerId", campaignCustomerId), Updates.set("outcome", outcome), Updates.set("note", note.take(1000)), Updates.set("updatedAt", now)),
-            com.mongodb.client.model.UpdateOptions().upsert(true))
-        if (status == "opted_out") {
-            val customerId = store.campaignCustomers().find(Filters.eq("_id", ObjectId(campaignCustomerId))).first()?.getString("customerId")
-            if (!customerId.isNullOrBlank() && ObjectId.isValid(customerId)) store.customers().updateOne(Filters.eq("_id", ObjectId(customerId)), Updates.set("optedOut", true))
-        }
+        store.call("campaign.decision", JSONObject().put("campaignCustomerId", campaignCustomerId).put("outcome", outcome).put("note", note.take(1000)))
     }
-
     fun scheduleFollowUp(campaignCustomerId: String, nextCallAt: Long?, nextSmsAt: Long?, note: String): Boolean {
-        if (!ObjectId.isValid(campaignCustomerId)) return false
-        val cc = store.campaignCustomers().find(Filters.eq("_id", ObjectId(campaignCustomerId))).first() ?: return false
-        if (cc.getString("status") in listOf("admin", "opted_out")) return false
-        val campaignId = cc.getString("campaignId").orEmpty(); val customerId = cc.getString("customerId").orEmpty(); val phone = cc.getString("phone").orEmpty()
-        val changes = mutableListOf<Bson>(Updates.set("status", "follow_up"), Updates.set("followUpNote", note.take(1000)), Updates.set("updatedAt", Date()))
-        changes += if (nextCallAt == null) Updates.unset("nextCallAt") else Updates.set("nextCallAt", Date(nextCallAt))
-        changes += if (nextSmsAt == null) Updates.unset("nextSmsAt") else Updates.set("nextSmsAt", Date(nextSmsAt))
-        store.campaignCustomers().updateOne(Filters.eq("_id", ObjectId(campaignCustomerId)), Updates.combine(changes))
-        if (nextCallAt != null) saveSchedule(CallSchedule(customerId = customerId, phone = phone, runAt = nextCallAt, note = note, campaignId = campaignId, campaignCustomerId = campaignCustomerId, idempotencyKey = "$campaignCustomerId:call:$nextCallAt"))
-        if (nextSmsAt != null) saveSmsSchedule(SmsSchedule(customerId = customerId, phone = phone, runAt = nextSmsAt, message = note, note = note, campaignId = campaignId, campaignCustomerId = campaignCustomerId, idempotencyKey = "$campaignCustomerId:sms:$nextSmsAt"))
-        return true
+        val args = JSONObject().put("campaignCustomerId", campaignCustomerId).put("note", note.take(1000))
+        if (nextCallAt != null) args.put("nextCallAt", nextCallAt) else args.put("nextCallAt", JSONObject.NULL)
+        if (nextSmsAt != null) args.put("nextSmsAt", nextSmsAt) else args.put("nextSmsAt", JSONObject.NULL)
+        return store.call("campaign.followUp", args).optBoolean("scheduled")
+    }
+    fun advanceCampaign(campaignCustomerId: String) { store.call("campaign.advance", JSONObject().put("campaignCustomerId", campaignCustomerId)) }
+
+    private fun cacheCustomer(customer: VoicxCustomer) {
+        val memories = settingsStore.cachedCustomerContext(customer.phone)?.optJSONArray("memories") ?: JSONArray()
+        settingsStore.cacheCustomerContext(customer.phone, JSONObject().put("customer", customer.toJson()).put("memories", memories))
+    }
+    private fun cacheMemories(phone: String, memories: List<String>) {
+        val current = settingsStore.cachedCustomerContext(phone) ?: JSONObject()
+        current.put("memories", JSONArray(memories))
+        settingsStore.cacheCustomerContext(phone, current)
+    }
+    private fun JSONObject.toCallContext(): GeminiAiEndpoint.CallContext {
+        val customer = optJSONObject("customer")
+        val memories = optJSONArray("memories").toObjects().map { it.toString() }.filter(String::isNotBlank)
+        return GeminiAiEndpoint.CallContext(name = customer?.optString("name").orEmpty(), role = customer?.optString("role").orEmpty(),
+            company = customer?.optString("company").orEmpty(), instructions = customer?.optString("instructions").orEmpty(),
+            memories = memories.joinToString("\n") { "- $it" })
     }
 
-    fun advanceCampaign(campaignCustomerId: String) {
-        if (!ObjectId.isValid(campaignCustomerId)) return
-        val current = store.campaignCustomers().find(Filters.eq("_id", ObjectId(campaignCustomerId))).first() ?: return
-        val next = store.campaignCustomers().find(Filters.and(Filters.eq("campaignId", current.getString("campaignId")), Filters.eq("status", "queued"))).sort(Document("sequence", 1)).first() ?: return
-        val campaign = store.campaigns().find(Filters.eq("_id", ObjectId(current.getString("campaignId")))).first() ?: return
-        val nextId = next.getObjectId("_id")?.toHexString().orEmpty(); val at = System.currentTimeMillis()
-        if (campaign.getString("channel").orEmpty().contains("call")) {
-            saveSchedule(CallSchedule(customerId = next.getString("customerId").orEmpty(), phone = next.getString("phone").orEmpty(), runAt = at,
-                campaignId = current.getString("campaignId"), campaignCustomerId = nextId, idempotencyKey = "${current.getString("campaignId")}:call:$nextId:$at"))
-            if (campaign.getString("channel") == "call_sms" && campaign.getString("smsTemplate").orEmpty().isNotBlank()) saveSmsSchedule(SmsSchedule(customerId = next.getString("customerId").orEmpty(), phone = next.getString("phone").orEmpty(), runAt = at, message = campaign.getString("smsTemplate"), campaignId = current.getString("campaignId"), campaignCustomerId = nextId, idempotencyKey = "${current.getString("campaignId")}:sms:$nextId:$at"))
-            store.campaignCustomers().updateOne(Filters.eq("_id", next.getObjectId("_id")), Updates.set("status", "call_scheduled"))
-        }
-    }
-    private fun scheduleFrom(it: Document): CallSchedule = CallSchedule(
-        it.getObjectId("_id")?.toHexString(), it.getString("customerId").orEmpty(), it.getString("phone").orEmpty(),
-        it.getDate("runAt")?.time ?: 0L, it.getString("status").orEmpty(), it.getString("note").orEmpty(),
-        it.getString("campaignId")?.ifBlank { null }, it.getString("campaignCustomerId")?.ifBlank { null },
-        it.getString("idempotencyKey")?.ifBlank { null }, it.getInteger("attempts", 0),
-    )
-    private fun smsScheduleFrom(it: Document): SmsSchedule = SmsSchedule(
-        id = it.getObjectId("_id")?.toHexString(), customerId = it.getString("customerId").orEmpty(),
-        phone = it.getString("phone").orEmpty(), runAt = it.getDate("runAt")?.time ?: 0L,
-        message = it.getString("message").orEmpty(), status = it.getString("status").orEmpty(),
-        campaignId = it.getString("campaignId")?.ifBlank { null }, note = it.getString("note").orEmpty(),
-        campaignCustomerId = it.getString("campaignCustomerId")?.ifBlank { null },
-        idempotencyKey = it.getString("idempotencyKey")?.ifBlank { null }, attempts = it.getInteger("attempts", 0),
-    )
-    private fun from(d: Document?): VoicxCustomer? = d?.let { VoicxCustomer(
-        id = it.getObjectId("_id")?.toHexString(), phone = it.getString("phone").orEmpty(), name = it.getString("name").orEmpty(),
-        role = it.getString("role").orEmpty(), company = it.getString("company").orEmpty(), instructions = it.getString("instructions").orEmpty(),
-        notes = it.getString("notes").orEmpty(), groups = it.getList("groups", String::class.java) ?: emptyList(),
-        createdAt = it.getDate("createdAt")?.time ?: it.getDate("updatedAt")?.time ?: 0L,
-        updatedAt = it.getDate("updatedAt")?.time ?: 0L) }
+    private fun VoicxCustomer.toJson() = JSONObject().put("id", id ?: JSONObject.NULL).put("phone", phone).put("name", name)
+        .put("role", role).put("company", company).put("instructions", instructions).put("notes", notes)
+        .put("groups", JSONArray(groups)).put("createdAt", createdAt).put("updatedAt", updatedAt)
+    private fun JSONObject.toCustomer() = VoicxCustomer(
+        id = optString("id").takeIf(String::isNotBlank), phone = optString("phone"), name = optString("name"), role = optString("role"),
+        company = optString("company"), instructions = optString("instructions"), notes = optString("notes"),
+        groups = optJSONArray("groups").toObjects().map { it.toString() }, createdAt = optLong("createdAt"), updatedAt = optLong("updatedAt"))
+    private fun CallSchedule.toJson() = JSONObject().put("id", id ?: JSONObject.NULL).put("customerId", customerId).put("phone", phone)
+        .put("runAt", runAt).put("status", status).put("note", note).put("campaignId", campaignId ?: JSONObject.NULL)
+        .put("campaignCustomerId", campaignCustomerId ?: JSONObject.NULL).put("idempotencyKey", idempotencyKey ?: JSONObject.NULL).put("attempts", attempts)
+    private fun JSONObject.toCallSchedule() = CallSchedule(optString("id").takeIf(String::isNotBlank), optString("customerId"), optString("phone"), optLong("runAt"),
+        optString("status", "pending"), optString("note"), optString("campaignId").takeIf(String::isNotBlank), optString("campaignCustomerId").takeIf(String::isNotBlank),
+        optString("idempotencyKey").takeIf(String::isNotBlank), optInt("attempts"))
+    private fun SmsSchedule.toJson() = JSONObject().put("id", id ?: JSONObject.NULL).put("customerId", customerId).put("phone", phone).put("runAt", runAt)
+        .put("message", message).put("status", status).put("campaignId", campaignId ?: JSONObject.NULL).put("note", note)
+        .put("campaignCustomerId", campaignCustomerId ?: JSONObject.NULL).put("idempotencyKey", idempotencyKey ?: JSONObject.NULL).put("attempts", attempts)
+    private fun JSONObject.toSmsSchedule() = SmsSchedule(id = optString("id").takeIf(String::isNotBlank), customerId = optString("customerId"), phone = optString("phone"),
+        runAt = optLong("runAt"), message = optString("message"), status = optString("status", "queued"), campaignId = optString("campaignId").takeIf(String::isNotBlank),
+        note = optString("note"), campaignCustomerId = optString("campaignCustomerId").takeIf(String::isNotBlank),
+        idempotencyKey = optString("idempotencyKey").takeIf(String::isNotBlank), attempts = optInt("attempts"))
+    private fun Campaign.toJson() = JSONObject().put("id", id ?: JSONObject.NULL).put("name", name).put("startAt", startAt).put("timezone", timezone)
+        .put("targetGroup", targetGroup).put("channel", channel).put("smsTemplate", smsTemplate).put("status", status).put("createdAt", createdAt).put("updatedAt", updatedAt)
+    private fun AiCallReport.toJson() = JSONObject().put("number", number ?: JSONObject.NULL).put("name", name ?: JSONObject.NULL).put("role", role ?: JSONObject.NULL)
+        .put("company", company ?: JSONObject.NULL).put("startedAt", startedAt).put("endedAt", endedAt).put("cause", cause?.name ?: "NORMAL")
+        .put("failureDetail", failureDetail).put("inputText", inputText).put("outputText", outputText).put("conversationTranscript", conversationTranscript)
+        .put("inputFrames", inputFrames).put("outputFrames", outputFrames).put("inputAttempts", inputAttempts).put("inputSendFailures", inputSendFailures)
+        .put("outputAudioChunks", outputAudioChunks).put("outputAudioBytes", outputAudioBytes).put("outputDroppedFrames", outputDroppedFrames)
+        .put("outputQueuePeak", outputQueuePeak).put("firstInputSentAt", firstInputSentAt ?: 0L).put("lastInputSentAt", lastInputSentAt ?: 0L)
+        .put("firstOutputAt", firstOutputAt ?: 0L).put("firstOutputQueuedAt", firstOutputQueuedAt ?: 0L).put("firstOutputPlayedAt", firstOutputPlayedAt ?: 0L)
+        .put("turnCompleteAt", turnCompleteAt ?: 0L).put("turnResponseCount", turnResponseCount).put("lastTurnResponseMs", lastTurnResponseMs ?: 0L)
+        .put("averageTurnResponseMs", averageTurnResponseMs ?: 0L).put("lastTurnSpeechDurationMs", lastTurnSpeechDurationMs ?: 0L)
+        .put("averageTurnSpeechDurationMs", averageTurnSpeechDurationMs ?: 0L).put("turnCount", turnCount).put("lastSpeechEndAt", lastSpeechEndAt ?: 0L)
 }
 
+private fun JSONArray?.toObjects(): List<Any> = this?.let { array -> (0 until array.length()).mapNotNull { array.opt(it).takeUnless { value -> value == JSONObject.NULL } } }.orEmpty()
+
 internal class SmsApiClient(private val apiKey: String, private val endpoint: String = "https://adasms-standalone.vercel.app/api/sms/send") {
-    fun send(phone: String, message: String): Result<String> = runCatching {
+    fun send(phone: String, message: String, messageId: String = java.util.UUID.randomUUID().toString()): Result<String> = runCatching {
         require(apiKey.isNotBlank()) { "SMS API key is not configured" }
         require(phone.matches(Regex("\\+?[0-9]{7,20}"))) { "Invalid phone number" }
         require(message.isNotBlank() && message.length <= 1000) { "Invalid SMS message" }
-        val body = JSONObject().put("phone", phone).put("message", message).toString().toRequestBody("application/json".toMediaType())
-        val request = Request.Builder().url(endpoint).header("Authorization", "Bearer $apiKey").post(body).build()
+        require(messageId.length in 1..128) { "Invalid SMS message ID" }
+        val body = JSONObject().put("phone", phone).put("message", message).put("idempotency_key", messageId).toString().toRequestBody("application/json".toMediaType())
+        val request = Request.Builder().url(endpoint).header("Authorization", "Bearer $apiKey")
+            .header("Idempotency-Key", messageId).post(body).build()
         SMS_HTTP.newCall(request).execute().use { response ->
             if (!response.isSuccessful) error("SMS service rejected request (${response.code})")
             "SMS sent"

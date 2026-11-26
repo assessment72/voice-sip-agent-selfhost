@@ -201,11 +201,17 @@ class GatewayService : Service() {
                         val battery = batteryManager.getIntProperty(BatteryManager.BATTERY_PROPERTY_CAPACITY)
                             .takeIf { it in 0..100 }
                         val charging = batteryManager.isCharging
+                        val health = runtime.health.value
                         client.heartbeat(
                             battery = battery,
                             charging = charging,
-                            serviceState = "running",
+                            serviceState = if (health.takeover) "running" else "stopped",
                             appVersion = BuildConfig.VERSION_NAME,
+                            sipReady = health.sip.ready,
+                            sipDetail = health.sip.detail,
+                            activeCall = health.session != null || health.calls.owned > 0,
+                            takeover = health.takeover,
+                            takeoverPending = health.takeoverOffPending || health.takeoverOnPending,
                         )
                     }
                 } catch (e: Exception) {

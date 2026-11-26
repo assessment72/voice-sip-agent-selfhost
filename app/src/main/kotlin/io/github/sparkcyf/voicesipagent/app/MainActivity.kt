@@ -333,8 +333,10 @@ private fun SettingsSection(rt: GatewayRuntime) {
     var telegramBotToken by remember(cur) { mutableStateOf(cur.telegramBotToken) }
     var telegramAllowedUserId by remember(cur) { mutableStateOf(if (cur.telegramAllowedUserId > 0) cur.telegramAllowedUserId.toString() else "") }
     var geminiApiKey by remember(cur) { mutableStateOf(cur.geminiApiKey) }
-    var mongoUri by remember { mutableStateOf("") }
+    var mongoApiUrl by remember(cur) { mutableStateOf(cur.mongoApiUrl) }
     var mongoDatabase by remember(cur) { mutableStateOf(cur.mongoDatabaseName) }
+    var mongoDeviceId by remember(cur) { mutableStateOf(cur.mongoDeviceId) }
+    var mongoDeviceToken by remember { mutableStateOf("") }
     var smsApiKey by remember { mutableStateOf("") }
     var mongoResult by remember { mutableStateOf("") }
     var telegramTestRunning by remember { mutableStateOf(false) }
@@ -345,35 +347,49 @@ private fun SettingsSection(rt: GatewayRuntime) {
     val importMongoFile = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         if (uri != null) runCatching {
             val text = context.contentResolver.openInputStream(uri)?.bufferedReader()?.use { it.readText() }.orEmpty()
+            var ignoredUri = false
             if (text.trimStart().startsWith("{")) {
                 val json = org.json.JSONObject(text)
-                mongoUri = json.optString("connection_uri", json.optString("MONGODB_URI"))
+                mongoApiUrl = json.optString("api_url", json.optString("VOICX_API_URL", mongoApiUrl))
                 mongoDatabase = json.optString("database_name", json.optString("MONGODB_DB_NAME", mongoDatabase))
+                mongoDeviceId = json.optString("device_id", json.optString("VOICX_DEVICE_ID", mongoDeviceId))
+                mongoDeviceToken = json.optString("device_token", json.optString("VOICX_DEVICE_TOKEN", ""))
+                ignoredUri = json.has("MONGODB_URI") || json.has("connection_uri")
             } else text.lineSequence().map { it.trim() }.filter { it.contains('=') }.forEach { line ->
                 val key = line.substringBefore('=').trim()
                 val value = line.substringAfter('=').trim().trim('"', '\'')
-                when (key) { "MONGODB_URI" -> mongoUri = value; "MONGODB_DB_NAME" -> mongoDatabase = value }
+                when (key) {
+                    "VOICX_API_URL" -> mongoApiUrl = value
+                    "MONGODB_DB_NAME" -> mongoDatabase = value
+                    "VOICX_DEVICE_ID" -> mongoDeviceId = value
+                    "VOICX_DEVICE_TOKEN" -> mongoDeviceToken = value
+                    "MONGODB_URI" -> ignoredUri = true
+                }
             }
-            mongoResult = "تم استيراد إعدادات MongoDB. اضغط اختبار الاتصال."
+            mongoResult = if (ignoredUri) "تم تجاهل MongoDB URI؛ يجب إبقاؤه في Vercel فقط. راجع إعدادات API ثم اختبر الاتصال."
+                else "تم استيراد إعدادات Vercel API. اضغط اختبار الاتصال."
         }.onFailure { mongoResult = "فشل استيراد الملف دون كشف محتواه." }
     }
 
-    Section(t("إعدادات قاعدة البيانات", "Database settings")) {
-        Text(t("يتم الاتصال مباشرة من التطبيق. URI وكلمة المرور لا تظهر بعد الحفظ وتُخزّن عبر Android Keystore.", "The app connects directly. The URI and password are hidden after saving and encrypted with Android Keystore."), style = MaterialTheme.typography.bodySmall)
-        OutlinedTextField(value = mongoUri, onValueChange = { mongoUri = it }, label = { Text("MongoDB URI") }, visualTransformation = PasswordVisualTransformation(), singleLine = true, modifier = Modifier.fillMaxWidth())
-        Field(t("اسم قاعدة البيانات", "Database name"), mongoDatabase) { mongoDatabase = it }
-        Text(if (cur.mongoUri.isBlank()) t("لا توجد إعدادات محفوظة", "No saved connection") else t("URI محفوظ ومخفي", "Saved URI is hidden"), style = MaterialTheme.typography.bodySmall)
+    Section(t("إعدادات قاعدة البيانات عبر Vercel", "Database settings via Vercel")) {
+        Text(t("يتصل التطبيق بخادم Vercel عبر HTTPS فقط. بيانات MongoDB السرية تبقى في Environment Variables على Vercel ولا تدخل التطبيق.", "The app uses HTTPS to Vercel. MongoDB credentials stay in Vercel Environment Variables and are never placed in the APK."), style = MaterialTheme.typography.bodySmall)
+        Field(t("رابط Vercel API الأساسي", "Vercel API base URL"), mongoApiUrl) { mongoApiUrl = it }
+        Field(t("اسم قاعدة البيانات على Vercel", "Database name configured on Vercel"), mongoDatabase) { mongoDatabase = it }
+        Field(t("معرّف هذا الجهاز", "This device ID"), mongoDeviceId) { mongoDeviceId = it }
+        OutlinedTextField(value = mongoDeviceToken, onValueChange = { mongoDeviceToken = it }, label = { Text(t("رمز الجهاز (32 حرفاً على الأقل)", "Device token (at least 32 characters)")) }, visualTransformation = PasswordVisualTransformation(), singleLine = true, modifier = Modifier.fillMaxWidth())
+        Text(if (cur.mongoDeviceToken.isBlank()) t("لا يوجد رمز محفوظ", "No saved device token") else t("يوجد رمز محفوظ ومشفّر؛ اترك الحقل فارغاً لاستخدامه", "A token is saved encrypted; leave blank to reuse it"), style = MaterialTheme.typography.bodySmall)
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             OutlinedButton(onClick = { importMongoFile.launch(arrayOf("application/json", "text/*")) }) { Text(t("استيراد JSON/ENV", "Import JSON/ENV")) }
-            OutlinedButton(onClick = { rt.testMongoConnection(mongoUri, mongoDatabase) { mongoResult = it } }, enabled = mongoUri.isNotBlank()) { Text(t("اختبار الاتصال", "Test connection")) }
+            OutlinedButton(onClick = { rt.testMongoConnection(mongoApiUrl, mongoDatabase, mongoDeviceId, mongoDeviceToken.ifBlank { cur.mongoDeviceToken }) { mongoResult = it } }, enabled = mongoApiUrl.isNotBlank() && mongoDeviceId.isNotBlank() && (mongoDeviceToken.length >= 32 || cur.mongoDeviceToken.length >= 32)) { Text(t("اختبار الاتصال", "Test connection")) }
         }
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            Button(onClick = { rt.saveMongoSettings(mongoUri, mongoDatabase, true) { mongoResult = it }; mongoUri = "" }, enabled = mongoUri.isNotBlank()) { Text(t("حفظ وتفعيل", "Save & activate")) }
-            OutlinedButton(onClick = { rt.saveMongoSettings(mongoUri, mongoDatabase, false) { mongoResult = it }; mongoUri = "" }) { Text(t("حفظ دون تفعيل", "Save without activating")) }
-            OutlinedButton(onClick = { rt.disconnectMongo(); mongoResult = "تم قطع اتصال MongoDB" }) { Text(t("قطع الاتصال", "Disconnect")) }
+            Button(onClick = { rt.saveMongoSettings(mongoApiUrl, mongoDatabase, mongoDeviceId, mongoDeviceToken.ifBlank { cur.mongoDeviceToken }, true) { mongoResult = it }; mongoDeviceToken = "" }, enabled = mongoApiUrl.isNotBlank() && mongoDeviceId.isNotBlank() && (mongoDeviceToken.length >= 32 || cur.mongoDeviceToken.length >= 32)) { Text(t("حفظ وتفعيل", "Save & activate")) }
+            OutlinedButton(onClick = { rt.saveMongoSettings(mongoApiUrl, mongoDatabase, mongoDeviceId, mongoDeviceToken.ifBlank { cur.mongoDeviceToken }, false) { mongoResult = it }; mongoDeviceToken = "" }) { Text(t("حفظ دون تفعيل", "Save without activating")) }
+            OutlinedButton(onClick = { rt.disconnectMongo(); mongoResult = "تم قطع اتصال API" }) { Text(t("قطع الاتصال", "Disconnect")) }
         }
         Text(rt.mongoStatus(), style = MaterialTheme.typography.bodySmall)
         if (mongoResult.isNotBlank()) Text(mongoResult, style = MaterialTheme.typography.bodySmall)
+
         Text(if (cur.smsApiKey.isBlank()) t("لا يوجد مفتاح SMS محفوظ", "No SMS key saved") else t("مفتاح SMS محفوظ ومخفي", "Saved SMS key is hidden"), style = MaterialTheme.typography.bodySmall)
         OutlinedTextField(value = smsApiKey, onValueChange = { smsApiKey = it }, label = { Text("SMS API key") }, visualTransformation = PasswordVisualTransformation(), singleLine = true, modifier = Modifier.fillMaxWidth())
         Button(onClick = { rt.updateSmsApiKey(smsApiKey) }) { Text(t("حفظ مفتاح SMS", "Save SMS key")) }

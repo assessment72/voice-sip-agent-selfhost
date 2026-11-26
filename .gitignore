@@ -12,6 +12,7 @@ docs/dev/
 # Gradle / Android
 .gradle/
 build/
+control-bridge/node_modules/
 local.properties
 *.apk
 *.aab

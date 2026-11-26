@@ -57,9 +57,6 @@ android {
     }
     packaging {
         resources.excludes += "META-INF/*.kotlin_module"
-        // MongoDB's driver-core and bson jars both contain native-image metadata that is not
-        // needed in an Android APK and can contain duplicate paths during resource merging.
-        resources.excludes += "META-INF/native-image/**"
     }
 }
 
@@ -79,7 +76,6 @@ dependencies {
     implementation(libs.androidx.compose.material3)
     implementation(libs.kotlinx.coroutines.android)
     implementation(libs.okhttp)
-    implementation(libs.mongodb.driver.sync)
     testImplementation(libs.junit)
     testImplementation(libs.mockito.core)
     // Use a real JSON implementation in local JVM tests instead of Android's mockable stubs.
