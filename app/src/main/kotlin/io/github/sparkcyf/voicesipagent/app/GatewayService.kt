@@ -304,7 +304,7 @@ class GatewayService : Service() {
                         val reply = try {
                             when (command) {
                                 "/start", "/help" ->
-                                    "Voicx control جاهز. الأوامر:\n/status - حالة البوابة\n/sip - حالة SIP\n/calls - حالة المكالمات\n/db_status - حالة MongoDB\n/customer_search <نص> - البحث عن عميل\n/customer_add رقم | اسم | وظيفة | شركة | تعليمات - إضافة عميل\n/schedule_add customerId | رقم | وقت Unix ms | ملاحظة - جدولة اتصال\n/schedule_list - عرض المواعيد\n/sms رقم | رسالة - إرسال SMS\n/simcall <رقم> - اتصال SIM وربطه بـ SIP\n/call رقم | اسم | وظيفة | شركة - اتصال SIM مع Gemini\n/admin - إعدادات أسعار وتغطية الديزل\n/ai_status - اختبار اتصال Gemini Live API\n/ai_errors - آخر تشخيصات Gemini\n/auto_answer_on - الرد الآلي بواسطة Gemini\n/auto_answer_off - إيقاف الرد الآلي\n/ai_stop - إيقاف مكالمة Gemini\n/simcall_cancel - إنهاء الاتصال الجاري\n/account - سجل المكالمات والصوت والبطارية\n/simcall_delete <id> - حذف سجل\n/service_on - تشغيل البوابة\n/service_off - إيقاف التحويل"
+                                    "Voicx control جاهز. الأوامر:\n/status - حالة البوابة\n/sip - حالة SIP\n/calls - حالة المكالمات\n/db_status - حالة MongoDB\n/customer_search <نص> - البحث عن عميل\n/customer_add رقم | اسم | وظيفة | شركة | تعليمات - إضافة عميل\n/schedule_add customerId | رقم | وقت Unix ms | ملاحظة - جدولة اتصال\n/schedule_list - عرض مواعيد الاتصالات\n/sms رقم | رسالة - إرسال SMS فورًا\n/sms_schedule_add customerId | رقم | وقت Unix ms | رسالة | ملاحظة - جدولة SMS\n/sms_schedule_list - عرض رسائل SMS المجدولة\n/campaign_add customerId | رقم | وقت الاتصال Unix ms | وقت SMS Unix ms | الرسالة | ملاحظة - إنشاء حملة اتصال وSMS\n/simcall <رقم> - اتصال SIM وربطه بـ SIP\n/call رقم | اسم | وظيفة | شركة - اتصال SIM مع Gemini\n/admin - إعدادات أسعار وتغطية الديزل\n/ai_status - اختبار اتصال Gemini Live API\n/ai_errors - آخر تشخيصات Gemini\n/auto_answer_on - الرد الآلي بواسطة Gemini\n/auto_answer_off - إيقاف الرد الآلي\n/ai_stop - إيقاف مكالمة Gemini\n/simcall_cancel - إنهاء الاتصال الجاري\n/account - سجل المكالمات والصوت والبطارية\n/simcall_delete <id> - حذف سجل\n/service_on - تشغيل البوابة\n/service_off - إيقاف التحويل"
                                 "/status" -> {
                                     val h = GatewayRuntime.get(this@GatewayService).health.value
                                     "Gateway: ${if (h.takeover) "ON" else "OFF"}\nSIP: ${if (h.sip.ready) "ready" else "not ready"}\nActive call: ${h.session != null || h.calls.owned > 0}"
@@ -330,6 +330,26 @@ class GatewayService : Service() {
                                     else { runtime.saveCallSchedule(CallSchedule(customerId = fields[0], phone = fields[1], runAt = at, note = fields.getOrElse(3) { "" })) { result -> scope.launch(Dispatchers.IO) { runCatching { client.sendMessage(update.chatId, "نتيجة الجدولة: $result") } } }; "تم استلام موعد الاتصال." }
                                 }
                                 "/schedule_list" -> { runtime.listCallSchedules { result -> scope.launch(Dispatchers.IO) { runCatching { client.sendMessage(update.chatId, result.take(3900)) } } }; "جارٍ تحميل مواعيد الاتصالات." }
+                                "/sms_schedule_add" -> {
+                                    val fields = argument.split('|').map { it.trim() }; val at = fields.getOrNull(2)?.toLongOrNull()
+                                    if (fields.size < 4 || fields[0].isBlank() || fields[1].isBlank() || at == null || at <= System.currentTimeMillis() || fields[3].isBlank()) "الاستخدام: /sms_schedule_add customerId | رقم | وقت Unix ms | رسالة | ملاحظة"
+                                    else { runtime.saveSmsSchedule(SmsSchedule(customerId = fields[0], phone = fields[1], runAt = at ?: 0L, message = fields[3], note = fields.getOrElse(4) { "" })) { result -> scope.launch(Dispatchers.IO) { runCatching { client.sendMessage(update.chatId, "نتيجة جدولة SMS: $result") } } }; "تم استلام موعد SMS." }
+                                }
+                                "/sms_schedule_list" -> { runtime.listSmsSchedules { result -> scope.launch(Dispatchers.IO) { runCatching { client.sendMessage(update.chatId, result.take(3900)) } } }; "جارٍ تحميل رسائل SMS المجدولة." }
+                                "/campaign_add" -> {
+                                    val fields = argument.split('|').map { it.trim() }
+                                    val callAt = fields.getOrNull(2)?.toLongOrNull(); val smsAt = fields.getOrNull(3)?.toLongOrNull()
+                                    if (fields.size < 5 || fields[0].isBlank() || fields[1].isBlank() || callAt == null || smsAt == null || callAt <= System.currentTimeMillis() || smsAt <= System.currentTimeMillis() || fields[4].isBlank()) "الاستخدام: /campaign_add customerId | رقم | وقت الاتصال Unix ms | وقت SMS Unix ms | الرسالة | ملاحظة"
+                                    else {
+                                        val campaignId = "campaign-${System.currentTimeMillis()}-${fields[0]}"
+                                        runtime.saveCallSchedule(CallSchedule(customerId = fields[0], phone = fields[1], runAt = callAt, note = fields.getOrElse(5) { "" }, campaignId = campaignId)) { callId ->
+                                            runtime.saveSmsSchedule(SmsSchedule(customerId = fields[0], phone = fields[1], runAt = smsAt ?: 0L, message = fields[4], note = fields.getOrElse(5) { "" }, campaignId = campaignId)) { smsId ->
+                                                scope.launch(Dispatchers.IO) { runCatching { client.sendMessage(update.chatId, "تم إنشاء الحملة $campaignId\nالمكالمة: $callId\nSMS: $smsId") } }
+                                            }
+                                        }
+                                        "تم استلام حملة الاتصال وSMS للجدولة."
+                                    }
+                                }
                                 "/sms" -> {
                                     val fields = argument.split('|', limit = 2).map { it.trim() }
                                     if (fields.size < 2) "الاستخدام: /sms رقم | رسالة"

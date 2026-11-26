@@ -81,6 +81,7 @@ internal class VoicxMongoStore {
     fun memories(): MongoCollection<Document> = requireDatabase().getCollection("customer_memories")
     fun calls(): MongoCollection<Document> = requireDatabase().getCollection("call_summaries")
     fun schedules(): MongoCollection<Document> = requireDatabase().getCollection("call_schedules")
+    fun smsSchedules(): MongoCollection<Document> = requireDatabase().getCollection("sms_schedules")
 
     private fun safeError(e: Throwable): String = when (e) {
         is IllegalArgumentException -> e.message.orEmpty().take(240)
@@ -107,6 +108,18 @@ data class CallSchedule(
     val phone: String,
     val runAt: Long,
     val status: String = "pending",
+    val note: String = "",
+    val campaignId: String? = null,
+)
+
+data class SmsSchedule(
+    val id: String? = null,
+    val customerId: String = "",
+    val phone: String,
+    val runAt: Long,
+    val message: String,
+    val status: String = "queued",
+    val campaignId: String? = null,
     val note: String = "",
 )
 
@@ -147,7 +160,8 @@ internal class VoicxCustomerRepository(private val store: VoicxMongoStore) {
         val id = schedule.id?.takeIf { ObjectId.isValid(it) }?.let(::ObjectId) ?: ObjectId()
         store.schedules().replaceOne(Document("_id", id), Document("customerId", schedule.customerId)
             .append("phone", schedule.phone).append("runAt", Date(schedule.runAt))
-            .append("status", schedule.status).append("note", schedule.note), com.mongodb.client.model.ReplaceOptions().upsert(true))
+            .append("status", schedule.status).append("note", schedule.note)
+            .append("campaignId", schedule.campaignId.orEmpty()), com.mongodb.client.model.ReplaceOptions().upsert(true))
         return id.toHexString()
     }
     fun claimDueSchedule(now: Long = System.currentTimeMillis()): CallSchedule? {
@@ -166,6 +180,29 @@ internal class VoicxCustomerRepository(private val store: VoicxMongoStore) {
         val updates = mutableListOf<Bson>(Updates.set("status", status))
         if (error.isBlank()) updates += Updates.unset("error") else updates += Updates.set("error", error.take(500))
         store.schedules().updateOne(Filters.eq("_id", ObjectId(id)), Updates.combine(updates))
+    }
+    fun saveSmsSchedule(schedule: SmsSchedule): String {
+        val id = schedule.id?.takeIf { ObjectId.isValid(it) }?.let(::ObjectId) ?: ObjectId()
+        store.smsSchedules().replaceOne(Document("_id", id), Document("customerId", schedule.customerId)
+            .append("phone", schedule.phone).append("runAt", Date(schedule.runAt))
+            .append("message", schedule.message).append("status", schedule.status)
+            .append("campaignId", schedule.campaignId.orEmpty()).append("note", schedule.note),
+            com.mongodb.client.model.ReplaceOptions().upsert(true))
+        return id.toHexString()
+    }
+    fun claimDueSmsSchedule(now: Long = System.currentTimeMillis()): SmsSchedule? {
+        val doc = store.smsSchedules().findOneAndUpdate(
+            Filters.and(Filters.eq("status", "queued"), Filters.lte("runAt", Date(now))),
+            Updates.set("status", "running"),
+            FindOneAndUpdateOptions().sort(Document("runAt", 1)).returnDocument(ReturnDocument.AFTER),
+        ) ?: return null
+        return smsScheduleFrom(doc)
+    }
+    fun updateSmsScheduleStatus(id: String, status: String, error: String = "") {
+        if (!ObjectId.isValid(id)) return
+        val updates = mutableListOf<Bson>(Updates.set("status", status))
+        if (error.isBlank()) updates += Updates.unset("error") else updates += Updates.set("error", error.take(500))
+        store.smsSchedules().updateOne(Filters.eq("_id", ObjectId(id)), Updates.combine(updates))
     }
     fun saveCallReport(report: AiCallReport) {
         store.calls().insertOne(Document("phone", report.number.orEmpty())
@@ -201,9 +238,19 @@ internal class VoicxCustomerRepository(private val store: VoicxMongoStore) {
     fun listSchedules(limit: Int = 20): List<CallSchedule> = store.schedules().find().sort(Document("runAt", 1)).limit(limit)
         .map(::scheduleFrom)
         .toList()
+    fun listSmsSchedules(limit: Int = 20): List<SmsSchedule> = store.smsSchedules().find().sort(Document("runAt", 1)).limit(limit)
+        .map(::smsScheduleFrom)
+        .toList()
     private fun scheduleFrom(it: Document): CallSchedule = CallSchedule(
         it.getObjectId("_id")?.toHexString(), it.getString("customerId").orEmpty(), it.getString("phone").orEmpty(),
         it.getDate("runAt")?.time ?: 0L, it.getString("status").orEmpty(), it.getString("note").orEmpty(),
+        it.getString("campaignId")?.ifBlank { null },
+    )
+    private fun smsScheduleFrom(it: Document): SmsSchedule = SmsSchedule(
+        id = it.getObjectId("_id")?.toHexString(), customerId = it.getString("customerId").orEmpty(),
+        phone = it.getString("phone").orEmpty(), runAt = it.getDate("runAt")?.time ?: 0L,
+        message = it.getString("message").orEmpty(), status = it.getString("status").orEmpty(),
+        campaignId = it.getString("campaignId")?.ifBlank { null }, note = it.getString("note").orEmpty(),
     )
     private fun from(d: Document?): VoicxCustomer? = d?.let { VoicxCustomer(
         id = it.getObjectId("_id")?.toHexString(), phone = it.getString("phone").orEmpty(), name = it.getString("name").orEmpty(),

@@ -822,6 +822,7 @@ class GatewayRuntime private constructor(context: Context) {
 
     private fun runDueSchedules() {
         if (mongoStore.state != MongoState.CONNECTED || !gatewayEnabled) return
+        runDueSmsSchedules()
         repeat(3) {
             val schedule = runCatching { customers.claimDueSchedule() }.getOrElse {
                 AppLog.w("could not claim scheduled call", it)
@@ -847,6 +848,24 @@ class GatewayRuntime private constructor(context: Context) {
                 scheduledCallId = null
                 customers.updateScheduleStatus(schedule.id.orEmpty(), "failed", e.message ?: e.javaClass.simpleName)
                 AppLog.w("scheduled Gemini call failed: ${schedule.id}", e)
+            }
+        }
+    }
+
+    /** Sends due marketing/notification SMS independently from the call queue. */
+    private fun runDueSmsSchedules() {
+        repeat(3) {
+            val schedule = runCatching { customers.claimDueSmsSchedule() }.getOrElse {
+                AppLog.w("could not claim scheduled SMS", it)
+                return
+            } ?: return
+            try {
+                SmsApiClient(settings.smsApiKey).send(schedule.phone, schedule.message).getOrThrow()
+                customers.updateSmsScheduleStatus(schedule.id.orEmpty(), "sent")
+                AppLog.i("scheduled SMS sent: ${schedule.id}")
+            } catch (e: Exception) {
+                customers.updateSmsScheduleStatus(schedule.id.orEmpty(), "failed", e.message ?: e.javaClass.simpleName)
+                AppLog.w("scheduled SMS failed: ${schedule.id}", e)
             }
         }
     }
@@ -880,6 +899,8 @@ class GatewayRuntime private constructor(context: Context) {
     fun searchCustomers(query: String, callback: (String) -> Unit) = worker.execute { callback(runCatching { customers.search(query).joinToString("\n") { "${it.id} | ${it.name} | ${it.phone} | ${it.company}" } }.getOrElse { "خطأ البحث: ${it.javaClass.simpleName}" }.ifBlank { "لا توجد نتائج" }) }
     fun saveCallSchedule(schedule: CallSchedule, callback: (String) -> Unit) = worker.execute { callback(runCatching { customers.saveSchedule(schedule) }.getOrElse { "خطأ جدولة الاتصال: ${it.javaClass.simpleName}" }) }
     fun listCallSchedules(callback: (String) -> Unit) = worker.execute { callback(runCatching { customers.listSchedules().joinToString("\n") { "${it.id} | ${it.phone} | ${it.runAt} | ${it.status} | ${it.note}" } }.getOrElse { "خطأ قراءة الجدولة: ${it.javaClass.simpleName}" }.ifBlank { "لا توجد مواعيد" }) }
+    fun saveSmsSchedule(schedule: SmsSchedule, callback: (String) -> Unit) = worker.execute { callback(runCatching { customers.saveSmsSchedule(schedule) }.getOrElse { "خطأ جدولة SMS: ${it.javaClass.simpleName}" }) }
+    fun listSmsSchedules(callback: (String) -> Unit) = worker.execute { callback(runCatching { customers.listSmsSchedules().joinToString("\n") { "${it.id} | ${it.phone} | ${it.runAt} | ${it.status} | ${it.note} | ${it.message.take(80)}" } }.getOrElse { "خطأ قراءة جدولة SMS: ${it.javaClass.simpleName}" }.ifBlank { "لا توجد رسائل مجدولة" }) }
     fun sendSms(phone: String, message: String, callback: (String) -> Unit) = worker.execute { callback(SmsApiClient(settings.smsApiKey).send(phone, message).fold({ it }, { "فشل SMS: ${it.message ?: it.javaClass.simpleName}" })) }
     fun updateSmsApiKey(key: String) = worker.execute { settingsStore.save(settings.copy(smsApiKey = key.trim()).also { _settings.value = it }) }
 
