@@ -1,8 +1,8 @@
 # تقرير إصلاح Voicx SIP — فرع SQLite
 
-**المستودع:** `assessment72/voice-sip-agent-selfhost`  
-**الفرع المستهدف:** `f071db63362c4e382ea0ca63c9c20fc6be6dd0f`  
-**نقطة الأساس التي فُحصت:** `0c771c9a283f8c61c45ed3f9f232bafe4cb97d75` (`feat: add telegram control panel and sqlite backup tools`)  
+**المستودع:** `assessment72/voice-sip-agent-selfhost`
+**الفرع المستهدف:** `f071db63362c4e382ea0ca63c9c20fc6be6dd0f`
+**نقطة الأساس التي فُحصت:** `0c771c9a283f8c61c45ed3f9f232bafe4cb97d75` (`feat: add telegram control panel and sqlite backup tools`)
 **التغييرات:** تكييف محلي على نسخة الفرع الحالية التي تستخدم SQLite؛ لا استبدال للمخزن ولا نقل لتغييرات MongoDB القديمة.
 
 ## المشكلات والإصلاحات
