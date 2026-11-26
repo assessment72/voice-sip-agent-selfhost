@@ -68,13 +68,20 @@ internal class VoicxMongoStore {
             .applyToSocketSettings { it.connectTimeout(8, TimeUnit.SECONDS).readTimeout(8, TimeUnit.SECONDS) }
             .build()
         val c = MongoClients.create(settings)
-        c.getDatabase(databaseName).runCommand(Document("ping", 1))
-        client = c
-        database = c.getDatabase(databaseName)
-        ensureIndexes()
-        state = MongoState.CONNECTED
-        lastError = ""
-        lastSuccessAt = System.currentTimeMillis()
+        try {
+            c.getDatabase(databaseName).runCommand(Document("ping", 1))
+            client = c
+            database = c.getDatabase(databaseName)
+            ensureIndexes()
+            state = MongoState.CONNECTED
+            lastError = ""
+            lastSuccessAt = System.currentTimeMillis()
+        } catch (failure: Throwable) {
+            c.close()
+            client = null
+            database = null
+            throw failure
+        }
     }.onFailure { e -> state = MongoState.ERROR; lastError = safeError(e) }
 
     @Synchronized fun disconnect() {
@@ -119,15 +126,13 @@ internal class VoicxMongoStore {
 
 /** Android has no JNDI DNS provider, so mongodb+srv needs an explicit DNS client. */
 private class AndroidDnsClient : DnsClient {
-    private val http = OkHttpClient.Builder().callTimeout(8, TimeUnit.SECONDS).build()
-
     override fun getResourceRecordData(name: String, type: String): List<String> = runCatching {
         val encodedName = java.net.URLEncoder.encode(name, "UTF-8")
         val request = Request.Builder()
             .url("https://dns.google/resolve?name=$encodedName&type=$type")
             .header("Accept", "application/dns-json")
             .get().build()
-        http.newCall(request).execute().use { response ->
+        ANDROID_DNS_HTTP.newCall(request).execute().use { response ->
             if (!response.isSuccessful) error("DNS HTTPS request failed (${response.code})")
             val body = response.body?.string().orEmpty()
             val json = JSONObject(body)
@@ -142,6 +147,13 @@ private class AndroidDnsClient : DnsClient {
             }
         }
     }.getOrElse { throw DnsException("DNS lookup failed for $name ($type)", it) }
+
+    private companion object {
+        /** One process-wide client reuses dispatcher, connection-pool and TLS resources. */
+        val ANDROID_DNS_HTTP: OkHttpClient = OkHttpClient.Builder()
+            .callTimeout(8, TimeUnit.SECONDS)
+            .build()
+    }
 }
 
 enum class MongoState { DISCONNECTED, CONNECTED, ERROR }
