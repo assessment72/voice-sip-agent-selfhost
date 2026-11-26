@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [main, feature/voicx-control-api-foundation, feature/direct-telegram-control-single-device, feature/telegram-simcall-balance-ussd]
+    branches: [main, feature/voicx-control-api-foundation, feature/direct-telegram-control-single-device, feature/telegram-simcall-balance-ussd, f071db63362c4e382ea0ca63c9c20fc6be6dd0f]
   pull_request:
 
 jobs:

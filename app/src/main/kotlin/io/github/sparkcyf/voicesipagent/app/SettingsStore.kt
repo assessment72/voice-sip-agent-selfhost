@@ -72,11 +72,12 @@ data class GatewaySettings(
     val geminiModel: String = "gemini-2.5-flash-native-audio-preview-12-2025",
     /** Answer incoming cellular calls with Gemini instead of routing them to SIP. */
     val aiAutoAnswer: Boolean = false,
-    /** MongoDB Atlas URI, encrypted with Android Keystore; never shown after save. */
-    val mongoUri: String = "",
-    val mongoDatabaseName: String = "voicx_sip_prod",
-    val mongoEnabled: Boolean = false,
-    val mongoLastSuccessAt: Long = 0L,
+    /** Firebase project credentials, encrypted with Android Keystore where applicable. */
+    val firebaseProjectId: String = "",
+    val firebaseApiKey: String = "",
+    val firebaseApplicationId: String = "",
+    val firebaseEnabled: Boolean = false,
+    val firebaseLastSuccessAt: Long = 0L,
     /** Adasms API key, encrypted with Android Keystore. */
     val smsApiKey: String = "",
     /** UI language: "ru" or "en". Pure UI preference, no SIP restart. */
@@ -141,10 +142,11 @@ class SettingsStore(context: Context) {
         geminiApiKey = prefs.getString("gemini_api_key_sealed", null)?.let(::unseal).orEmpty(),
         geminiModel = prefs.getString("gemini_model", "gemini-2.5-flash-native-audio-preview-12-2025")!!,
         aiAutoAnswer = prefs.getBoolean("ai_auto_answer", false),
-        mongoUri = prefs.getString("mongo_uri_sealed", null)?.let(::unseal).orEmpty(),
-        mongoDatabaseName = prefs.getString("mongo_database_name", "voicx_sip_prod")!!,
-        mongoEnabled = prefs.getBoolean("mongo_enabled", false),
-        mongoLastSuccessAt = prefs.getLong("mongo_last_success_at", 0L),
+        firebaseProjectId = prefs.getString("firebase_project_id", "")!!,
+        firebaseApiKey = prefs.getString("firebase_api_key_sealed", null)?.let(::unseal).orEmpty(),
+        firebaseApplicationId = prefs.getString("firebase_application_id", "")!!,
+        firebaseEnabled = prefs.getBoolean("firebase_enabled", false),
+        firebaseLastSuccessAt = prefs.getLong("firebase_last_success_at", 0L),
         smsApiKey = prefs.getString("sms_api_key_sealed", null)?.let(::unseal).orEmpty(),
         // First run (key absent): default to the system language — Russian locale → "ru",
         // anything else → "en". Once the user picks a language it is saved and always wins.
@@ -183,10 +185,11 @@ class SettingsStore(context: Context) {
             .putString("gemini_api_key_sealed", seal(s.geminiApiKey))
             .putString("gemini_model", s.geminiModel.trim())
             .putBoolean("ai_auto_answer", s.aiAutoAnswer)
-            .putString("mongo_uri_sealed", seal(s.mongoUri))
-            .putString("mongo_database_name", s.mongoDatabaseName.trim())
-            .putBoolean("mongo_enabled", s.mongoEnabled)
-            .putLong("mongo_last_success_at", s.mongoLastSuccessAt)
+            .putString("firebase_project_id", s.firebaseProjectId.trim())
+            .putString("firebase_api_key_sealed", seal(s.firebaseApiKey))
+            .putString("firebase_application_id", s.firebaseApplicationId.trim())
+            .putBoolean("firebase_enabled", s.firebaseEnabled)
+            .putLong("firebase_last_success_at", s.firebaseLastSuccessAt)
             .putString("sms_api_key_sealed", seal(s.smsApiKey))
             .putString("ui_lang", s.uiLanguage)
             .apply()

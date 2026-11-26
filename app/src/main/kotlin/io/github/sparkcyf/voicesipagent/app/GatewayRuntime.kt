@@ -104,8 +104,8 @@ class GatewayRuntime private constructor(context: Context) {
     private val _settings = MutableStateFlow(settingsStore.load())
     val settingsFlow: StateFlow<GatewaySettings> = _settings
     val settings: GatewaySettings get() = _settings.value
-    private val mongoStore = VoicxMongoStore()
-    private val customers = VoicxCustomerRepository(mongoStore)
+    private val firebaseStore = VoicxFirebaseStore(app)
+    private val customers = VoicxCustomerRepository(firebaseStore)
 
     // Service entry points can run before the worker initializes. Use the actual saved switch and
     // role immediately so opening the app or receiving BOOT_COMPLETED cannot flash an idle notification.
@@ -133,7 +133,7 @@ class GatewayRuntime private constructor(context: Context) {
         report = { report ->
             onAiReport?.invoke(report.telegramMessages())
             worker.execute {
-                if (mongoStore.state == MongoState.CONNECTED) {
+                if (firebaseStore.state == FirebaseState.CONNECTED) {
                     runCatching { customers.saveCallReport(report) }
                         .onFailure { AppLog.w("could not save Gemini call report", it) }
                     scheduledCampaignCustomerId?.let { ccId ->
@@ -261,7 +261,7 @@ class GatewayRuntime private constructor(context: Context) {
             }
         }
         configureCallAccess()
-        if (settings.mongoEnabled && settings.mongoUri.isNotBlank()) mongoStore.connect(settings.mongoUri, settings.mongoDatabaseName)
+        if (settings.firebaseEnabled && settings.firebaseProjectId.isNotBlank()) firebaseStore.connect(settings.firebaseProjectId, settings.firebaseApiKey, settings.firebaseApplicationId)
         _health.update { it.copy(takeover = settings.takeover) }
         updateReadiness()
         if (!_health.value.takeover) shizuku.stop()
@@ -836,7 +836,7 @@ class GatewayRuntime private constructor(context: Context) {
     }
 
     private fun runDueSchedules() {
-        if (mongoStore.state != MongoState.CONNECTED || !gatewayEnabled) return
+        if (firebaseStore.state != FirebaseState.CONNECTED || !gatewayEnabled) return
         runDueSmsSchedules()
         repeat(3) {
             val schedule = runCatching { customers.claimDueSchedule() }.getOrElse {
@@ -900,24 +900,24 @@ class GatewayRuntime private constructor(context: Context) {
         gemini.checkConnection(callback)
     }
 
-    fun testMongoConnection(uri: String, databaseName: String, callback: (String) -> Unit) = worker.execute {
-        val result = mongoStore.test(uri.trim(), databaseName.trim())
-        callback(result.fold({ "نجح اختبار الاتصال خلال ${it} ms" }, { mongoStore.lastError.ifBlank { "فشل اختبار الاتصال" } }))
+    fun testFirebaseConnection(projectId: String, apiKey: String, applicationId: String, callback: (String) -> Unit) = worker.execute {
+        val result = firebaseStore.test(projectId.trim(), apiKey.trim(), applicationId.trim())
+        callback(result.fold({ "نجح اختبار الاتصال خلال ${it} ms" }, { firebaseStore.lastError.ifBlank { "فشل اختبار الاتصال" } }))
     }
-    fun saveMongoSettings(uri: String, databaseName: String, enable: Boolean, callback: (String) -> Unit = {}) = worker.execute {
-        val cleanUri = uri.trim(); val cleanDb = databaseName.trim()
-        require(cleanUri.isEmpty() || cleanUri.startsWith("mongodb")) { "MongoDB URI غير صالح" }
-        require(cleanDb.matches(Regex("[A-Za-z0-9_-]{1,64}"))) { "اسم قاعدة البيانات غير صالح" }
-        if (enable) mongoStore.connect(cleanUri, cleanDb).getOrElse { error(mongoStore.lastError.ifBlank { "تعذر الاتصال بقاعدة البيانات" }) } else mongoStore.disconnect()
-        val updated = settings.copy(mongoUri = cleanUri, mongoDatabaseName = cleanDb, mongoEnabled = enable, mongoLastSuccessAt = mongoStore.lastSuccessAt ?: settings.mongoLastSuccessAt)
+    fun saveFirebaseSettings(projectId: String, apiKey: String, applicationId: String, enable: Boolean, callback: (String) -> Unit = {}) = worker.execute {
+        val cleanProject = projectId.trim(); val cleanKey = apiKey.trim(); val cleanAppId = applicationId.trim()
+        require(cleanProject.matches(Regex("[a-z0-9-]{6,63}"))) { "Firebase Project ID غير صالح" }
+        require(cleanKey.isNotBlank() && cleanAppId.isNotBlank()) { "بيانات Firebase غير مكتملة" }
+        if (enable) firebaseStore.connect(cleanProject, cleanKey, cleanAppId).getOrElse { error(firebaseStore.lastError.ifBlank { "تعذر الاتصال بـ Firebase" }) } else firebaseStore.disconnect()
+        val updated = settings.copy(firebaseProjectId = cleanProject, firebaseApiKey = cleanKey, firebaseApplicationId = cleanAppId, firebaseEnabled = enable, firebaseLastSuccessAt = firebaseStore.lastSuccessAt ?: settings.firebaseLastSuccessAt)
         settingsStore.save(updated); _settings.value = updated
-        callback(if (enable) "تم تفعيل اتصال MongoDB" else "تم حفظ الإعدادات دون تفعيل الاتصال")
+        callback(if (enable) "تم تفعيل اتصال Firebase" else "تم حفظ إعدادات Firebase دون تفعيل الاتصال")
     }
-    fun disconnectMongo() = worker.execute { mongoStore.disconnect(); settingsStore.save(settings.copy(mongoEnabled = false).also { _settings.value = it }) }
-    fun mongoStatus(): String = when (mongoStore.state) {
-        MongoState.CONNECTED -> "MongoDB متصل؛ آخر نجاح: ${mongoStore.lastSuccessAt ?: 0L}"
-        MongoState.ERROR -> "MongoDB خطأ: ${mongoStore.lastError}"
-        MongoState.DISCONNECTED -> "MongoDB غير مفعّل"
+    fun disconnectFirebase() = worker.execute { firebaseStore.disconnect(); settingsStore.save(settings.copy(firebaseEnabled = false).also { _settings.value = it }) }
+    fun firebaseStatus(): String = when (firebaseStore.state) {
+        FirebaseState.CONNECTED -> "Firebase متصل؛ آخر نجاح: ${firebaseStore.lastSuccessAt ?: 0L}"
+        FirebaseState.ERROR -> "Firebase خطأ: ${firebaseStore.lastError}"
+        FirebaseState.DISCONNECTED -> "Firebase غير مفعّل"
     }
     fun saveCustomer(customer: VoicxCustomer, callback: (String) -> Unit = {}) = worker.execute { callback(runCatching { customers.upsert(customer) }.getOrElse { "خطأ حفظ العميل: ${it.javaClass.simpleName}" }) }
     fun createCampaign(campaign: Campaign, callback: (String) -> Unit = {}) = worker.execute {

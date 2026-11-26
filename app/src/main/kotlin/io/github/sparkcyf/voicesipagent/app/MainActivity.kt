@@ -333,47 +333,46 @@ private fun SettingsSection(rt: GatewayRuntime) {
     var telegramBotToken by remember(cur) { mutableStateOf(cur.telegramBotToken) }
     var telegramAllowedUserId by remember(cur) { mutableStateOf(if (cur.telegramAllowedUserId > 0) cur.telegramAllowedUserId.toString() else "") }
     var geminiApiKey by remember(cur) { mutableStateOf(cur.geminiApiKey) }
-    var mongoUri by remember { mutableStateOf("") }
-    var mongoDatabase by remember(cur) { mutableStateOf(cur.mongoDatabaseName) }
-    var smsApiKey by remember { mutableStateOf("") }
-    var mongoResult by remember { mutableStateOf("") }
+    var firebaseProjectId by remember(cur) { mutableStateOf(cur.firebaseProjectId) }
+    var firebaseApiKey by remember { mutableStateOf("") }
+    var firebaseApplicationId by remember(cur) { mutableStateOf(cur.firebaseApplicationId) }
+    var firebaseResult by remember { mutableStateOf("") }
     var telegramTestRunning by remember { mutableStateOf(false) }
     var telegramTestResult by remember { mutableStateOf("") }
     val telegramScope = rememberCoroutineScope()
     val context = LocalContext.current
     val builtin = stack == SipStack.BUILTIN
-    val importMongoFile = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+    val importFirebaseFile = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         if (uri != null) runCatching {
             val text = context.contentResolver.openInputStream(uri)?.bufferedReader()?.use { it.readText() }.orEmpty()
-            if (text.trimStart().startsWith("{")) {
-                val json = org.json.JSONObject(text)
-                mongoUri = json.optString("connection_uri", json.optString("MONGODB_URI"))
-                mongoDatabase = json.optString("database_name", json.optString("MONGODB_DB_NAME", mongoDatabase))
-            } else text.lineSequence().map { it.trim() }.filter { it.contains('=') }.forEach { line ->
-                val key = line.substringBefore('=').trim()
-                val value = line.substringAfter('=').trim().trim('"', '\'')
-                when (key) { "MONGODB_URI" -> mongoUri = value; "MONGODB_DB_NAME" -> mongoDatabase = value }
-            }
-            mongoResult = "تم استيراد إعدادات MongoDB. اضغط اختبار الاتصال."
-        }.onFailure { mongoResult = "فشل استيراد الملف دون كشف محتواه." }
+            val json = org.json.JSONObject(text)
+            val project = json.optJSONObject("project_info")
+            firebaseProjectId = project?.optString("project_id").orEmpty().ifBlank { json.optString("project_id") }
+            val client = json.optJSONArray("client")?.optJSONObject(0)
+            val app = client?.optJSONObject("client_info")
+            firebaseApplicationId = app?.optString("mobilesdk_app_id").orEmpty().ifBlank { json.optString("application_id") }
+            firebaseApiKey = client?.optJSONArray("api_key")?.optJSONObject(0)?.optString("current_key").orEmpty().ifBlank { json.optString("api_key") }
+            firebaseResult = "تم استيراد إعدادات Firebase. اضغط اختبار الاتصال."
+        }.onFailure { firebaseResult = "فشل استيراد google-services.json دون كشف محتواه." }
     }
 
-    Section(t("إعدادات قاعدة البيانات", "Database settings")) {
-        Text(t("يتم الاتصال مباشرة من التطبيق. URI وكلمة المرور لا تظهر بعد الحفظ وتُخزّن عبر Android Keystore.", "The app connects directly. The URI and password are hidden after saving and encrypted with Android Keystore."), style = MaterialTheme.typography.bodySmall)
-        OutlinedTextField(value = mongoUri, onValueChange = { mongoUri = it }, label = { Text("MongoDB URI") }, visualTransformation = PasswordVisualTransformation(), singleLine = true, modifier = Modifier.fillMaxWidth())
-        Field(t("اسم قاعدة البيانات", "Database name"), mongoDatabase) { mongoDatabase = it }
-        Text(if (cur.mongoUri.isBlank()) t("لا توجد إعدادات محفوظة", "No saved connection") else t("URI محفوظ ومخفي", "Saved URI is hidden"), style = MaterialTheme.typography.bodySmall)
+    Section(t("إعدادات Firebase / Firestore", "Firebase / Firestore settings")) {
+        Text(t("يستخدم التطبيق Cloud Firestore مباشرة. يمكنك استيراد google-services.json أو إدخال بيانات مشروع Firebase يدويًا.", "The app uses Cloud Firestore directly. Import google-services.json or enter Firebase project values manually."), style = MaterialTheme.typography.bodySmall)
+        Field(t("معرّف المشروع", "Project ID"), firebaseProjectId) { firebaseProjectId = it }
+        OutlinedTextField(value = firebaseApiKey, onValueChange = { firebaseApiKey = it }, label = { Text("Firebase API key") }, visualTransformation = PasswordVisualTransformation(), singleLine = true, modifier = Modifier.fillMaxWidth())
+        Field(t("معرّف التطبيق", "Application ID"), firebaseApplicationId) { firebaseApplicationId = it }
+        Text(if (cur.firebaseProjectId.isBlank()) t("لا توجد إعدادات محفوظة", "No saved Firebase connection") else t("بيانات Firebase محفوظة ومخفية جزئيًا", "Firebase settings are saved"), style = MaterialTheme.typography.bodySmall)
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            OutlinedButton(onClick = { importMongoFile.launch(arrayOf("application/json", "text/*")) }) { Text(t("استيراد JSON/ENV", "Import JSON/ENV")) }
-            OutlinedButton(onClick = { rt.testMongoConnection(mongoUri, mongoDatabase) { mongoResult = it } }, enabled = mongoUri.isNotBlank()) { Text(t("اختبار الاتصال", "Test connection")) }
+            OutlinedButton(onClick = { importFirebaseFile.launch(arrayOf("application/json", "text/*")) }) { Text(t("استيراد google-services.json", "Import google-services.json")) }
+            OutlinedButton(onClick = { rt.testFirebaseConnection(firebaseProjectId, firebaseApiKey, firebaseApplicationId) { firebaseResult = it } }, enabled = firebaseProjectId.isNotBlank() && firebaseApiKey.isNotBlank() && firebaseApplicationId.isNotBlank()) { Text(t("اختبار الاتصال", "Test connection")) }
         }
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            Button(onClick = { rt.saveMongoSettings(mongoUri, mongoDatabase, true) { mongoResult = it }; mongoUri = "" }, enabled = mongoUri.isNotBlank()) { Text(t("حفظ وتفعيل", "Save & activate")) }
-            OutlinedButton(onClick = { rt.saveMongoSettings(mongoUri, mongoDatabase, false) { mongoResult = it }; mongoUri = "" }) { Text(t("حفظ دون تفعيل", "Save without activating")) }
-            OutlinedButton(onClick = { rt.disconnectMongo(); mongoResult = "تم قطع اتصال MongoDB" }) { Text(t("قطع الاتصال", "Disconnect")) }
+            Button(onClick = { rt.saveFirebaseSettings(firebaseProjectId, firebaseApiKey, firebaseApplicationId, true) { firebaseResult = it }; firebaseApiKey = "" }, enabled = firebaseProjectId.isNotBlank() && firebaseApiKey.isNotBlank() && firebaseApplicationId.isNotBlank()) { Text(t("حفظ وتفعيل", "Save & activate")) }
+            OutlinedButton(onClick = { rt.saveFirebaseSettings(firebaseProjectId, firebaseApiKey, firebaseApplicationId, false) { firebaseResult = it }; firebaseApiKey = "" }) { Text(t("حفظ دون تفعيل", "Save without activating")) }
+            OutlinedButton(onClick = { rt.disconnectFirebase(); firebaseResult = "تم قطع اتصال Firebase" }) { Text(t("قطع الاتصال", "Disconnect")) }
         }
-        Text(rt.mongoStatus(), style = MaterialTheme.typography.bodySmall)
-        if (mongoResult.isNotBlank()) Text(mongoResult, style = MaterialTheme.typography.bodySmall)
+        Text(rt.firebaseStatus(), style = MaterialTheme.typography.bodySmall)
+        if (firebaseResult.isNotBlank()) Text(firebaseResult, style = MaterialTheme.typography.bodySmall)
         Text(if (cur.smsApiKey.isBlank()) t("لا يوجد مفتاح SMS محفوظ", "No SMS key saved") else t("مفتاح SMS محفوظ ومخفي", "Saved SMS key is hidden"), style = MaterialTheme.typography.bodySmall)
         OutlinedTextField(value = smsApiKey, onValueChange = { smsApiKey = it }, label = { Text("SMS API key") }, visualTransformation = PasswordVisualTransformation(), singleLine = true, modifier = Modifier.fillMaxWidth())
         Button(onClick = { rt.updateSmsApiKey(smsApiKey) }) { Text(t("حفظ مفتاح SMS", "Save SMS key")) }
