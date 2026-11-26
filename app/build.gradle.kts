@@ -54,6 +54,8 @@ android {
     }
     packaging {
         resources.excludes += "META-INF/*.kotlin_module"
+        // MongoDB's driver-core and bson jars both contain this native-image metadata file.
+        resources.excludes += "META-INF/native-image/native-image.properties"
     }
 }
 
