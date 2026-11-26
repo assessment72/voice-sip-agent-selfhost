@@ -3,6 +3,7 @@
 -dontwarn com.amazonaws.**
 -dontwarn com.github.luben.zstd.**
 -dontwarn com.mongodb.crypt.**
+-dontwarn com.mongodb.internal.crypt.**
 -dontwarn io.netty.**
 -dontwarn javax.naming.**
 -dontwarn javax.security.**
