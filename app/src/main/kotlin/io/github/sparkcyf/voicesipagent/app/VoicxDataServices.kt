@@ -137,6 +137,12 @@ internal class VoicxCustomerRepository(private val store: VoicxMongoStore) {
             .append("source", source).append("createdAt", Date()))
     }
     fun instructionFor(phone: String): String = findByPhone(phone)?.instructions.orEmpty()
+    fun memoriesFor(phone: String, limit: Int = 10): String {
+        val customerId = findByPhone(phone)?.id?.takeIf(ObjectId::isValid) ?: return ""
+        return store.memories().find(Filters.eq("customerId", customerId)).sort(Document("createdAt", -1))
+            .limit(limit.coerceIn(1, 20)).map { it.getString("text").orEmpty() }.filter(String::isNotBlank)
+            .toList().asReversed().joinToString("\n") { "- $it" }
+    }
     fun saveSchedule(schedule: CallSchedule): String {
         val id = schedule.id?.takeIf { ObjectId.isValid(it) }?.let(::ObjectId) ?: ObjectId()
         store.schedules().replaceOne(Document("_id", id), Document("customerId", schedule.customerId)
@@ -181,6 +187,16 @@ internal class VoicxCustomerRepository(private val store: VoicxMongoStore) {
             .append("averageTurnSpeechDurationMs", report.averageTurnSpeechDurationMs ?: 0L)
             .append("turnCount", report.turnCount).append("lastSpeechEndAt", report.lastSpeechEndAt ?: 0L)
             .append("createdAt", Date()))
+        val customerId = report.number?.let(::findByPhone)?.id
+        if (!customerId.isNullOrBlank()) {
+            val memory = buildString {
+                append("نتيجة مكالمة ${Date(report.endedAt)}: ")
+                append(report.cause?.name ?: "NORMAL")
+                if (report.conversationTranscript.isNotBlank()) append("\n").append(report.conversationTranscript)
+                else if (report.outputText.isNotBlank()) append("\nرد Gemini: ").append(report.outputText)
+            }
+            addMemory(customerId, memory, "gemini_call")
+        }
     }
     fun listSchedules(limit: Int = 20): List<CallSchedule> = store.schedules().find().sort(Document("runAt", 1)).limit(limit)
         .map(::scheduleFrom)

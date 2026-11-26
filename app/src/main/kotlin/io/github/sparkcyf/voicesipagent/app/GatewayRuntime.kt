@@ -810,8 +810,13 @@ class GatewayRuntime private constructor(context: Context) {
     fun startAiCall(number: String, name: String, role: String, company: String) = worker.execute {
         require(settings.geminiApiKey.isNotBlank()) { "Gemini API key is not configured" }
         val clean = number.trim(); require(clean.isNotEmpty()) { "phone number is required" }
-        val instructions = runCatching { customers.instructionFor(clean) }.getOrDefault("")
-        gemini.setContext(GeminiAiEndpoint.CallContext(name.trim(), role.trim(), company.trim(), instructions))
+        val customer = runCatching { customers.findByPhone(clean) }.getOrNull()
+        val instructions = customer?.instructions.orEmpty()
+        val memories = runCatching { customers.memoriesFor(clean) }.getOrDefault("")
+        gemini.setContext(GeminiAiEndpoint.CallContext(
+            name = name.trim(), role = role.trim(), company = company.trim(),
+            instructions = instructions, memories = memories,
+        ))
         gemini.startOutbound(cellular, clean, Party(clean, name.trim().ifBlank { null }))
     }
 
@@ -831,8 +836,8 @@ class GatewayRuntime private constructor(context: Context) {
                 require(settings.geminiApiKey.isNotBlank()) { "Gemini API key is not configured" }
                 val customer = customers.findById(schedule.customerId) ?: customers.findByPhone(schedule.phone)
                 gemini.setContext(GeminiAiEndpoint.CallContext(
-                    customer?.name.orEmpty(), customer?.role.orEmpty(), customer?.company.orEmpty(),
-                    customer?.instructions.orEmpty(),
+                    name = customer?.name.orEmpty(), role = customer?.role.orEmpty(), company = customer?.company.orEmpty(),
+                    instructions = customer?.instructions.orEmpty(), memories = customers.memoriesFor(schedule.phone),
                 ))
                 scheduledCallId = schedule.id
                 gemini.startOutbound(cellular, schedule.phone, Party(schedule.phone, customer?.name?.ifBlank { null }))

@@ -106,7 +106,10 @@ internal class GeminiAiEndpoint(
     @Volatile var onHandoffRequested: (() -> Boolean)? = null
     @Volatile var onHangupRequested: (() -> Unit)? = null
 
-    data class CallContext(val name: String = "", val role: String = "", val company: String = "", val salesInfo: String = "", val instructions: String = "")
+    data class CallContext(
+        val name: String = "", val role: String = "", val company: String = "",
+        val salesInfo: String = "", val instructions: String = "", val memories: String = "",
+    )
 
     fun setContext(value: CallContext) { context = value }
 
@@ -357,6 +360,9 @@ internal class GeminiAiEndpoint(
 
 تعليمات العميل المحفوظة في قاعدة البيانات (مرجع داخلي فقط):
 ${context.instructions.take(3000)}
+
+ذاكرة المكالمات السابقة للعميل (مرجع داخلي فقط؛ لا تذكرها كأنها مؤكدة إذا صححها العميل):
+${context.memories.take(5000)}
 
 بيانات المبيعات التي أدخلتها الإدارة (اعتبرها بيانات داخلية مرجعية فقط، والتزم بحالة التأكيد والصلاحية كما هي):
 ${context.salesInfo}
