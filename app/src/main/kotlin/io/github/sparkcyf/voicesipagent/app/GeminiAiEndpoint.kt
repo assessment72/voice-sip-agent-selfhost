@@ -47,10 +47,11 @@ internal data class AiCallReport(
     val conversationTranscript: String = "",
     val lastSpeechEndAt: Long? = null,
     val firstInputSentAt: Long? = null,
+    val callId: String = "",
 ) {
     fun telegramMessages(): List<String> {
         val summary = buildString {
-        appendLine("تقرير مكالمة الذكاء الاصطناعي")
+        appendLine("تقرير مكالمة الذكاء الاصطناعي · callId=${callId.ifBlank { "غير متاح" }}")
         appendLine("الرقم: ${number ?: "غير معروف"}")
         if (!name.isNullOrBlank()) appendLine("الاسم: $name")
         if (!role.isNullOrBlank()) appendLine("الوظيفة: $role")
@@ -112,22 +113,26 @@ internal class GeminiAiEndpoint(
     )
 
     fun setContext(value: CallContext) { context = value }
+    fun hasActiveCall(): Boolean = (directCellLeg?.state?.let { it != LegState.ENDED } == true) ||
+        (active?.state?.let { it != LegState.ENDED } == true)
 
     override fun setIncomingCallHandler(handler: io.github.sparkcyf.voicesipagent.voice.IncomingCallHandler?) { this.handler = handler?.let { h -> { leg -> h.onIncomingCall(leg) } } }
     override fun addStatusListener(listener: EndpointStatusListener) { statuses += listener }
     override fun removeStatusListener(listener: EndpointStatusListener) { statuses -= listener }
 
     override fun dial(target: String, caller: Party): CallLeg {
-        active?.hangup(HangupCause.BUSY)
-        val leg = AiLeg(
-            "ai-${System.nanoTime()}", caller, target, context.copy(salesInfo = salesContext()),
-            apiKey, model, report, { active = null },
-            { onHandoffRequested?.invoke() == true },
-            { onHangupRequested?.invoke() },
-        )
-        active = leg
+        val leg = createAiLeg("ai-${System.nanoTime()}", target, caller)
         leg.start()
         return leg
+    }
+    @Synchronized private fun createAiLeg(callId: String, target: String, caller: Party): AiLeg {
+        check(active == null || active?.state == LegState.ENDED) { "Gemini call already active" }
+        return AiLeg(
+            callId, caller, target, context.copy(salesInfo = salesContext()),
+            apiKey, model, report, { if (active?.id == callId) active = null },
+            { onHandoffRequested?.invoke() == true },
+            { onHangupRequested?.invoke() },
+        ).also { active = it }
     }
 
     fun stop() {
@@ -172,41 +177,60 @@ internal class GeminiAiEndpoint(
         }
     }
 
-    /** Places a SIM call and directly cross-connects it to a new Gemini leg. */
-    fun startOutbound(cellular: CallEndpoint, number: String, caller: Party) {
+    /** Opens Gemini only after Telecom confirms the SIM call is connected. */
+    @Synchronized fun startOutbound(cellular: CallEndpoint, number: String, caller: Party) {
+        check(directCellLeg == null || directCellLeg?.state == LegState.ENDED) { "An outbound call is already active" }
+        val callId = "sim-${java.util.UUID.randomUUID()}"
         val cell = cellular.dial(number, caller)
-        val ai = dial(number, caller) as AiLeg
-        directBridge?.stop()
-        directBridge = null
+        directBridge?.stop(); directBridge = null
         directCellLeg = cell
-        directAiLeg = ai
+        directAiLeg = null
         directHumanLeg = null
         directHandoffCommitted = false
         val watcher = object : CallLeg.Listener {
             override fun onStateChanged(leg: CallLeg, state: LegState) {
-                if (state == LegState.ENDED) {
-                    when (leg) {
-                        cell -> {
-                            ai.hangup(leg.endCause ?: HangupCause.NORMAL)
-                            directHumanLeg?.takeIf { it.state != LegState.ENDED }?.hangup(HangupCause.CANCELLED)
-                            clearDirectCall(cell)
-                        }
-                        ai -> {
-                            if (directHumanLeg?.state != LegState.CONNECTED) {
-                                directHumanLeg?.takeIf { it.state != LegState.ENDED }?.hangup(HangupCause.CANCELLED)
-                                cell.hangup(leg.endCause ?: HangupCause.NORMAL)
-                            }
+                if (leg === cell && state == LegState.CONNECTED) {
+                    synchronized(this@GeminiAiEndpoint) {
+                        if (directCellLeg === cell && directAiLeg == null && cell.state == LegState.CONNECTED) {
+                            val ai = createAiLeg(callId, number, caller)
+                            directAiLeg = ai
+                            ai.start()
+                            ai.addListener(this)
                         }
                     }
                 }
-                connectIfReady(cell, ai)
+                if (state == LegState.ENDED) {
+                    when (leg) {
+                        cell -> {
+                            if (directAiLeg == null) report(AiCallReport(
+                                callId = callId, number = number, name = caller.displayName, role = context.role,
+                                company = context.company, startedAt = System.currentTimeMillis(), endedAt = System.currentTimeMillis(),
+                                cause = leg.endCause ?: HangupCause.NETWORK_ERROR,
+                                inputFrames = 0, outputFrames = 0, inputText = "", outputText = "",
+                                failureDetail = listOfNotNull(leg.endCode?.let { "SIP/Telecom code=$it" }, leg.endReason).joinToString(" ").ifBlank { "SIM call ended before answer: ${leg.endCause}" },
+                            ))
+                            directAiLeg?.takeIf { it.state != LegState.ENDED }?.hangup(leg.endCause ?: HangupCause.NORMAL)
+                            directHumanLeg?.takeIf { it.state != LegState.ENDED }?.hangup(HangupCause.CANCELLED)
+                            clearDirectCall(cell)
+                        }
+                        directAiLeg -> {
+                            if (directHumanLeg?.state != LegState.CONNECTED) cell.hangup(leg.endCause ?: HangupCause.NORMAL)
+                        }
+                    }
+                }
+                if (leg === cell || leg === directAiLeg) connectIfReady(cell, directAiLeg)
             }
-            override fun onMediaChanged(leg: CallLeg, media: MediaPort?) = connectIfReady(cell, ai)
+            override fun onMediaChanged(leg: CallLeg, media: MediaPort?) {
+                if (leg === cell || leg === directAiLeg) connectIfReady(cell, directAiLeg)
+            }
         }
         cell.addListener(watcher)
-        ai.addListener(watcher)
+        when (cell.state) {
+            LegState.CONNECTED -> watcher.onStateChanged(cell, LegState.CONNECTED)
+            LegState.ENDED -> watcher.onStateChanged(cell, LegState.ENDED)
+            else -> Unit
+        }
     }
-
     /** Starts an attended employee handoff for a SIM call originated by Telegram /call. */
     @Synchronized
     fun handoffDirectTo(endpoint: CallEndpoint, target: String): Boolean {
@@ -238,8 +262,8 @@ internal class GeminiAiEndpoint(
         return true
     }
 
-    private fun connectIfReady(cell: CallLeg, ai: CallLeg) {
-        if (directHandoffCommitted) return
+    private fun connectIfReady(cell: CallLeg, ai: CallLeg?) {
+        if (ai == null || directHandoffCommitted) return
         if (cell.state == LegState.ENDED || ai.state == LegState.ENDED) {
             directBridge?.stop(); directBridge = null
             return
@@ -298,7 +322,7 @@ internal class GeminiAiEndpoint(
         }
 		private val prompt = """أنت سكرتير أعمال ومساعد مبيعات متخصص في تسويق توريد الديزل والوقود للشركات والمشاريع ومحطات الوقود والمصانع والمقاولين.
 
-        أسلوبك: تحدث بالعربية باللهجة اليمنية الطبيعية والمفهومة، بنبرة مهنية وودودة، وردود قصيرة ومباشرة. لا تكن آلياً ولا تكرر العبارات، ولا تضغط على العميل. افهم احتياجه قبل عرض أي خطوة.
+        أسلوبك: تحدث بلغة العميل. عند التحدث بالعربية استخدم افتراضياً لهجة سعودية محكية طبيعية ومفهومة، وبدّل إلى لغة العميل ولهجته المناسبة فوراً إذا بدأ بلغة أخرى. حافظ على نبرة مهنية وودودة وجمل قصيرة، ولا تكن آلياً أو ضاغطاً.
 
         إدارة الحوار الصوتي الطبيعي:
         - تعامل مع المكالمة كحوار بشري حي، وليس كنموذج أسئلة وأجوبة أو رسالة تسويقية مسجلة.
@@ -314,7 +338,7 @@ internal class GeminiAiEndpoint(
         - إذا كان الشخص مستعجلاً، اختصر واسأله إن كان يفضل تسجيل طلب مختصر. إذا كان متردداً، وضّح الخطوة التالية دون ضغط. إذا كان منزعجاً، اعتذر باختصار وخفف الأسئلة.
         - لا تعتبر «نعم» أو «طيب» موافقة على كل شيء. تأكد من المقصود إذا كانت الإجابة مختصرة أو تحتمل أكثر من معنى.
         - احتفظ بملخص داخلي محدث للمعلومات المؤكدة، ولا تكرر سؤالاً أجاب عنه الشخص. إذا صحح معلومة، استبدل القديمة فوراً.
-        - استخدم العربية الطبيعية المفهومة بلهجة يمنية خفيفة، وتجنب المبالغة في اللهجة أو تقليد ألفاظ الشخص بطريقة مصطنعة.
+        - طابق لغة العميل؛ استخدم افتراضياً العربية السعودية المحكية، وانتقل إلى لغة العميل الأخرى بطلاقة عند الحاجة، دون مبالغة أو تقليد مصطنع للهجة.
         - لا تقل «بحسب تحليلي لمشاعرك» أو «أفهم أنك غاضب». أظهر الفهم عملياً من خلال الرد المناسب.
         - إذا طلب العميل موظفاً بشرياً أو قال «حولني لموظف» أو «أريد أكلم شخصاً»، أوقف أسئلة البيع واطلب التحويل؛ سيجري النظام اتصال SIP بالموظف. لا تدّعِ نجاح التحويل قبل رد الموظف.
         - إذا قال العميل بوضوح «أنهِ المكالمة» أو «اقفل الاتصال» أو «مع السلامة»، اشكره بجملة ختامية قصيرة ثم توقف عن الحوار؛ النظام سينهي الاتصال بعد مهلة قصيرة.
@@ -429,7 +453,7 @@ ${context.salesInfo}
                 port.outputDroppedFrames, port.outputQueuePeak, port.lastInputSentAt, port.firstOutputAt,
                 port.firstOutputQueuedAt, port.firstOutputPlayedAt, turnCompleteAt,
                 turnStats.first, turnStats.second, turnStats.third, speechStats.first, speechStats.second,
-                completedTurns.get(), synchronized(transcriptLock) { conversationTranscript.toString() }, port.lastSpeechEndAt, port.firstInputSentAt))
+                completedTurns.get(), synchronized(transcriptLock) { conversationTranscript.toString() }, port.lastSpeechEndAt, port.firstInputSentAt, id))
             onEnd()
         }
         private fun appendTranscript(speaker: String, text: String) {
@@ -485,7 +509,7 @@ ${context.salesInfo}
             } ?: format.silence()
             @Synchronized override fun writeFrame(frame: ShortArray) {
                 if (openingTurnStarted.compareAndSet(false, true)) {
-                    val queued = client?.sendClientText("ابدأ بتحية قصيرة وطبيعية باللهجة اليمنية الخفيفة. عرّف بنفسك كمساعد مبيعات للديزل دون اختراع اسم شركة، واسأل بلطف إن كان الوقت مناسباً لدقيقة واحدة. إذا قال الشخص إنه مشغول فلا تبدأ الأسئلة؛ اعرض وقتاً مناسباً للمتابعة أو أنهِ المكالمة باحترام، ثم توقف واستمع.") == true
+                    val queued = client?.sendClientText("ابدأ بتحية قصيرة وطبيعية بلغة العميل المتوقعة؛ إن كانت المحادثة بالعربية فاستخدم اللهجة السعودية المحكية. عرّف بنفسك كمساعد مبيعات للديزل دون اختراع اسم شركة، واسأل بلطف إن كان الوقت مناسباً لدقيقة واحدة. إذا قال الشخص إنه مشغول فلا تبدأ الأسئلة؛ اعرض وقتاً مناسباً للمتابعة أو أنهِ المكالمة باحترام، ثم توقف واستمع.") == true
                     AppLog.i("Gemini Live call opening turn started=$queued")
                 }
                 val now = SystemClock.elapsedRealtime()

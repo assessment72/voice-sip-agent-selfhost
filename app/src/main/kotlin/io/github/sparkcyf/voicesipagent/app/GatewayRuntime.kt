@@ -134,7 +134,7 @@ class GatewayRuntime private constructor(context: Context) {
             onAiReport?.invoke(report.telegramMessages())
             worker.execute {
                 if (mongoStore.state == MongoState.CONNECTED) {
-                    runCatching { customers.saveCallReport(report) }
+                    runCatching { customers.saveCallReport(report, scheduledCallId, scheduledCampaignCustomerId) }
                         .onFailure { AppLog.w("could not save Gemini call report", it) }
                     scheduledCampaignCustomerId?.let { ccId ->
                         val text = (report.conversationTranscript + "\n" + report.outputText + "\n" + report.failureDetail).lowercase()
@@ -150,7 +150,8 @@ class GatewayRuntime private constructor(context: Context) {
                         scheduledCampaignCustomerId = null
                     }
                     scheduledCallId?.let { id ->
-                        runCatching { customers.updateScheduleStatus(id, "completed") }
+                        val status = if (report.cause == io.github.sparkcyf.voicesipagent.voice.HangupCause.NORMAL && report.failureDetail.isBlank()) "completed" else "failed"
+                        runCatching { customers.updateScheduleStatus(id, status, report.failureDetail.ifBlank { report.cause?.name.orEmpty() }) }
                             .onFailure { AppLog.w("could not complete scheduled call $id", it) }
                         scheduledCallId = null
                     }
@@ -482,7 +483,7 @@ class GatewayRuntime private constructor(context: Context) {
         if (GatewayService.sync(app, h)) foregroundRequested = h.needsForegroundService
     }
 
-    private fun hasActiveWork() = telegramSimCall != null || cellular.hasCalls || bridge?.session != null || _health.value.session != null
+    private fun hasActiveWork() = telegramSimCall != null || cellular.hasCalls || bridge?.session != null || _health.value.session != null || gemini.hasActiveCall()
 
     fun showDialerMessage(message: String) { _dialerMessage.value = message }
 
@@ -822,17 +823,30 @@ class GatewayRuntime private constructor(context: Context) {
         updateReadiness()
     }
 
+    private val outboundCallStarting = java.util.concurrent.atomic.AtomicBoolean(false)
     fun startAiCall(number: String, name: String, role: String, company: String) = worker.execute {
-        require(settings.geminiApiKey.isNotBlank()) { "Gemini API key is not configured" }
-        val clean = number.trim(); require(clean.isNotEmpty()) { "phone number is required" }
-        val customer = runCatching { customers.findByPhone(clean) }.getOrNull()
-        val instructions = customer?.instructions.orEmpty()
-        val memories = runCatching { customers.memoriesFor(clean) }.getOrDefault("")
-        gemini.setContext(GeminiAiEndpoint.CallContext(
-            name = name.trim(), role = role.trim(), company = company.trim(),
-            instructions = instructions, memories = memories,
-        ))
-        gemini.startOutbound(cellular, clean, Party(clean, name.trim().ifBlank { null }))
+        if (!outboundCallStarting.compareAndSet(false, true)) {
+            AppLog.w("duplicate outbound AI call request rejected")
+            return@execute
+        }
+        try {
+            require(settings.geminiApiKey.isNotBlank()) { "Gemini API key is not configured" }
+            val clean = PhoneNumberNormalizer.normalizeYemen(number)
+            check(cellular.status.ready && cellular.hasReadySim() && !cellular.hasCalls && _health.value.session == null) { "SIM or cellular call resource is not ready" }
+            check(!hasActiveWork()) { "Another call is already active" }
+            val customer = runCatching { customers.findByPhone(clean) ?: customers.findByPhone(number.trim()) }.getOrNull()
+            val instructions = customer?.instructions.orEmpty()
+            val memories = runCatching { customers.memoriesFor(clean) }.getOrDefault("")
+            gemini.setContext(GeminiAiEndpoint.CallContext(
+                name = name.trim(), role = role.trim(), company = company.trim(),
+                instructions = instructions, memories = memories,
+            ))
+            gemini.startOutbound(cellular, clean, Party(clean, name.trim().ifBlank { null }))
+        } catch (e: Exception) {
+            AppLog.w("outbound AI call rejected before dialing: ${e.message}")
+        } finally {
+            outboundCallStarting.set(false)
+        }
     }
 
     private fun runDueSchedules() {
@@ -854,15 +868,18 @@ class GatewayRuntime private constructor(context: Context) {
             }
             try {
                 require(settings.geminiApiKey.isNotBlank()) { "Gemini API key is not configured" }
-                val customer = customers.findById(schedule.customerId) ?: customers.findByPhone(schedule.phone)
+                check(cellular.status.ready && cellular.hasReadySim() && !cellular.hasCalls && _health.value.session == null) { "SIM or cellular call resource is not ready" }
+                check(!hasActiveWork()) { "gateway busy" }
+                val normalizedPhone = PhoneNumberNormalizer.normalizeYemen(schedule.phone)
+                val customer = customers.findById(schedule.customerId) ?: customers.findByPhone(normalizedPhone)
                 gemini.setContext(GeminiAiEndpoint.CallContext(
                     name = customer?.name.orEmpty(), role = customer?.role.orEmpty(), company = customer?.company.orEmpty(),
                     instructions = customer?.instructions.orEmpty(), memories = customers.memoriesFor(schedule.phone),
                 ))
                 scheduledCallId = schedule.id
                 scheduledCampaignCustomerId = schedule.campaignCustomerId
-                gemini.startOutbound(cellular, schedule.phone, Party(schedule.phone, customer?.name?.ifBlank { null }))
                 customers.updateScheduleStatus(schedule.id.orEmpty(), "running")
+                gemini.startOutbound(cellular, normalizedPhone, Party(normalizedPhone, customer?.name?.ifBlank { null }))
                 AppLog.i("scheduled Gemini call started: ${schedule.id}")
             } catch (e: Exception) {
                 scheduledCallId = null
@@ -884,7 +901,8 @@ class GatewayRuntime private constructor(context: Context) {
                 return@repeat
             }
             try {
-                SmsApiClient(settings.smsApiKey).send(schedule.phone, schedule.message).getOrThrow()
+                val normalizedPhone = PhoneNumberNormalizer.normalizeYemen(schedule.phone)
+                SmsApiClient(settings.smsApiKey).send(normalizedPhone, schedule.message).getOrThrow()
                 customers.updateSmsScheduleStatus(schedule.id.orEmpty(), "sent")
                 AppLog.i("scheduled SMS sent: ${schedule.id}")
             } catch (e: Exception) {
@@ -944,23 +962,21 @@ class GatewayRuntime private constructor(context: Context) {
     fun listCallSchedules(callback: (String) -> Unit) = worker.execute { callback(runCatching { customers.listSchedules().joinToString("\n") { "${it.id} | ${it.phone} | ${it.runAt} | ${it.status} | ${it.note}" } }.getOrElse { "خطأ قراءة الجدولة: ${it.javaClass.simpleName}" }.ifBlank { "لا توجد مواعيد" }) }
     fun saveSmsSchedule(schedule: SmsSchedule, callback: (String) -> Unit) = worker.execute { callback(runCatching { customers.saveSmsSchedule(schedule) }.getOrElse { "خطأ جدولة SMS: ${it.javaClass.simpleName}" }) }
     fun listSmsSchedules(callback: (String) -> Unit) = worker.execute { callback(runCatching { customers.listSmsSchedules().joinToString("\n") { "${it.id} | ${it.phone} | ${it.runAt} | ${it.status} | ${it.note} | ${it.message.take(80)}" } }.getOrElse { "خطأ قراءة جدولة SMS: ${it.javaClass.simpleName}" }.ifBlank { "لا توجد رسائل مجدولة" }) }
-    fun sendSms(phone: String, message: String, callback: (String) -> Unit) = worker.execute { callback(SmsApiClient(settings.smsApiKey).send(phone, message).fold({ it }, { "فشل SMS: ${it.message ?: it.javaClass.simpleName}" })) }
+    fun sendSms(phone: String, message: String, callback: (String) -> Unit) = worker.execute { callback(runCatching { PhoneNumberNormalizer.normalizeYemen(phone) }.fold({ normalized -> SmsApiClient(settings.smsApiKey).send(normalized, message).fold({ it }, { "فشل SMS: ${it.message ?: it.javaClass.simpleName}" }) }, { "فشل SMS: ${it.message}" })) }
     fun updateSmsApiKey(key: String) = worker.execute { settingsStore.save(settings.copy(smsApiKey = key.trim()).also { _settings.value = it }) }
 
     /** Starts an authenticated Telegram-originated SIM call and bridges it to the registered SIP phone. */
     fun startTelegramSimCall(rawNumber: String, notify: (String) -> Unit) = worker.execute {
-        val raw = rawNumber.trim().filterNot { it.isWhitespace() || it == '(' || it == ')' || it == '-' }
-        if (!raw.matches(Regex("\\+?[0-9]{3,20}"))) {
-            notify("صيغة الرقم غير صالحة. استخدم /simcall <رقم>.")
+        val number = runCatching { PhoneNumberNormalizer.normalizeYemen(rawNumber) }.getOrElse {
+            notify("رقم جوال يمني غير صالح. مثال: /simcall 730501035")
             return@execute
         }
-        val number = raw
         val h = _health.value
         val sipEndpoint = sip
         when {
-            telegramSimCall != null -> notify("هناك مكالمة SIM نشطة بالفعل. استخدم /simcall_cancel أولاً.")
+            telegramSimCall != null || gemini.hasActiveCall() -> notify("هناك مكالمة نشطة بالفعل. أنهِها قبل بدء اتصال آخر.")
             !gatewayEnabled || !h.takeover -> notify("البوابة متوقفة؛ فعّلها أولاً قبل إجراء اتصال SIM.")
-            !cellular.status.ready || !h.callAccessReady || !h.audioReady -> notify("اتصال SIM/SIP غير جاهز: تحقق من صلاحيات الهاتف وShizuku والصوت.")
+            !cellular.status.ready || !cellular.hasReadySim() || !h.callAccessReady || !h.audioReady -> notify("اتصال SIM/SIP غير جاهز: تحقق من الشريحة والصلاحيات وShizuku والصوت.")
             sipEndpoint == null || !sipEndpoint.status.ready -> notify("لا يوجد هاتف SIP مسجّل وجاهز لاستقبال المكالمة.")
             cellular.hasCalls || h.session != null -> notify("خط SIM مشغول بمكالمة أخرى.")
             cellular.isEmergencyNumber(number) -> notify("مرفوض: لا يمكن بدء مكالمة طوارئ عبر هذا الأمر.")

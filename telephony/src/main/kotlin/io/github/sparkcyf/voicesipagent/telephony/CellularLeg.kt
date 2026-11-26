@@ -153,6 +153,7 @@ class CellularLeg internal constructor(
 
     private fun finish(cause: HangupCause) {
         if (state == LegState.ENDED) return
+        call?.details?.disconnectCause?.let { setEndDetail(it.code, it.reason) }
         stopMedia()
         call?.let { runCatching { it.unregisterCallback(callback) } }
         try {

@@ -102,6 +102,8 @@ class CellularEndpoint(
         statusListeners.remove(listener)
     }
 
+    /** A ready carrier subscription is required before any app-originated cellular dial. */
+    fun hasReadySim(): Boolean = runCatching { telephony.simState == TelephonyManager.SIM_STATE_READY }.getOrDefault(false)
     fun isEmergencyNumber(number: String): Boolean = try {
         telephony.isEmergencyNumber(number)
     } catch (e: Exception) {

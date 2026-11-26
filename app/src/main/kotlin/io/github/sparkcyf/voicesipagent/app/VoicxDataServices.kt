@@ -335,11 +335,17 @@ internal class VoicxCustomerRepository(private val store: VoicxMongoStore) {
         if (error.isBlank()) updates += Updates.unset("error") else updates += Updates.set("error", error.take(500))
         store.smsSchedules().updateOne(Filters.eq("_id", ObjectId(id)), Updates.combine(updates))
     }
-    fun saveCallReport(report: AiCallReport) {
+    fun saveCallReport(report: AiCallReport, scheduleId: String? = null, campaignCustomerId: String? = null) {
+        val campaignId = campaignCustomerId?.takeIf(ObjectId::isValid)?.let { id ->
+            store.campaignCustomers().find(Filters.eq("_id", ObjectId(id))).first()?.getString("campaignId")
+        }
         store.calls().insertOne(Document("phone", report.number.orEmpty())
             .append("name", report.name.orEmpty()).append("role", report.role.orEmpty()).append("company", report.company.orEmpty())
             .append("startedAt", Date(report.startedAt)).append("endedAt", Date(report.endedAt))
-            .append("cause", report.cause?.name.orEmpty()).append("failureDetail", report.failureDetail.take(500))
+            .append("callId", report.callId).append("scheduleId", scheduleId.orEmpty())
+            .append("campaignId", campaignId.orEmpty()).append("campaignCustomerId", campaignCustomerId.orEmpty())
+            .append("cause", report.cause?.name.orEmpty())
+            .append("failureDetail", report.failureDetail.take(500))
             .append("inputText", report.inputText.take(12000)).append("outputText", report.outputText.take(12000))
             .append("conversationTranscript", report.conversationTranscript.take(24000))
             .append("inputFrames", report.inputFrames).append("outputFrames", report.outputFrames)
