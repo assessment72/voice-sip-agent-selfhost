@@ -7,8 +7,13 @@ import com.mongodb.client.MongoClient
 import com.mongodb.client.MongoClients
 import com.mongodb.client.MongoCollection
 import com.mongodb.client.MongoDatabase
+import com.mongodb.client.model.Filters
+import com.mongodb.client.model.FindOneAndUpdateOptions
+import com.mongodb.client.model.ReturnDocument
+import com.mongodb.client.model.Updates
 import org.bson.Document
 import org.bson.BsonRegularExpression
+import org.bson.conversions.Bson
 import org.bson.types.ObjectId
 import java.util.Date
 import java.util.concurrent.TimeUnit
@@ -139,9 +144,51 @@ internal class VoicxCustomerRepository(private val store: VoicxMongoStore) {
             .append("status", schedule.status).append("note", schedule.note), com.mongodb.client.model.ReplaceOptions().upsert(true))
         return id.toHexString()
     }
+    fun claimDueSchedule(now: Long = System.currentTimeMillis()): CallSchedule? {
+        val doc = store.schedules().findOneAndUpdate(
+            Filters.and(
+                Filters.eq("status", "pending"),
+                Filters.lte("runAt", Date(now)),
+            ),
+            Updates.set("status", "running"),
+            FindOneAndUpdateOptions().sort(Document("runAt", 1)).returnDocument(ReturnDocument.AFTER),
+        ) ?: return null
+        return scheduleFrom(doc)
+    }
+    fun updateScheduleStatus(id: String, status: String, error: String = "") {
+        if (!ObjectId.isValid(id)) return
+        val updates = mutableListOf<Bson>(Updates.set("status", status))
+        if (error.isBlank()) updates += Updates.unset("error") else updates += Updates.set("error", error.take(500))
+        store.schedules().updateOne(Filters.eq("_id", ObjectId(id)), Updates.combine(updates))
+    }
+    fun saveCallReport(report: AiCallReport) {
+        store.calls().insertOne(Document("phone", report.number.orEmpty())
+            .append("name", report.name.orEmpty()).append("role", report.role.orEmpty()).append("company", report.company.orEmpty())
+            .append("startedAt", Date(report.startedAt)).append("endedAt", Date(report.endedAt))
+            .append("cause", report.cause?.name.orEmpty()).append("failureDetail", report.failureDetail.take(500))
+            .append("inputText", report.inputText.take(12000)).append("outputText", report.outputText.take(12000))
+            .append("conversationTranscript", report.conversationTranscript.take(24000))
+            .append("inputFrames", report.inputFrames).append("outputFrames", report.outputFrames)
+            .append("inputAttempts", report.inputAttempts).append("inputSendFailures", report.inputSendFailures)
+            .append("outputAudioChunks", report.outputAudioChunks).append("outputAudioBytes", report.outputAudioBytes)
+            .append("outputDroppedFrames", report.outputDroppedFrames).append("outputQueuePeak", report.outputQueuePeak)
+            .append("firstInputSentAt", report.firstInputSentAt ?: 0L).append("lastInputSentAt", report.lastInputSentAt ?: 0L)
+            .append("firstOutputAt", report.firstOutputAt ?: 0L).append("firstOutputQueuedAt", report.firstOutputQueuedAt ?: 0L)
+            .append("firstOutputPlayedAt", report.firstOutputPlayedAt ?: 0L).append("turnCompleteAt", report.turnCompleteAt ?: 0L)
+            .append("turnResponseCount", report.turnResponseCount).append("lastTurnResponseMs", report.lastTurnResponseMs ?: 0L)
+            .append("averageTurnResponseMs", report.averageTurnResponseMs ?: 0L)
+            .append("lastTurnSpeechDurationMs", report.lastTurnSpeechDurationMs ?: 0L)
+            .append("averageTurnSpeechDurationMs", report.averageTurnSpeechDurationMs ?: 0L)
+            .append("turnCount", report.turnCount).append("lastSpeechEndAt", report.lastSpeechEndAt ?: 0L)
+            .append("createdAt", Date()))
+    }
     fun listSchedules(limit: Int = 20): List<CallSchedule> = store.schedules().find().sort(Document("runAt", 1)).limit(limit)
-        .map { CallSchedule(it.getObjectId("_id")?.toHexString(), it.getString("customerId").orEmpty(), it.getString("phone").orEmpty(), it.getDate("runAt")?.time ?: 0L, it.getString("status").orEmpty(), it.getString("note").orEmpty()) }
+        .map(::scheduleFrom)
         .toList()
+    private fun scheduleFrom(it: Document): CallSchedule = CallSchedule(
+        it.getObjectId("_id")?.toHexString(), it.getString("customerId").orEmpty(), it.getString("phone").orEmpty(),
+        it.getDate("runAt")?.time ?: 0L, it.getString("status").orEmpty(), it.getString("note").orEmpty(),
+    )
     private fun from(d: Document?): VoicxCustomer? = d?.let { VoicxCustomer(
         id = it.getObjectId("_id")?.toHexString(), phone = it.getString("phone").orEmpty(), name = it.getString("name").orEmpty(),
         role = it.getString("role").orEmpty(), company = it.getString("company").orEmpty(), instructions = it.getString("instructions").orEmpty(),

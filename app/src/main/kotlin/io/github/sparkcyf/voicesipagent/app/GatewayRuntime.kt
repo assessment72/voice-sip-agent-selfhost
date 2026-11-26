@@ -130,7 +130,20 @@ class GatewayRuntime private constructor(context: Context) {
         apiKey = { settings.geminiApiKey },
         model = { settings.geminiModel },
         salesContext = { salesAdminStore.assistantContext() },
-        report = { onAiReport?.invoke(it.telegramMessages()) },
+        report = { report ->
+            onAiReport?.invoke(report.telegramMessages())
+            worker.execute {
+                if (mongoStore.state == MongoState.CONNECTED) {
+                    runCatching { customers.saveCallReport(report) }
+                        .onFailure { AppLog.w("could not save Gemini call report", it) }
+                    scheduledCallId?.let { id ->
+                        runCatching { customers.updateScheduleStatus(id, "completed") }
+                            .onFailure { AppLog.w("could not complete scheduled call $id", it) }
+                        scheduledCallId = null
+                    }
+                }
+            }
+        },
     )
     @Volatile var onAiReport: ((List<String>) -> Unit)? = null
     /** Built-in SIP user agent. */
@@ -139,6 +152,8 @@ class GatewayRuntime private constructor(context: Context) {
     private var echo: EchoEndpoint? = null
     @Volatile
     private var telegramSimCall: TelegramSimCall? = null
+    @Volatile
+    private var scheduledCallId: String? = null
     private var started = false
     private var pendingSettings: GatewaySettings? = null
     private var restartPending = false
@@ -152,6 +167,7 @@ class GatewayRuntime private constructor(context: Context) {
     private var pendingDialerChange: DialerChange? = null
     private var dialerRetry: ScheduledFuture<*>? = null
     private var healthCheck: ScheduledFuture<*>? = null
+    private var scheduleCheck: ScheduledFuture<*>? = null
     @Volatile private var networkCallback: ConnectivityManager.NetworkCallback? = null
     private val dialerHandoffStore = DialerHandoffStore(app)
     private val dialerHandoff = DialerHandoff(app.packageName, dialerHandoffStore, object : DialerHandoff.Backend {
@@ -295,11 +311,14 @@ class GatewayRuntime private constructor(context: Context) {
         // Telecom or Shizuku restarts can disrupt call access. Recheck health and repair companion
         // setup while idle if access is unavailable; a missing override alone does not trigger setup.
         healthCheck = worker.scheduleWithFixedDelay(::periodicCheck, 60, 60, TimeUnit.SECONDS)
+        scheduleCheck = worker.scheduleWithFixedDelay(::runDueSchedules, 5, 30, TimeUnit.SECONDS)
     }
 
     private fun stopBackgroundTasks() {
         healthCheck?.cancel(false)
         healthCheck = null
+        scheduleCheck?.cancel(false)
+        scheduleCheck = null
         dialerRetry?.cancel(false)
         dialerRetry = null
         val callback = networkCallback
@@ -794,6 +813,37 @@ class GatewayRuntime private constructor(context: Context) {
         val instructions = runCatching { customers.instructionFor(clean) }.getOrDefault("")
         gemini.setContext(GeminiAiEndpoint.CallContext(name.trim(), role.trim(), company.trim(), instructions))
         gemini.startOutbound(cellular, clean, Party(clean, name.trim().ifBlank { null }))
+    }
+
+    private fun runDueSchedules() {
+        if (mongoStore.state != MongoState.CONNECTED || !gatewayEnabled) return
+        repeat(3) {
+            val schedule = runCatching { customers.claimDueSchedule() }.getOrElse {
+                AppLog.w("could not claim scheduled call", it)
+                return
+            } ?: return
+            if (hasActiveWork()) {
+                customers.updateScheduleStatus(schedule.id.orEmpty(), "failed", "gateway busy")
+                AppLog.w("scheduled call ${schedule.id} skipped because gateway is busy")
+                return@repeat
+            }
+            try {
+                require(settings.geminiApiKey.isNotBlank()) { "Gemini API key is not configured" }
+                val customer = customers.findById(schedule.customerId) ?: customers.findByPhone(schedule.phone)
+                gemini.setContext(GeminiAiEndpoint.CallContext(
+                    customer?.name.orEmpty(), customer?.role.orEmpty(), customer?.company.orEmpty(),
+                    customer?.instructions.orEmpty(),
+                ))
+                scheduledCallId = schedule.id
+                gemini.startOutbound(cellular, schedule.phone, Party(schedule.phone, customer?.name?.ifBlank { null }))
+                customers.updateScheduleStatus(schedule.id.orEmpty(), "running")
+                AppLog.i("scheduled Gemini call started: ${schedule.id}")
+            } catch (e: Exception) {
+                scheduledCallId = null
+                customers.updateScheduleStatus(schedule.id.orEmpty(), "failed", e.message ?: e.javaClass.simpleName)
+                AppLog.w("scheduled Gemini call failed: ${schedule.id}", e)
+            }
+        }
     }
 
     fun stopAiCall() = worker.execute { gemini.stop() }
