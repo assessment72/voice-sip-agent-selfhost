@@ -270,7 +270,7 @@ class GatewayRuntime private constructor(context: Context) {
         if (settings.mongoEnabled && settings.mongoApiUrl.isNotBlank()) {
             databaseWorker.execute {
                 mongoStore.connect(settings.mongoApiUrl, settings.mongoDatabaseName, settings.mongoDeviceId, settings.mongoDeviceToken)
-                    .onSuccess(::flushCallReportOutbox)
+                    .onSuccess { flushCallReportOutbox() }
                     .onFailure { scheduleCallReportRetry() }
             }
         }
@@ -786,7 +786,7 @@ class GatewayRuntime private constructor(context: Context) {
     }
 
     /** Saves the direct Telegram bot credential without changing SIP or takeover state. */
-    fun updateTelegramBotSettings(token: String, allowedUserId: String) = worker.execute {
+    fun updateTelegramBotSettings(token: String, allowedUserId: String, webhookMode: Boolean = settings.telegramWebhookMode) = worker.execute {
         val clean = token.trim()
         require(clean.isEmpty() || (clean.length >= 30 && Regex("^[0-9]+:[A-Za-z0-9_-]+$").matches(clean))) {
             "Invalid Telegram bot token format"
@@ -794,7 +794,11 @@ class GatewayRuntime private constructor(context: Context) {
         val allowedId = allowedUserId.trim().toLongOrNull()?.takeIf { it > 0 } ?: 0L
         require(clean.isEmpty() || allowedId > 0) { "Enter the numeric Telegram user ID allowed to control this phone" }
         if (settings.telegramBotToken != clean) settingsStore.saveTelegramUpdateOffset(0L)
-        val updated = settings.copy(telegramBotToken = clean, telegramAllowedUserId = if (clean.isEmpty()) 0L else allowedId)
+        val updated = settings.copy(
+            telegramBotToken = clean,
+            telegramAllowedUserId = if (clean.isEmpty()) 0L else allowedId,
+            telegramWebhookMode = clean.isNotEmpty() && webhookMode,
+        )
         settingsStore.save(updated)
         _settings.value = updated
         AppLog.i(if (clean.isEmpty()) "Telegram control disabled" else "Telegram bot settings saved")

@@ -63,13 +63,14 @@ internal class ControlBridgeClient(
         return (0 until commands.length()).mapNotNull { commands.optJSONObject(it) }
     }
 
-    fun reportResult(commandId: String, status: String, result: JSONObject? = null, error: String? = null, leaseToken: String? = null): JSONObject {
+    fun reportResult(commandId: String, status: String, result: JSONObject? = null, error: String? = null, leaseToken: String): JSONObject {
         require(runCatching { UUID.fromString(commandId) }.isSuccess) { "Invalid command id" }
         require(status in setOf("running", "succeeded", "failed")) { "Invalid command status" }
         val body = JSONObject().put("status", status)
         if (result != null) body.put("result", result)
         if (error != null) body.put("error", error.take(500))
-        if (leaseToken != null) body.put("leaseToken", leaseToken)
+        require(leaseToken.length >= 30) { "Invalid lease token" }
+        body.put("leaseToken", leaseToken)
         return request("POST", "/api/v1/devices/$deviceId/commands/$commandId/result", body)
     }
 

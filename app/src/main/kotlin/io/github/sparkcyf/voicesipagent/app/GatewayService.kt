@@ -28,9 +28,21 @@ import kotlinx.coroutines.withContext
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.CompletableDeferred
 import java.time.LocalDateTime
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
+
+private fun List<List<AdminButton>>.toTelegramJson(): org.json.JSONArray = org.json.JSONArray().also { rows ->
+    take(8).forEach { row ->
+        rows.put(org.json.JSONArray().also { cells ->
+            row.take(4).forEach { button ->
+                cells.put(org.json.JSONObject().put("text", button.title).put("callback_data", button.callbackData))
+            }
+        })
+    }
+}
 
 /**
  * Persistent foreground host for the gateway. The service remains alive independently of the
@@ -46,6 +58,12 @@ class GatewayService : Service() {
     private var telegramClient: TelegramBotClient? = null
     private var telegramConfigToken: String? = null
     private var telegramConfigUserId: Long = 0L
+    private var telegramConfigWebhookMode = false
+    private data class QueuedTelegramUpdate(
+        val update: TelegramBotClient.Incoming,
+        val result: CompletableDeferred<org.json.JSONObject>,
+    )
+    private val queuedTelegramUpdates = Channel<QueuedTelegramUpdate>(Channel.BUFFERED)
     private var telegramUpdateOffset: Long = 0L
     private var bridgeHeartbeatJob: Job? = null
     private var bridgeCommandJob: Job? = null
@@ -84,9 +102,9 @@ class GatewayService : Service() {
                 .collect { syncControlBridge(runtime.settings) }
         }
         telegramSettingsJob = scope.launch {
-            runtime.settingsFlow.map { it.telegramBotToken to it.telegramAllowedUserId }
+            runtime.settingsFlow.map { Triple(it.telegramBotToken, it.telegramAllowedUserId, it.telegramWebhookMode) }
                 .distinctUntilChanged()
-                .collect { (token, allowedUserId) -> syncTelegramControl(token, allowedUserId) }
+                .collect { (token, allowedUserId, webhookMode) -> syncTelegramControl(token, allowedUserId, webhookMode) }
         }
     }
 
@@ -108,7 +126,7 @@ class GatewayService : Service() {
         }
         runtime.onForegroundStarted(runtimeToken)
         syncControlBridge(runtime.settings)
-        syncTelegramControl(runtime.settings.telegramBotToken, runtime.settings.telegramAllowedUserId)
+        syncTelegramControl(runtime.settings.telegramBotToken, runtime.settings.telegramAllowedUserId, runtime.settings.telegramWebhookMode)
         if (statusJob == null) {
             val nm = getSystemService(NotificationManager::class.java)
             statusJob = scope.launch {
@@ -151,6 +169,7 @@ class GatewayService : Service() {
         telegramClient = null
         telegramConfigToken = null
         telegramConfigUserId = 0L
+        telegramConfigWebhookMode = false
         stopForeground(STOP_FOREGROUND_REMOVE)
         foreground = false
         releaseWakeLock()
@@ -226,9 +245,33 @@ class GatewayService : Service() {
                     val commands = withContext(Dispatchers.IO) { client.pollCommands() }
                     for (command in commands) {
                         val commandId = command.optString("id")
+                        val leaseToken = command.optString("leaseToken")
                         if (commandId.isBlank()) continue
+                        if (command.optString("type") == "telegram.update") {
+                            val telegram = telegramClient
+                            val update = telegram?.fromQueuedCommand(command)
+                            if (telegram == null || update == null) {
+                                withContext(Dispatchers.IO) { client.reportResult(commandId, "failed", error = "telegram_not_ready", leaseToken = leaseToken) }
+                                continue
+                            }
+                            val store = SettingsStore(this@GatewayService)
+                            val receipt = store.beginTelegramCommand(commandId)
+                            val result = if (receipt != null) {
+                                if (receipt.optString("state") == "completed") receipt.optJSONObject("result")
+                                else org.json.JSONObject().put("text", "تعذر تأكيد تنفيذ الأمر بعد انقطاع الهاتف؛ لم يُعد تشغيله لمنع التكرار.")
+                            } else {
+                                withContext(Dispatchers.IO) { client.reportResult(commandId, "running", leaseToken = leaseToken) }
+                                val deferred = CompletableDeferred<org.json.JSONObject>()
+                                queuedTelegramUpdates.send(QueuedTelegramUpdate(update, deferred))
+                                deferred.await().also { store.completeTelegramCommand(commandId, it) }
+                            }
+                            withContext(Dispatchers.IO) {
+                                client.reportResult(commandId, "succeeded", result = result, leaseToken = leaseToken)
+                            }
+                            continue
+                        }
                         val execution = try {
-                            withContext(Dispatchers.IO) { client.reportResult(commandId, "running") }
+                            withContext(Dispatchers.IO) { client.reportResult(commandId, "running", leaseToken = leaseToken) }
                             val result = executeControlCommand(runtime, command)
                             "succeeded" to result
                         } catch (e: CancellationException) {
@@ -242,6 +285,7 @@ class GatewayService : Service() {
                                 execution.first,
                                 result = execution.second,
                                 error = if (execution.first == "failed") execution.second.optString("error") else null,
+                                leaseToken = leaseToken,
                             )
                         }
                     }
@@ -259,7 +303,7 @@ class GatewayService : Service() {
      * Direct, single-device Telegram polling. The bot token is stored encrypted by SettingsStore.
      * Only the configured numeric user ID in a private chat can execute commands.
      */
-    private fun syncTelegramControl(token: String, allowedUserId: Long) {
+    private fun syncTelegramControl(token: String, allowedUserId: Long, webhookMode: Boolean) {
         if (!foreground || token.isBlank() || allowedUserId <= 0L) {
             telegramClient?.cancelPoll()
             telegramCommandJob?.cancel()
@@ -267,9 +311,10 @@ class GatewayService : Service() {
             telegramClient = null
             telegramConfigToken = null
             telegramConfigUserId = 0L
+            telegramConfigWebhookMode = false
             return
         }
-        if (telegramConfigToken == token && telegramConfigUserId == allowedUserId && telegramCommandJob?.isActive == true) return
+        if (telegramConfigToken == token && telegramConfigUserId == allowedUserId && telegramConfigWebhookMode == webhookMode && telegramCommandJob?.isActive == true) return
         // getUpdates is a long poll. Coroutine cancellation alone cannot interrupt blocking I/O.
         telegramClient?.cancelPoll()
         telegramCommandJob?.cancel()
@@ -279,11 +324,13 @@ class GatewayService : Service() {
             AppLog.w("Telegram configuration invalid: ${it.javaClass.simpleName}")
             telegramConfigToken = null
             telegramConfigUserId = 0L
+            telegramConfigWebhookMode = false
             return
         }
         telegramClient = client
         telegramConfigToken = token
         telegramConfigUserId = allowedUserId
+        telegramConfigWebhookMode = webhookMode
         val runtime = GatewayRuntime.get(this)
         runtime.onAiReport = { messages ->
             scope.launch(Dispatchers.IO) {
@@ -295,20 +342,33 @@ class GatewayService : Service() {
         telegramCommandJob = scope.launch {
             while (isActive && foreground) {
                 try {
-                    val updates = withContext(Dispatchers.IO) { client.poll(telegramUpdateOffset) }
+                    // In Webhook mode the only Telegram input is the authenticated Vercel queue.
+                    // In compatibility mode this is the sole getUpdates caller for the bot token.
+                    val queued = if (webhookMode) {
+                        queuedTelegramUpdates.receive()
+                    } else {
+                        null
+                    }
+                    val updates = queued?.let { listOf(it.update) }
+                        ?: withContext(Dispatchers.IO) { client.poll(telegramUpdateOffset) }
                     for (update in updates) {
                         telegramUpdateOffset = maxOf(telegramUpdateOffset, update.updateId + 1L)
                         SettingsStore(this@GatewayService).saveTelegramUpdateOffset(telegramUpdateOffset)
-                        if (!update.privateChat || update.senderId != allowedUserId) continue
+                        if (!update.privateChat || update.senderId != allowedUserId) {
+                            queued?.result?.complete(org.json.JSONObject().put("text", "هذا الأمر غير مسموح لهذه المحادثة."))
+                            continue
+                        }
                         if (update.callbackQueryId != null) {
                             withContext(Dispatchers.IO) { runCatching { client.answerCallbackQuery(update.callbackQueryId) } }
                             val response = withContext(Dispatchers.IO) { salesAdmin.handleCallback(update.callbackData.orEmpty(), update.senderId) }
                             withContext(Dispatchers.IO) { client.sendMessage(update.chatId, response.text, response.buttons) }
+                            queued?.result?.complete(org.json.JSONObject().put("text", response.text).put("buttons", response.buttons.toTelegramJson()))
                             continue
                         }
                         val adminReply = withContext(Dispatchers.IO) { salesAdmin.handleText(update.text, update.senderId) }
                         if (adminReply != null) {
                             withContext(Dispatchers.IO) { client.sendMessage(update.chatId, adminReply.text, adminReply.buttons) }
+                            queued?.result?.complete(org.json.JSONObject().put("text", adminReply.text).put("buttons", adminReply.buttons.toTelegramJson()))
                             continue
                         }
                         val commandParts = update.text.trim().split(Regex("\\s+"), limit = 2)
@@ -472,6 +532,7 @@ class GatewayService : Service() {
                             "Command failed: ${e.javaClass.simpleName}"
                         }
                         withContext(Dispatchers.IO) { client.sendMessage(update.chatId, reply) }
+                        queued?.result?.complete(org.json.JSONObject().put("text", reply))
                     }
                 } catch (e: CancellationException) {
                     throw e

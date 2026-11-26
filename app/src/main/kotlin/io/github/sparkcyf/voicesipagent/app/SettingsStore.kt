@@ -68,6 +68,8 @@ data class GatewaySettings(
     val telegramBotToken: String = "",
     /** Telegram numeric user ID allowed to issue private-chat commands; zero disables control. */
     val telegramAllowedUserId: Long = 0L,
+    /** When true Telegram delivery is owned by Vercel; Android consumes only its durable command queue. */
+    val telegramWebhookMode: Boolean = false,
     /** Gemini Developer API key, encrypted with Android Keystore. */
     val geminiApiKey: String = "",
     /** Gemini model used by the direct Live WebSocket client. */
@@ -144,6 +146,7 @@ class SettingsStore(context: Context) {
         controlBridgeToken = prefs.getString("control_bridge_token_sealed", null)?.let(::unseal).orEmpty(),
         telegramBotToken = prefs.getString("telegram_bot_token_sealed", null)?.let(::unseal).orEmpty(),
         telegramAllowedUserId = prefs.getLong("telegram_allowed_user_id", 0L).takeIf { it > 0 } ?: 0L,
+        telegramWebhookMode = prefs.getBoolean("telegram_webhook_mode", false),
         geminiApiKey = prefs.getString("gemini_api_key_sealed", null)?.let(::unseal).orEmpty(),
         geminiModel = prefs.getString("gemini_model", "gemini-2.5-flash-native-audio-preview-12-2025")!!,
         aiAutoAnswer = prefs.getBoolean("ai_auto_answer", false),
@@ -188,6 +191,7 @@ class SettingsStore(context: Context) {
             .putString("control_bridge_token_sealed", seal(s.controlBridgeToken))
             .putString("telegram_bot_token_sealed", seal(s.telegramBotToken))
             .putLong("telegram_allowed_user_id", s.telegramAllowedUserId)
+            .putBoolean("telegram_webhook_mode", s.telegramWebhookMode)
             .putString("gemini_api_key_sealed", seal(s.geminiApiKey))
             .putString("gemini_model", s.geminiModel.trim())
             .putBoolean("ai_auto_answer", s.aiAutoAnswer)
@@ -208,6 +212,46 @@ class SettingsStore(context: Context) {
 
     fun saveTelegramUpdateOffset(offset: Long) {
         if (offset >= 0L) prefs.edit().putLong("telegram_update_offset", offset).apply()
+    }
+
+    /**
+     * Atomically records that a queued Telegram command is about to run. The receipt is encrypted
+     * with the Android Keystore key and deliberately survives process death. A command marked
+     * started is never run a second time: delivery is at-least-once, while phone side effects are
+     * guarded at-most-once by commandId.
+     */
+    @Synchronized
+    fun beginTelegramCommand(commandId: String): JSONObject? {
+        if (commandId.isBlank()) return null
+        val receipts = readSealedJsonObject("telegram_command_receipts_sealed")
+        val existing = receipts.optJSONObject(commandId)
+        if (existing != null) return existing
+        receipts.put(commandId, JSONObject()
+            .put("state", "started")
+            .put("startedAt", System.currentTimeMillis()))
+        trimReceipts(receipts)
+        prefs.edit().putString("telegram_command_receipts_sealed", seal(receipts.toString())).commit()
+        return null
+    }
+
+    @Synchronized
+    fun completeTelegramCommand(commandId: String, result: JSONObject) {
+        if (commandId.isBlank()) return
+        val receipts = readSealedJsonObject("telegram_command_receipts_sealed")
+        receipts.put(commandId, JSONObject()
+            .put("state", "completed")
+            .put("completedAt", System.currentTimeMillis())
+            .put("result", result))
+        trimReceipts(receipts)
+        prefs.edit().putString("telegram_command_receipts_sealed", seal(receipts.toString())).commit()
+    }
+
+    private fun trimReceipts(receipts: JSONObject) {
+        if (receipts.length() <= 500) return
+        val oldest = receipts.keys().asSequence().mapNotNull { key ->
+            key to receipts.optJSONObject(key)?.optLong("completedAt", Long.MAX_VALUE)
+        }.sortedBy { it.second }.take(receipts.length() - 500).map { it.first }.toList()
+        oldest.forEach(receipts::remove)
     }
 
     /** Keeps a small, encrypted offline snapshot so a call can start without Vercel. */

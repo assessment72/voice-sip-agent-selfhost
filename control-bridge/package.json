@@ -8,7 +8,7 @@
   },
   "scripts": {
     "start": "node server.mjs",
-    "test": "node smoke-test.mjs && node api-test.mjs && node api-stage2-test.mjs && node api-telegram-test.mjs"
+    "test": "node smoke-test.mjs && node api-test.mjs && node api-stage2-test.mjs && node api-telegram-test.mjs && node device-commands-test.mjs"
   },
   "dependencies": {
     "mongodb": "^6.19.0"

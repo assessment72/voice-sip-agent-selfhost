@@ -332,6 +332,7 @@ private fun SettingsSection(rt: GatewayRuntime) {
     var bridgeToken by remember(cur) { mutableStateOf(cur.controlBridgeToken) }
     var telegramBotToken by remember(cur) { mutableStateOf(cur.telegramBotToken) }
     var telegramAllowedUserId by remember(cur) { mutableStateOf(if (cur.telegramAllowedUserId > 0) cur.telegramAllowedUserId.toString() else "") }
+    var telegramWebhookMode by remember(cur) { mutableStateOf(cur.telegramWebhookMode) }
     var geminiApiKey by remember(cur) { mutableStateOf(cur.geminiApiKey) }
     var mongoApiUrl by remember(cur) { mutableStateOf(cur.mongoApiUrl) }
     var mongoDatabase by remember(cur) { mutableStateOf(cur.mongoDatabaseName) }
@@ -434,7 +435,12 @@ private fun SettingsSection(rt: GatewayRuntime) {
             "للعثور على المعرّف: افتح محادثة البوت المساعد الذي يعرض Telegram ID، ثم أدخل الرقم هنا. الأوامر لا تُقبل إلا من هذا الحساب وفي محادثة خاصة.",
             "Get your numeric ID from a trusted Telegram ID helper bot. Commands are accepted only from this account in a private chat."
         ), style = MaterialTheme.typography.bodySmall)
-        Button(onClick = { rt.updateTelegramBotSettings(telegramBotToken, telegramAllowedUserId) }) {
+        Toggle(
+            t("وضع Webhook عبر Vercel", "Vercel Webhook mode"), telegramWebhookMode,
+            { telegramWebhookMode = it },
+            detail = { t("يوقف getUpdates على الهاتف ويستهلك أوامر الطابور فقط. عطّل polling أولاً ثم سجّل Webhook يدوياً.", "Stops getUpdates on Android and consumes only queued commands. Disable polling first, then register the Webhook manually.") },
+        )
+        Button(onClick = { rt.updateTelegramBotSettings(telegramBotToken, telegramAllowedUserId, telegramWebhookMode) }) {
             Text(t("حفظ اتصال Telegram", "Save Telegram connection"))
         }
         OutlinedTextField(value = geminiApiKey, onValueChange = { geminiApiKey = it }, label = { Text(t("مفتاح Gemini API", "Gemini API key")) }, visualTransformation = PasswordVisualTransformation(), singleLine = true, modifier = Modifier.fillMaxWidth())
