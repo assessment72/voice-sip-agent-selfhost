@@ -342,6 +342,62 @@ private fun SettingsSection(rt: GatewayRuntime) {
     var telegramTestResult by remember { mutableStateOf("") }
     val telegramScope = rememberCoroutineScope()
     val context = LocalContext.current
+    val exportSipJson = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/json")) { uri ->
+        if (uri != null) runCatching {
+            val json = org.json.JSONObject().apply {
+                put("format", "voicx-sip-settings")
+                put("version", 1)
+                put("serverMode", cur.serverMode)
+                put("localSipPort", cur.localSipPort)
+                put("registrarLeaseSec", cur.registrarLeaseSec)
+                put("registrarPassword", cur.registrarPassword)
+                put("server", cur.server)
+                put("port", cur.port)
+                put("sipTransport", cur.sipTransport)
+                put("srtp", cur.srtp)
+                put("sipStack", cur.sipStack.id)
+                put("username", cur.username)
+                put("password", cur.password)
+                put("domain", cur.domain)
+                put("inboundTarget", cur.inboundTarget)
+                put("humanHandoffTarget", cur.humanHandoffTarget)
+                put("allowedPrefixes", cur.allowedPrefixes)
+                put("busyPolicy", cur.busyPolicy.name)
+                put("sipDebugLog", cur.sipDebugLog)
+            }
+            context.contentResolver.openOutputStream(uri)?.use { it.write(json.toString(2).toByteArray()) }
+            firebaseResult = "تم تصدير إعدادات SIP إلى ملف JSON"
+        }.onFailure { firebaseResult = "فشل تصدير إعدادات SIP: ${it.message.orEmpty()}" }
+    }
+    val importSipJson = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        if (uri != null) runCatching {
+            val text = context.contentResolver.openInputStream(uri)?.bufferedReader()?.use { it.readText() }
+                ?: error("تعذر قراءة الملف")
+            val json = org.json.JSONObject(text)
+            require(json.optString("format") == "voicx-sip-settings") { "ملف SIP غير صالح" }
+            val imported = cur.copy(
+                serverMode = json.optBoolean("serverMode", cur.serverMode),
+                localSipPort = json.optInt("localSipPort", cur.localSipPort),
+                registrarLeaseSec = json.optInt("registrarLeaseSec", cur.registrarLeaseSec),
+                registrarPassword = json.optString("registrarPassword", cur.registrarPassword),
+                server = json.optString("server", cur.server),
+                port = json.optInt("port", cur.port),
+                sipTransport = json.optString("sipTransport", cur.sipTransport),
+                srtp = json.optString("srtp", cur.srtp),
+                sipStack = SipStack.of(json.optString("sipStack", cur.sipStack.id)) ?: cur.sipStack,
+                username = json.optString("username", cur.username),
+                password = json.optString("password", cur.password),
+                domain = json.optString("domain", cur.domain),
+                inboundTarget = json.optString("inboundTarget", cur.inboundTarget),
+                humanHandoffTarget = json.optString("humanHandoffTarget", cur.humanHandoffTarget),
+                allowedPrefixes = json.optString("allowedPrefixes", cur.allowedPrefixes),
+                busyPolicy = runCatching { BusyPolicy.valueOf(json.optString("busyPolicy", cur.busyPolicy.name)) }.getOrDefault(cur.busyPolicy),
+                sipDebugLog = json.optBoolean("sipDebugLog", cur.sipDebugLog),
+            )
+            rt.applySettings(imported)
+            firebaseResult = "تم استيراد إعدادات SIP وتطبيقها"
+        }.onFailure { firebaseResult = "فشل استيراد إعدادات SIP: ${it.message.orEmpty()}" }
+    }
     val builtin = stack == SipStack.BUILTIN
     val importFirebaseFile = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         if (uri != null) runCatching {
@@ -517,6 +573,15 @@ private fun SettingsSection(rt: GatewayRuntime) {
                 ),
             )
         }) { Text(t("Сохранить и применить", "Save & apply")) }
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            OutlinedButton(onClick = { exportSipJson.launch("voicx-sip-settings.json") }) {
+                Text(t("تصدير SIP JSON", "Export SIP JSON"))
+            }
+            OutlinedButton(onClick = { importSipJson.launch(arrayOf("application/json", "text/*")) }) {
+                Text(t("استيراد SIP JSON", "Import SIP JSON"))
+            }
+        }
+        Text(t("الملف يتضمن إعدادات SIP وكلمات مرور SIP. احفظه في مكان آمن ولا تشاركه.", "The file includes SIP settings and SIP passwords. Keep it secure and do not share it."), style = MaterialTheme.typography.bodySmall)
     }
 }
 
