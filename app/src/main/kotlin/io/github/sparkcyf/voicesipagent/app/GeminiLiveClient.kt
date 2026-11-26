@@ -132,7 +132,9 @@ internal class GeminiLiveClient(
     }
 
     private fun formatHttpFailure(response: Response): String {
-        val error = runCatching { JSONObject(response.body.string()).optJSONObject("error") }.getOrNull()
+        val error = runCatching {
+            response.body.use { body -> JSONObject(body.string()).optJSONObject("error") }
+        }.getOrNull()
         val status = error?.optString("status")?.takeIf { it.isNotBlank() }
         val message = error?.optString("message")?.takeIf { it.isNotBlank() }?.let(::redactSecrets)
         return buildString {

@@ -491,16 +491,22 @@ internal class VoicxCustomerRepository(private val store: VoicxMongoStore) {
 }
 
 internal class SmsApiClient(private val apiKey: String, private val endpoint: String = "https://adasms-standalone.vercel.app/api/sms/send") {
-    private val http = OkHttpClient.Builder().callTimeout(15, TimeUnit.SECONDS).build()
     fun send(phone: String, message: String): Result<String> = runCatching {
         require(apiKey.isNotBlank()) { "SMS API key is not configured" }
         require(phone.matches(Regex("\\+?[0-9]{7,20}"))) { "Invalid phone number" }
         require(message.isNotBlank() && message.length <= 1000) { "Invalid SMS message" }
         val body = JSONObject().put("phone", phone).put("message", message).toString().toRequestBody("application/json".toMediaType())
         val request = Request.Builder().url(endpoint).header("Authorization", "Bearer $apiKey").post(body).build()
-        http.newCall(request).execute().use { response ->
+        SMS_HTTP.newCall(request).execute().use { response ->
             if (!response.isSuccessful) error("SMS service rejected request (${response.code})")
             "SMS sent"
         }
+    }
+
+    private companion object {
+        /** Shared client avoids creating a dispatcher and connection pool per SMS. */
+        val SMS_HTTP: OkHttpClient = OkHttpClient.Builder()
+            .callTimeout(15, TimeUnit.SECONDS)
+            .build()
     }
 }
