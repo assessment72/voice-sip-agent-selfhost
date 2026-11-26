@@ -18,6 +18,7 @@ import org.bson.BsonRegularExpression
 import org.bson.conversions.Bson
 import org.bson.types.ObjectId
 import java.util.Date
+import java.util.Locale
 import java.util.concurrent.TimeUnit
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
@@ -42,9 +43,7 @@ internal class VoicxMongoStore {
             require(uri.trim().startsWith("mongodb")) { "MongoDB URI is required" }
             require(databaseName.matches(Regex("[A-Za-z0-9_-]{1,64}"))) { "Invalid database name" }
             val started = System.currentTimeMillis()
-            val settings = MongoClientSettings.builder()
-                .applyConnectionString(ConnectionString(uri.trim()))
-                .dnsClient(AndroidDnsClient())
+            val settings = buildSettings(uri)
                 .applyToClusterSettings { it.serverSelectionTimeout(8, TimeUnit.SECONDS) }
                 .applyToSocketSettings { it.connectTimeout(8, TimeUnit.SECONDS).readTimeout(8, TimeUnit.SECONDS) }
                 .build()
@@ -61,9 +60,7 @@ internal class VoicxMongoStore {
         require(uri.trim().startsWith("mongodb")) { "MongoDB URI is required" }
         require(databaseName.matches(Regex("[A-Za-z0-9_-]{1,64}"))) { "Invalid database name" }
         disconnect()
-        val settings = MongoClientSettings.builder()
-            .applyConnectionString(ConnectionString(uri.trim()))
-            .dnsClient(AndroidDnsClient())
+        val settings = buildSettings(uri)
             .applyToClusterSettings { it.serverSelectionTimeout(8, TimeUnit.SECONDS) }
             .applyToSocketSettings { it.connectTimeout(8, TimeUnit.SECONDS).readTimeout(8, TimeUnit.SECONDS) }
             .build()
@@ -110,11 +107,25 @@ internal class VoicxMongoStore {
         interestedCustomers().createIndex(Document("campaignCustomerId", 1), com.mongodb.client.model.IndexOptions().unique(true))
     }
 
+    private fun buildSettings(uri: String): MongoClientSettings.Builder {
+        val dnsClient = AndroidDnsClient()
+        // The overload is essential: MongoDB otherwise creates its JVM/JNDI resolver while
+        // parsing mongodb+srv before the builder-level DNS client is installed.
+        val connectionString = ConnectionString(uri.trim(), dnsClient)
+        return MongoClientSettings.builder()
+            .applyConnectionString(connectionString)
+            .dnsClient(dnsClient)
+    }
+
     private fun safeError(e: Throwable): String {
         val chain = generateSequence(e) { it.cause }.toList()
         val missingClass = chain.filterIsInstance<NoClassDefFoundError>().firstOrNull()
         if (missingClass != null) {
-            return "Missing runtime class: ${missingClass.message.orEmpty().replace('/', '.').take(180)}"
+            val missingName = missingClass.message.orEmpty().replace('/', '.')
+            if (missingName.contains("javax.naming", ignoreCase = true)) {
+                return "Android DNS غير متاح؛ تعذر تحليل mongodb+srv. تحقق من الشبكة ثم أعد المحاولة."
+            }
+            return "Missing runtime class: ${missingName.take(180)}"
         }
         val root = chain.lastOrNull() ?: e
         return when (root) {
@@ -124,35 +135,105 @@ internal class VoicxMongoStore {
     }
 }
 
-/** Android has no JNDI DNS provider, so mongodb+srv needs an explicit DNS client. */
-private class AndroidDnsClient : DnsClient {
-    override fun getResourceRecordData(name: String, type: String): List<String> = runCatching {
-        val encodedName = java.net.URLEncoder.encode(name, "UTF-8")
-        val request = Request.Builder()
-            .url("https://dns.google/resolve?name=$encodedName&type=$type")
-            .header("Accept", "application/dns-json")
-            .get().build()
-        ANDROID_DNS_HTTP.newCall(request).execute().use { response ->
-            if (!response.isSuccessful) error("DNS HTTPS request failed (${response.code})")
-            val body = response.body?.string().orEmpty()
-            val json = JSONObject(body)
-            val status = json.optInt("Status", 0)
-            if (status != 0) return@use emptyList<String>()
-            val answers = json.optJSONArray("Answer") ?: return@use emptyList<String>()
-            buildList {
-                for (index in 0 until answers.length()) {
-                    val data = answers.optJSONObject(index)?.optString("data").orEmpty()
-                    if (data.isNotBlank()) add(if (type.equals("TXT", true)) data.trim().removeSurrounding("\"") else data)
+/** Android has no JNDI DNS provider, so mongodb+srv must use an explicit Android DNS client. */
+internal fun interface AndroidDnsQuery {
+    fun query(name: String, type: String): String
+}
+
+internal class AndroidDnsClient(
+    private val query: AndroidDnsQuery = AndroidDnsQuery { name, type -> AndroidDnsOverHttps.query(name, type) },
+) : DnsClient {
+    override fun getResourceRecordData(name: String, type: String): List<String> {
+        val normalizedType = type.trim().uppercase(Locale.US)
+        require(normalizedType == "SRV" || normalizedType == "TXT") {
+            "Unsupported DNS record type: $type"
+        }
+        return try {
+            AndroidDnsJson.parse(query.query(name.trim(), normalizedType), normalizedType)
+        } catch (failure: DnsException) {
+            throw failure
+        } catch (failure: Throwable) {
+            throw DnsException("Android DNS lookup failed for $name ($normalizedType)", failure)
+        }
+    }
+}
+
+/** Parses the JSON wire representation returned by DNS-over-HTTPS providers. */
+internal object AndroidDnsJson {
+    fun parse(body: String, type: String): List<String> {
+        val json = JSONObject(body)
+        val status = json.optInt("Status", 0)
+        if (status != 0) error("DNS resolver returned status $status")
+        val answers = json.optJSONArray("Answer") ?: return emptyList()
+        return buildList {
+            for (index in 0 until answers.length()) {
+                val raw = answers.optJSONObject(index)?.optString("data").orEmpty().trim()
+                if (raw.isBlank()) continue
+                when (type) {
+                    "SRV" -> add(normalizeSrv(raw))
+                    "TXT" -> add(decodeTxt(raw))
                 }
             }
         }
-    }.getOrElse { throw DnsException("DNS lookup failed for $name ($type)", it) }
+    }
 
-    private companion object {
-        /** One process-wide client reuses dispatcher, connection-pool and TLS resources. */
-        val ANDROID_DNS_HTTP: OkHttpClient = OkHttpClient.Builder()
-            .callTimeout(8, TimeUnit.SECONDS)
-            .build()
+    private fun normalizeSrv(raw: String): String {
+        val fields = raw.split(Regex("\\s+")).filter(String::isNotBlank)
+        require(fields.size == 4 && fields[0].toIntOrNull() != null && fields[1].toIntOrNull() != null) {
+            "Malformed SRV record"
+        }
+        val port = fields[2].toIntOrNull()
+        require(port != null && port in 1..65535 && fields[3].isNotBlank()) { "Malformed SRV record" }
+        return fields[0] + " " + fields[1] + " " + port + " " + fields[3].removeSuffix(".")
+    }
+
+    private fun decodeTxt(raw: String): String {
+        if (!raw.contains('"')) return raw
+        val decoded = StringBuilder()
+        var quoted = false
+        var escaped = false
+        for (character in raw) {
+            when {
+                escaped -> { decoded.append(character); escaped = false }
+                character == '\\' && quoted -> escaped = true
+                character == '"' -> quoted = !quoted
+                quoted -> decoded.append(character)
+            }
+        }
+        return decoded.toString()
+    }
+}
+
+/** Uses Android-compatible DNS-over-HTTPS and falls back if one public resolver is blocked. */
+private object AndroidDnsOverHttps {
+    private val endpoints = listOf(
+        "https://cloudflare-dns.com/dns-query",
+        "https://dns.google/resolve",
+    )
+    private val http = OkHttpClient.Builder()
+        .callTimeout(8, TimeUnit.SECONDS)
+        .retryOnConnectionFailure(true)
+        .build()
+
+    fun query(name: String, type: String): String {
+        var lastFailure: Throwable? = null
+        for (endpoint in endpoints) {
+            try {
+                val encodedName = java.net.URLEncoder.encode(name, "UTF-8")
+                val request = Request.Builder()
+                    .url("$endpoint?name=$encodedName&type=$type")
+                    .header("Accept", "application/dns-json")
+                    .get()
+                    .build()
+                http.newCall(request).execute().use { response ->
+                    if (!response.isSuccessful) error("DNS HTTPS request failed (${response.code})")
+                    return response.body.string()
+                }
+            } catch (failure: Throwable) {
+                lastFailure = failure
+            }
+        }
+        throw IllegalStateException("DNS-over-HTTPS providers are unavailable", lastFailure)
     }
 }
 
