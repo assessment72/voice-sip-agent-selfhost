@@ -398,6 +398,12 @@ private fun SettingsSection(rt: GatewayRuntime) {
             firebaseResult = "تم استيراد إعدادات SIP وتطبيقها"
         }.onFailure { firebaseResult = "فشل استيراد إعدادات SIP: ${it.message.orEmpty()}" }
     }
+    val exportLocalDatabase = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/vnd.sqlite3")) { uri ->
+        if (uri != null) rt.exportLocalDatabase(uri) { firebaseResult = it }
+    }
+    val importLocalDatabase = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        if (uri != null) rt.importLocalDatabase(uri) { firebaseResult = it }
+    }
     val builtin = stack == SipStack.BUILTIN
     val importFirebaseFile = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         if (uri != null) runCatching {
@@ -416,6 +422,15 @@ private fun SettingsSection(rt: GatewayRuntime) {
     Section(t("قاعدة البيانات المحلية", "Local database")) {
         Text(t("يستخدم التطبيق SQLite داخل الهاتف. لا يحتاج Firebase أو إنترنت، ويقرأ التطبيق والبوت البيانات نفسها من هذا الجهاز.", "The app uses SQLite on this phone. It does not need Firebase or internet; the app and bot share the same local data."), style = MaterialTheme.typography.bodySmall)
         Button(onClick = { rt.testLocalDatabase { firebaseResult = it } }) { Text(t("اختبار قاعدة البيانات", "Test local database")) }
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            OutlinedButton(onClick = { exportLocalDatabase.launch("voicx_local.db") }) {
+                Text(t("تصدير SQLite", "Export SQLite"))
+            }
+            OutlinedButton(onClick = { importLocalDatabase.launch(arrayOf("application/vnd.sqlite3", "application/octet-stream", "*/*")) }) {
+                Text(t("استيراد SQLite", "Import SQLite"))
+            }
+        }
+        Text(t("قبل الاستيراد تُنشأ نسخة احتياطية تلقائياً. ملف SQLite لا يتضمن أسرار Telegram أو Gemini أو SMS. أوقف العمليات الحساسة أثناء الاستيراد.", "Import creates a local backup first. The SQLite file excludes Telegram, Gemini, and SMS secrets. Avoid sensitive operations during import."), style = MaterialTheme.typography.bodySmall)
         Text(rt.localDatabaseStatus(), style = MaterialTheme.typography.bodySmall)
         if (firebaseResult.isNotBlank()) Text(firebaseResult, style = MaterialTheme.typography.bodySmall)
         Text(if (cur.smsApiKey.isBlank()) t("لا يوجد مفتاح SMS محفوظ", "No SMS key saved") else t("مفتاح SMS محفوظ ومخفي", "Saved SMS key is hidden"), style = MaterialTheme.typography.bodySmall)

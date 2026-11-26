@@ -14,6 +14,7 @@ import android.content.ComponentName
 import android.content.pm.PackageManager
 import android.app.role.RoleManager
 import android.Manifest
+import android.net.Uri
 import io.github.sparkcyf.voicesipagent.gateway.BridgeSession
 import io.github.sparkcyf.voicesipagent.gateway.CallBridge
 import io.github.sparkcyf.voicesipagent.gateway.EchoEndpoint
@@ -911,6 +912,35 @@ class GatewayRuntime private constructor(context: Context) {
         }.getOrElse { "فشل اختبار قاعدة SQLite المحلية: ${it.message.orEmpty()}" })
     }
     fun localDatabaseStatus(): String = "SQLite محلية متصلة؛ البيانات محفوظة داخل الهاتف"
+    fun localDatabaseSummary(): String = runCatching {
+        val db = firebaseStore.requireDatabase()
+        listOf("customers", "customer_memories", "call_summaries", "call_schedules", "sms_schedules", "campaigns", "campaign_customers")
+            .joinToString("\n") { "$it: ${db.all(it).size}" }
+    }.getOrElse { "تعذر قراءة قاعدة البيانات المحلية: ${it.javaClass.simpleName}" }
+    fun localDatabaseCustomers(): String = runCatching {
+        customers.search("", 20).joinToString("\n") { "${it.id} | ${it.name} | ${it.phone} | ${it.company}" }
+            .ifBlank { "لا يوجد عملاء" }
+    }.getOrElse { "تعذر قراءة العملاء: ${it.javaClass.simpleName}" }
+    fun localDatabaseSchedules(): String = runCatching {
+        val calls = customers.listSchedules(10).joinToString("\n") { "اتصال | ${it.phone} | ${it.runAt} | ${it.status}" }
+        val sms = customers.listSmsSchedules(10).joinToString("\n") { "SMS | ${it.phone} | ${it.runAt} | ${it.status}" }
+        listOf(calls, sms).filter(String::isNotBlank).joinToString("\n").ifBlank { "لا توجد جدولة" }
+    }.getOrElse { "تعذر قراءة الجدولة: ${it.javaClass.simpleName}" }
+    fun exportLocalDatabase(uri: Uri, callback: (String) -> Unit = {}) = worker.execute {
+        callback(runCatching {
+            app.contentResolver.openOutputStream(uri)?.use { firebaseStore.requireDatabase().exportTo(it) }
+                ?: error("تعذر فتح ملف التصدير")
+            "تم تصدير قاعدة SQLite المحلية بنجاح. لا يتضمن الملف مفاتيح Telegram أو Gemini أو SMS."
+        }.getOrElse { "فشل تصدير قاعدة البيانات: ${it.message ?: it.javaClass.simpleName}" })
+    }
+    fun importLocalDatabase(uri: Uri, callback: (String) -> Unit = {}) = worker.execute {
+        callback(runCatching {
+            app.contentResolver.openInputStream(uri)?.use { input ->
+                val backup = firebaseStore.requireDatabase().importFrom(input)
+                "تم استيراد قاعدة البيانات. أُنشئت نسخة احتياطية محلية: ${backup.name}"
+            } ?: error("تعذر فتح ملف الاستيراد")
+        }.getOrElse { "فشل استيراد قاعدة البيانات: ${it.message ?: it.javaClass.simpleName}" })
+    }
     fun saveFirebaseSettings(projectId: String, apiKey: String, applicationId: String, enable: Boolean, callback: (String) -> Unit = {}) = worker.execute {
         val cleanProject = projectId.trim(); val cleanKey = apiKey.trim(); val cleanAppId = applicationId.trim()
         require(cleanProject.matches(Regex("[a-z0-9-]{6,63}"))) { "Firebase Project ID غير صالح" }

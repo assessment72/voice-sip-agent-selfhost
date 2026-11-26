@@ -5,6 +5,9 @@ import android.database.sqlite.SQLiteDatabase
 import android.database.sqlite.SQLiteOpenHelper
 import org.json.JSONArray
 import org.json.JSONObject
+import java.io.File
+import java.io.InputStream
+import java.io.OutputStream
 import java.util.UUID
 import java.util.concurrent.atomic.AtomicLong
 import okhttp3.MediaType.Companion.toMediaType
@@ -40,11 +43,42 @@ internal class VoicxFirebaseStore(context: Context) {
 enum class FirebaseState { DISCONNECTED, CONNECTED, ERROR }
 
 internal class LocalDatabase(context: Context) : SQLiteOpenHelper(context, "voicx_local.db", null, 1) {
+    private val databaseFile = context.getDatabasePath("voicx_local.db")
     override fun onCreate(db: SQLiteDatabase) {
         db.execSQL("CREATE TABLE documents (collection TEXT NOT NULL, id TEXT NOT NULL, payload TEXT NOT NULL, PRIMARY KEY(collection, id))")
         db.execSQL("CREATE INDEX documents_collection_idx ON documents(collection)")
     }
     override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) = Unit
+
+    @Synchronized fun exportTo(output: OutputStream) {
+        writableDatabase.execSQL("PRAGMA wal_checkpoint(FULL)")
+        output.use { destination -> databaseFile.inputStream().use { it.copyTo(destination) } }
+    }
+
+    @Synchronized fun importFrom(input: InputStream): File {
+        val temp = File(databaseFile.parentFile, "voicx_local.db.import-${System.currentTimeMillis()}.tmp")
+        input.use { source -> temp.outputStream().use { source.copyTo(it) } }
+        val header = temp.inputStream().use { it.readNBytes(16).toString(Charsets.US_ASCII) }
+        require(header == "SQLite format 3\u0000") { "الملف ليس قاعدة SQLite صالحة" }
+        SQLiteDatabase.openDatabase(temp.path, null, SQLiteDatabase.OPEN_READONLY).use { checkDb ->
+            checkDb.rawQuery("SELECT count(*) FROM documents", null).use { cursor -> require(cursor.moveToFirst()) { "قاعدة SQLite لا تحتوي على جدول Voicx" } }
+        }
+        close()
+        File(databaseFile.path + "-wal").delete()
+        File(databaseFile.path + "-shm").delete()
+        val backup = File(databaseFile.parentFile, "voicx_local.db.backup-${System.currentTimeMillis()}")
+        if (databaseFile.exists()) require(databaseFile.renameTo(backup)) { "تعذر إنشاء نسخة احتياطية" }
+        try {
+            require(temp.renameTo(databaseFile)) { "تعذر استبدال قاعدة البيانات" }
+            return backup
+        } catch (error: Exception) {
+            if (databaseFile.exists()) databaseFile.delete()
+            backup.renameTo(databaseFile)
+            throw error
+        } finally {
+            temp.delete()
+        }
+    }
 
     @Synchronized fun put(collection: String, id: String, values: Map<String, Any?>) {
         val json = JSONObject()

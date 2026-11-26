@@ -296,7 +296,15 @@ class GatewayService : Service() {
                         if (!update.privateChat || update.senderId != allowedUserId) continue
                         if (update.callbackQueryId != null) {
                             withContext(Dispatchers.IO) { runCatching { client.answerCallbackQuery(update.callbackQueryId) } }
-                            val response = withContext(Dispatchers.IO) { salesAdmin.handleCallback(update.callbackData.orEmpty(), update.senderId) }
+                            val response = withContext(Dispatchers.IO) {
+                                if (update.callbackData.orEmpty().startsWith("voicx:")) handleVoicxPanel(update.callbackData.orEmpty(), runtime)
+                                else salesAdmin.handleCallback(update.callbackData.orEmpty(), update.senderId)
+                            }
+                            withContext(Dispatchers.IO) { client.sendMessage(update.chatId, response.text, response.buttons) }
+                            continue
+                        }
+                        if (update.text.trim().equals("/panel", true) || update.text.trim().equals("/db", true)) {
+                            val response = if (update.text.trim().equals("/db", true)) handleVoicxPanel("voicx:db", runtime) else handleVoicxPanel("voicx:home", runtime)
                             withContext(Dispatchers.IO) { client.sendMessage(update.chatId, response.text, response.buttons) }
                             continue
                         }
@@ -311,7 +319,7 @@ class GatewayService : Service() {
                         val reply = try {
                             when (command) {
                                 "/start", "/help" ->
-                                    "Voicx control جاهز. الأوامر:\n/status - حالة البوابة\n/sip - حالة SIP\n/calls - حالة المكالمات\n/db_status - حالة Firebase\n/customer_search <نص> - البحث عن عميل\n/customer_add رقم | اسم | وظيفة | شركة | تعليمات - إضافة عميل\n/schedule_add customerId | رقم | وقت Unix ms | ملاحظة - جدولة اتصال\n/schedule_list - عرض مواعيد الاتصالات\n/sms رقم | رسالة - إرسال SMS فورًا\n/sms_schedule_add customerId | رقم | وقت Unix ms | رسالة | ملاحظة - جدولة SMS\n/sms_schedule_list - عرض رسائل SMS المجدولة\n/campaign_add customerId | رقم | وقت الاتصال Unix ms | وقت SMS Unix ms | الرسالة | ملاحظة - إنشاء حملة اتصال وSMS\n/simcall <رقم> - اتصال SIM وربطه بـ SIP\n/call رقم | اسم | وظيفة | شركة - اتصال SIM مع Gemini\n/admin - إعدادات أسعار وتغطية الديزل\n/ai_status - اختبار اتصال Gemini Live API\n/ai_errors - آخر تشخيصات Gemini\n/auto_answer_on - الرد الآلي بواسطة Gemini\n/auto_answer_off - إيقاف الرد الآلي\n/ai_stop - إيقاف مكالمة Gemini\n/simcall_cancel - إنهاء الاتصال الجاري\n/account - سجل المكالمات والصوت والبطارية\n/simcall_delete <id> - حذف سجل\n/service_on - تشغيل البوابة\n/service_off - إيقاف التحويل"
+                                    "Voicx Control جاهز. افتح اللوحة التفاعلية عبر /panel.\n\nأوامر سريعة:\n/status - حالة البوابة\n/sip - حالة SIP\n/calls - حالة المكالمات\n/db أو /db_status - ملخص SQLite المحلية\n/db_customers - قراءة العملاء\n/db_schedules - قراءة الجدولة\n/db_export - يذكّرك بالتصدير من التطبيق (لا تُرسل نسخة قاعدة البيانات تلقائياً)\n/customer_search <نص> - البحث عن عميل\n/customer_add رقم | اسم | وظيفة | شركة | تعليمات - إضافة عميل\n/schedule_add customerId | رقم | وقت Unix ms | ملاحظة - جدولة اتصال\n/schedule_list - عرض مواعيد الاتصالات\n/sms_schedule_list - عرض رسائل SMS المجدولة\n/campaign_add ... - إنشاء حملة\n/admin - إعدادات المبيعات\n/account - سجل المكالمات\n/service_on أو /service_off - تشغيل أو إيقاف البوابة"
                                 "/status" -> {
                                     val h = GatewayRuntime.get(this@GatewayService).health.value
                                     "Gateway: ${if (h.takeover) "ON" else "OFF"}\nSIP: ${if (h.sip.ready) "ready" else "not ready"}\nActive call: ${h.session != null || h.calls.owned > 0}"
@@ -321,7 +329,10 @@ class GatewayService : Service() {
                                     "SIP: ${if (h.sip.ready) "ready" else "not ready"}\n${h.sip.detail.take(500)}"
                                 }
                                 "/calls" -> GatewayRuntime.get(this@GatewayService).health.value.calls.summary.take(1000)
-                                "/db_status" -> runtime.firebaseStatus()
+                                "/db_status", "/db" -> runtime.localDatabaseSummary()
+                                "/db_customers" -> runtime.searchCustomers("") { result -> scope.launch(Dispatchers.IO) { runCatching { client.sendMessage(update.chatId, "العملاء:\n${result.take(3800)}") } } }.let { "جارٍ قراءة العملاء من SQLite المحلية." }
+                                "/db_schedules" -> { runtime.listCallSchedules { result -> scope.launch(Dispatchers.IO) { runCatching { client.sendMessage(update.chatId, "جدولة الاتصالات:\n${result.take(1800)}") } } }; runtime.listSmsSchedules { result -> scope.launch(Dispatchers.IO) { runCatching { client.sendMessage(update.chatId, "جدولة SMS:\n${result.take(1800)}") } } }; "جارٍ قراءة الجداول من SQLite المحلية." }
+                                "/db_export" -> "التصدير متاح من التطبيق عبر قسم قاعدة البيانات المحلية. لا أرسل ملف SQLite تلقائياً عبر Telegram لحماية بيانات العملاء؛ استخدم زر التصدير ثم شارك الملف يدوياً عند الحاجة."
                                 "/customer_search" -> {
                                     if (argument.isBlank()) "الاستخدام: /customer_search <نص>"
                                     else { runtime.searchCustomers(argument) { result -> scope.launch(Dispatchers.IO) { runCatching { client.sendMessage(update.chatId, result.take(3900)) } } }; "جارٍ البحث عن العملاء وإرسال النتائج." }
@@ -477,6 +488,39 @@ class GatewayService : Service() {
                     delay(5_000)
                 }
             }
+        }
+    }
+
+    private fun handleVoicxPanel(action: String, runtime: GatewayRuntime): AdminReply {
+        val home = listOf(
+            listOf(AdminButton("الحالة العامة", "voicx:status"), AdminButton("SIP", "voicx:sip")),
+            listOf(AdminButton("المكالمات", "voicx:calls"), AdminButton("قاعدة البيانات", "voicx:db")),
+            listOf(AdminButton("العملاء", "voicx:customers"), AdminButton("الجدولة", "voicx:schedules")),
+            listOf(AdminButton("تحديث اللوحة", "voicx:home")),
+        )
+        val back = listOf(listOf(AdminButton("رجوع إلى اللوحة الرئيسية", "voicx:home")))
+        return when (action) {
+            "voicx:home" -> AdminReply("لوحة Voicx Control\nاختر القسم المطلوب:", home)
+            "voicx:status" -> {
+                val h = runtime.health.value
+                AdminReply("الحالة العامة\nالبوابة: ${if (h.takeover) "مفعلة" else "متوقفة"}\nSIP: ${if (h.sip.ready) "جاهز" else "غير جاهز"}\nمكالمة نشطة: ${if (h.session != null || h.calls.owned > 0) "نعم" else "لا"}", back)
+            }
+            "voicx:sip" -> {
+                val sip = runtime.health.value.sip
+                AdminReply("حالة SIP\n${if (sip.ready) "جاهز" else "غير جاهز"}\n${sip.detail.take(700)}", back)
+            }
+            "voicx:calls" -> AdminReply("المكالمات\n${runtime.health.value.calls.summary.take(1200)}", back)
+            "voicx:db" -> AdminReply("قاعدة البيانات المحلية SQLite\n${runtime.localDatabaseSummary()}\n\nالأسرار (Telegram/Gemini/SMS) خارج ملف SQLite.", listOf(
+                listOf(AdminButton("قراءة العملاء", "voicx:customers"), AdminButton("قراءة الجدولة", "voicx:schedules")),
+                listOf(AdminButton("رجوع", "voicx:home")),
+            ))
+            "voicx:customers" -> AdminReply("العملاء\n${runtime.localDatabaseCustomers().take(3000)}\n\nللبحث التفصيلي استخدم /customer_search.", listOf(
+                listOf(AdminButton("تحديث", "voicx:customers"), AdminButton("رجوع", "voicx:home")),
+            ))
+            "voicx:schedules" -> AdminReply("الجدولة\n${runtime.localDatabaseSchedules().take(3000)}", listOf(
+                listOf(AdminButton("تحديث", "voicx:schedules"), AdminButton("رجوع", "voicx:home")),
+            ))
+            else -> AdminReply("إجراء غير معروف", home)
         }
     }
 
