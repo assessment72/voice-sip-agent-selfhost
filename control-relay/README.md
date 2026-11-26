@@ -73,3 +73,18 @@ enabling them in production.
 - Android may stop background work due to OEM battery management. A foreground service,
   battery exemption where appropriate, and reboot recovery are separate device-side concerns;
   no software can promise uninterrupted operation on every Android build.
+
+
+## Telegram-controlled MongoDB connection
+
+Set `MONGODB_URI` and `MONGODB_DB_NAME` in the relay host's private `.env` or secret manager.
+Never put the URI in Telegram messages, Android configuration, or Git.
+
+Only allowlisted administrators in private chats can use:
+- `/db_connect` — establish the MongoDB connection and verify it with ping.
+- `/db_status` — report whether the connection is configured and healthy.
+- `/db_test` — perform a read-only ping and list collection names.
+- `/db_disconnect` — close the relay's MongoDB client.
+
+The relay connects only after an explicit `/db_connect` command. The database test does not
+insert, update, or delete records. The connection is closed when the relay shuts down.
