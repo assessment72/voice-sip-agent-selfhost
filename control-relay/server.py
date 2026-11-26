@@ -114,11 +114,13 @@ async def database_connect() -> str:
     async with mongo_lock:
         if mongo_client is not None and mongo_connected:
             return f"قاعدة البيانات متصلة بالفعل: {MONGODB_DB_NAME}"
-        client = AsyncMongoClient(MONGODB_URI, serverSelectionTimeoutMS=5000)
+        client = None
         try:
+            client = AsyncMongoClient(MONGODB_URI, serverSelectionTimeoutMS=5000)
             await client.admin.command("ping")
         except Exception:
-            await client.close()
+            if client is not None:
+                await client.close()
             mongo_client = None
             mongo_connected = False
             log.exception("MongoDB connection check failed")
