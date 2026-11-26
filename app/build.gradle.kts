@@ -54,8 +54,9 @@ android {
     }
     packaging {
         resources.excludes += "META-INF/*.kotlin_module"
-        // MongoDB's driver-core and bson jars both contain this native-image metadata file.
-        resources.excludes += "META-INF/native-image/native-image.properties"
+        // MongoDB's driver-core and bson jars both contain native-image metadata that is not
+        // needed in an Android APK and can contain duplicate paths during resource merging.
+        resources.excludes += "META-INF/native-image/**"
     }
 }
 
