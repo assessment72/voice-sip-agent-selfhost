@@ -20,6 +20,7 @@ from typing import Any
 import httpx
 from dotenv import load_dotenv
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from pymongo import AsyncMongoClient
 
 load_dotenv()
 
@@ -39,6 +40,11 @@ for _device_id, _token in DEVICE_TOKENS.items():
 BIND = os.getenv("RELAY_BIND", "0.0.0.0")
 PORT = int(os.getenv("RELAY_PORT", "8765"))
 TELEGRAM_API = f"https://api.telegram.org/bot{BOT_TOKEN}" if BOT_TOKEN else ""
+MONGODB_URI = os.getenv("MONGODB_URI", "").strip()
+MONGODB_DB_NAME = os.getenv("MONGODB_DB_NAME", "").strip()
+mongo_client: AsyncMongoClient | None = None
+mongo_connected = False
+mongo_lock = asyncio.Lock()
 
 @dataclass
 class Device:
@@ -99,6 +105,61 @@ async def command_device(device_id: str, action: str, admin_id: int) -> str:
     pending[command_id] = (admin_id, device_id, time.time())
     return f"تم إرسال أمر {action} إلى {device_id}. رقم المتابعة: {command_id[:8]}"
 
+
+async def database_connect() -> str:
+    """Connect on explicit admin request; credentials stay in server environment."""
+    global mongo_client, mongo_connected
+    if not MONGODB_URI or not MONGODB_DB_NAME:
+        return "إعداد قاعدة البيانات غير مكتمل. أضف MONGODB_URI وMONGODB_DB_NAME إلى ملف البيئة."
+    async with mongo_lock:
+        if mongo_client is not None and mongo_connected:
+            return f"قاعدة البيانات متصلة بالفعل: {MONGODB_DB_NAME}"
+        client = AsyncMongoClient(MONGODB_URI, serverSelectionTimeoutMS=5000)
+        try:
+            await client.admin.command("ping")
+        except Exception:
+            await client.close()
+            mongo_client = None
+            mongo_connected = False
+            log.exception("MongoDB connection check failed")
+            return "تعذر الاتصال بقاعدة البيانات. راجع إعدادات الاتصال وNetwork Access وسجلات الخادم."
+        mongo_client = client
+        mongo_connected = True
+        return f"تم الاتصال بقاعدة البيانات بنجاح: {MONGODB_DB_NAME}"
+
+async def database_disconnect() -> str:
+    global mongo_client, mongo_connected
+    async with mongo_lock:
+        if mongo_client is not None:
+            await mongo_client.close()
+        mongo_client = None
+        mongo_connected = False
+    return "تم إغلاق اتصال MongoDB من وسيط Telegram."
+
+async def database_status() -> str:
+    if not MONGODB_URI or not MONGODB_DB_NAME:
+        return "قاعدة البيانات غير مهيأة: متغيرات الاتصال غير موجودة."
+    if mongo_client is None or not mongo_connected:
+        return f"قاعدة البيانات مهيأة ولكن الاتصال غير مفعّل: {MONGODB_DB_NAME}"
+    try:
+        await mongo_client.admin.command("ping")
+        return f"اتصال MongoDB يعمل. قاعدة البيانات: {MONGODB_DB_NAME}"
+    except Exception:
+        log.exception("MongoDB status check failed")
+        return "الاتصال مهيأ لكنه غير متاح حالياً. راجع سجلات الخادم."
+
+async def database_test() -> str:
+    if mongo_client is None or not mongo_connected:
+        return "الاتصال غير مفعّل. أرسل /db_connect أولاً."
+    try:
+        await mongo_client.admin.command("ping")
+        names = await mongo_client[MONGODB_DB_NAME].list_collection_names()
+        safe_names = ", ".join(names[:20]) if names else "لا توجد مجموعات بعد"
+        return f"اختبار القراءة ناجح. قاعدة البيانات: {MONGODB_DB_NAME}. المجموعات: {safe_names}"
+    except Exception:
+        log.exception("MongoDB read test failed")
+        return "فشل اختبار القراءة. راجع صلاحيات المستخدم واتصال الشبكة."
+
 async def handle_update(update: dict[str, Any]) -> None:
     admin_id = authorized_admin(update)
     if admin_id is None:
@@ -128,7 +189,7 @@ async def handle_update(update: dict[str, Any]) -> None:
     text = (message.get("text") or "").strip()
     if text == "/start":
         await tg("sendMessage", {"chat_id": admin_id, "text":
-            "Voicx SIP Control متصل. استخدم /devices لعرض الأجهزة، ثم /status DEVICE أو /start_device DEVICE أو /stop_device DEVICE."})
+            "Voicx SIP Control متصل. الأجهزة: /devices، /status DEVICE، /start_device DEVICE، /stop_device DEVICE. قاعدة البيانات: /db_connect، /db_status، /db_test، /db_disconnect."})
     elif text == "/devices":
         if not DEVICE_TOKENS:
             await tg("sendMessage", {"chat_id": admin_id, "text": "لا توجد أجهزة مسجلة في إعدادات الوسيط."})
@@ -142,6 +203,18 @@ async def handle_update(update: dict[str, Any]) -> None:
                 age = int(time.time() - device.last_seen)
                 rows.append([{"text": f"{device_id} · متصل · آخر تحديث {age}s", "callback_data": f"status:{device_id}"}])
         await tg("sendMessage", {"chat_id": admin_id, "text": "الأجهزة المسجلة والمتصلة:", "reply_markup": {"inline_keyboard": rows}})
+    elif text == "/db_connect":
+        result = await database_connect()
+        await tg("sendMessage", {"chat_id": admin_id, "text": result})
+    elif text == "/db_status":
+        result = await database_status()
+        await tg("sendMessage", {"chat_id": admin_id, "text": result})
+    elif text == "/db_test":
+        result = await database_test()
+        await tg("sendMessage", {"chat_id": admin_id, "text": result})
+    elif text == "/db_disconnect":
+        result = await database_disconnect()
+        await tg("sendMessage", {"chat_id": admin_id, "text": result})
     elif text.startswith(("/status ", "/start_device ", "/stop_device ")):
         cmd, _, device_id = text.partition(" ")
         action = {"/status": "status", "/start_device": "gateway_start", "/stop_device": "gateway_stop"}[cmd]
@@ -162,7 +235,7 @@ async def handle_update(update: dict[str, Any]) -> None:
                     {"text": "إلغاء", "callback_data": f"cancel:{nonce}"}
                 ]]}})
     else:
-        await tg("sendMessage", {"chat_id": admin_id, "text": "أمر غير معروف. الأوامر: /devices أو /status DEVICE أو /start_device DEVICE أو /stop_device DEVICE."})
+        await tg("sendMessage", {"chat_id": admin_id, "text": "أمر غير معروف. استخدم /devices أو /status DEVICE أو /start_device DEVICE أو /stop_device DEVICE أو /db_connect أو /db_status أو /db_test أو /db_disconnect."})
 
 async def telegram_poll() -> None:
     global offset
