@@ -496,7 +496,7 @@ class CreateBranch(BaseModel):
 class EnrollmentTokenRequest(BaseModel):
     label: str = Field(min_length=1, max_length=100)
     expiresInSeconds: int = Field(default=3600, ge=60, le=604800)
-    maxUses: int = Field(default=1, ge=1, le=100)
+    maxUses: int = Field(default=100, ge=1, le=100)
 
 
 class DeviceEnrollment(BaseModel):

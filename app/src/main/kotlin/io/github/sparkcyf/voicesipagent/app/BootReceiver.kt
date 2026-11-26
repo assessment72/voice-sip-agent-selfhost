@@ -8,5 +8,6 @@ class BootReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
         AppLog.i("boot/upgrade: ${intent.action}")
         GatewayService.start(context)
+        ControlRelayService.sync(context)
     }
 }

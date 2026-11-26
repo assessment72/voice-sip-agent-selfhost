@@ -542,3 +542,37 @@ def test_new_call_supersedes_previous_call_for_the_organization(tmp_path, monkey
     assert client.get(
         "/v1/device/call-jobs/next?wait=0", headers=auth(second_device["deviceToken"])
     ).json()["job"] is None
+
+
+def test_default_enrollment_token_registers_multiple_devices_in_same_organization(tmp_path, monkeypatch):
+    client = setup_client(tmp_path, monkeypatch)
+    org = create_org(client, "Voicx SIP", "voicx-sip", "owner-1")
+    admin = auth(org["apiToken"], org["organizationId"])
+    issued = client.post(
+        f"/v1/organizations/{org['organizationId']}/enrollment-tokens",
+        json={"label": "Organization device enrollment"},
+        headers=admin,
+    )
+    assert issued.status_code == 201, issued.text
+    payload = issued.json()
+    assert payload["maxUses"] == 100
+
+    enrolled_devices = []
+    for index in range(3):
+        enrolled = client.post(
+            "/v1/device/enroll",
+            json={
+                "enrollmentToken": payload["enrollmentToken"],
+                "externalDeviceId": f"voicx-device-{index + 1}",
+                "displayName": f"Voicx Device {index + 1}",
+            },
+        )
+        assert enrolled.status_code == 201, enrolled.text
+        assert enrolled.json()["organizationId"] == org["organizationId"]
+        assert enrolled.json()["deviceToken"]
+        enrolled_devices.append(enrolled.json()["deviceId"])
+
+    assert len(set(enrolled_devices)) == 3
+    listed = client.get("/v1/admin/devices", headers=admin)
+    assert listed.status_code == 200
+    assert listed.json()["count"] == 3
