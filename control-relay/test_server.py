@@ -1,4 +1,5 @@
 import unittest
+from unittest.mock import patch
 
 import server
 
@@ -52,6 +53,23 @@ class TelegramAuthorizationTests(unittest.TestCase):
             }
         }
         self.assertEqual(server.authorized_admin(update), 424242)
+
+class MongoDBTelegramCommandTests(unittest.IsolatedAsyncioTestCase):
+    async def test_database_status_reports_missing_configuration(self):
+        with patch.object(server, "MONGODB_URI", ""), patch.object(server, "MONGODB_DB_NAME", ""):
+            result = await server.database_status()
+        self.assertIn("غير مهيأة", result)
+
+    async def test_database_test_requires_explicit_connection(self):
+        old_client, old_connected = server.mongo_client, server.mongo_connected
+        try:
+            server.mongo_client = None
+            server.mongo_connected = False
+            result = await server.database_test()
+            self.assertIn("/db_connect", result)
+        finally:
+            server.mongo_client = old_client
+            server.mongo_connected = old_connected
 
 
 if __name__ == "__main__":
