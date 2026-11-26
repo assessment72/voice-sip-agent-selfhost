@@ -34,6 +34,10 @@ interface CallLeg {
     val state: LegState
     val endCause: HangupCause?
 
+    /** Raw protocol/backend code and reason when the remote stack exposes them. */
+    val endCode: Int? get() = null
+    val endReason: String? get() = null
+
     /** Present while audio can flow; announced through [Listener.onMediaChanged]. */
     val media: MediaPort?
 

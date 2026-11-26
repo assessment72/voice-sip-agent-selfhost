@@ -154,7 +154,31 @@ internal class VoicxCustomerRepository(private val store: VoicxFirebaseStore) {
 
     fun campaignCustomerBlocked(id: String?): Boolean = id?.takeIf(String::isNotBlank)?.let { read("campaign_customers", it)?.text("status") in listOf("admin", "opted_out", "paused") } ?: false
     fun latestCampaignCustomer(phone: String): String? = query("campaign_customers") { it.text("phone") == phone.trim() }.maxByOrNull { it.long("createdAt") }?.id
-    fun saveCallReport(report: AiCallReport) { val id = UUID.randomUUID().toString(); save("call_summaries", id, mapOf("phone" to report.number.orEmpty(), "name" to report.name.orEmpty(), "role" to report.role.orEmpty(), "company" to report.company.orEmpty(), "startedAt" to report.startedAt, "endedAt" to report.endedAt, "cause" to report.cause?.name.orEmpty(), "failureDetail" to report.failureDetail.take(500), "inputText" to report.inputText.take(12000), "outputText" to report.outputText.take(12000), "conversationTranscript" to report.conversationTranscript.take(24000), "inputFrames" to report.inputFrames, "outputFrames" to report.outputFrames, "createdAt" to System.currentTimeMillis())); report.number?.let(::findByPhone)?.id?.let { addMemory(it, "نتيجة مكالمة ${report.endedAt}: ${report.cause?.name ?: "NORMAL"}\n${report.conversationTranscript.ifBlank { report.outputText }}", "gemini_call") } }
+    fun saveCallReport(report: AiCallReport, scheduleId: String? = null, campaignCustomerId: String? = null) {
+        val campaignId = campaignCustomerId?.let { read("campaign_customers", it)?.text("campaignId") }
+            ?: scheduleId?.let { read("call_schedules", it)?.text("campaignId") }
+        val id = UUID.randomUUID().toString()
+        save("call_summaries", id, mapOf(
+            "phone" to report.number.orEmpty(), "name" to report.name.orEmpty(), "role" to report.role.orEmpty(),
+            "company" to report.company.orEmpty(), "startedAt" to report.startedAt, "endedAt" to report.endedAt,
+            "callId" to report.callId, "scheduleId" to scheduleId.orEmpty(),
+            "campaignId" to campaignId.orEmpty(), "campaignCustomerId" to campaignCustomerId.orEmpty(),
+            "cause" to report.cause?.name.orEmpty(), "failureDetail" to report.failureDetail.take(500),
+            "inputText" to report.inputText.take(12000), "outputText" to report.outputText.take(12000),
+            "conversationTranscript" to report.conversationTranscript.take(24000),
+            "inputFrames" to report.inputFrames, "outputFrames" to report.outputFrames,
+            "inputAttempts" to report.inputAttempts, "inputSendFailures" to report.inputSendFailures,
+            "outputAudioChunks" to report.outputAudioChunks, "outputAudioBytes" to report.outputAudioBytes,
+            "outputDroppedFrames" to report.outputDroppedFrames, "outputQueuePeak" to report.outputQueuePeak,
+            "firstInputSentAt" to (report.firstInputSentAt ?: 0L), "lastInputSentAt" to (report.lastInputSentAt ?: 0L),
+            "firstOutputAt" to (report.firstOutputAt ?: 0L), "firstOutputQueuedAt" to (report.firstOutputQueuedAt ?: 0L),
+            "firstOutputPlayedAt" to (report.firstOutputPlayedAt ?: 0L), "turnCompleteAt" to (report.turnCompleteAt ?: 0L),
+            "turnResponseCount" to report.turnResponseCount, "lastTurnResponseMs" to (report.lastTurnResponseMs ?: 0L),
+            "averageTurnResponseMs" to (report.averageTurnResponseMs ?: 0L), "turnCount" to report.turnCount,
+            "lastSpeechEndAt" to (report.lastSpeechEndAt ?: 0L), "createdAt" to System.currentTimeMillis(),
+        ))
+        report.number?.let(::findByPhone)?.id?.let { addMemory(it, "نتيجة مكالمة ${report.endedAt}: ${report.cause?.name ?: "NORMAL"}\n${report.conversationTranscript.ifBlank { report.outputText }}", "gemini_call") }
+    }
     fun listSchedules(limit: Int = 20) = query("call_schedules").sortedBy { it.long("runAt") }.take(limit).map(::scheduleFrom)
     fun listSmsSchedules(limit: Int = 20) = query("sms_schedules").sortedBy { it.long("runAt") }.take(limit).map(::smsScheduleFrom)
 

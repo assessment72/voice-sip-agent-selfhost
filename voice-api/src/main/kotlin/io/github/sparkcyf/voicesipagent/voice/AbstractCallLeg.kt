@@ -18,6 +18,17 @@ abstract class AbstractCallLeg(
     @Volatile final override var endCause: HangupCause? = null
         private set
 
+    @Volatile final override var endCode: Int? = null
+        private set
+
+    @Volatile final override var endReason: String? = null
+        private set
+
+    protected fun setEndDetail(code: Int?, reason: String?) {
+        endCode = code
+        endReason = reason?.take(300)
+    }
+
     @Volatile final override var media: MediaPort? = null
         private set
 

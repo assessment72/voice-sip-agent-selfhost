@@ -177,6 +177,7 @@ internal class SipCall(
                 return
             }
         }
+        setEndDetail(r.code, r.reason)
         log.info("call $id failed: ${r.code} ${r.reason}")
         end(SipCodes.toCause(r.code))
         finish()
