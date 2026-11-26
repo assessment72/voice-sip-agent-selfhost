@@ -5,6 +5,7 @@ import com.google.firebase.FirebaseApp
 import com.google.firebase.FirebaseOptions
 import com.google.firebase.firestore.DocumentSnapshot
 import com.google.firebase.firestore.FirebaseFirestore
+import com.google.firebase.firestore.FirebaseFirestoreException
 import com.google.firebase.firestore.Query
 import com.google.firebase.firestore.SetOptions
 import com.google.firebase.firestore.Transaction
@@ -76,6 +77,21 @@ internal class VoicxFirebaseStore(private val context: Context) {
 
     private fun safeError(e: Throwable): String {
         val root = generateSequence(e) { it.cause }.lastOrNull() ?: e
+        if (root is FirebaseFirestoreException) {
+            return when (root.code) {
+                FirebaseFirestoreException.Code.NOT_FOUND ->
+                    "Cloud Firestore غير منشأة في مشروع Firebase؛ أنشئ قاعدة البيانات (default) من Firebase Console"
+                FirebaseFirestoreException.Code.PERMISSION_DENIED ->
+                    "تم رفض الوصول إلى Cloud Firestore؛ راجع Firestore Rules"
+                FirebaseFirestoreException.Code.UNAUTHENTICATED ->
+                    "تعذر توثيق Firebase؛ راجع Project ID وAPI Key وApplication ID"
+                FirebaseFirestoreException.Code.FAILED_PRECONDITION ->
+                    "Cloud Firestore غير مهيأة لهذا المشروع أو تحتاج فهرسًا/إعدادًا إضافيًا"
+                FirebaseFirestoreException.Code.UNAVAILABLE ->
+                    "تعذر الوصول إلى Cloud Firestore؛ تحقق من الإنترنت أو VPN أو Private DNS"
+                else -> "Firebase Firestore ${root.code}: ${root.message.orEmpty().take(180)}".take(240)
+            }
+        }
         return when (root) {
             is IllegalArgumentException -> root.message.orEmpty().take(240)
             else -> "${root.javaClass.simpleName}: ${root.message?.take(180).orEmpty().ifBlank { "connection failed" }}".take(240)
