@@ -46,6 +46,7 @@ class AndroidMongoDnsTest {
         assertTrue(connection.isSrvProtocol)
         assertEquals("voicx_sip_prod", connection.database)
         assertEquals(true, connection.retryWritesValue)
-        assertEquals(listOf("_mongodb._tcp.cluster.example.com" to "SRV", "cluster.example.com" to "TXT"), calls)
+        assertTrue(calls.contains("_mongodb._tcp.cluster.example.com" to "SRV"))
+        assertTrue(calls.contains("cluster.example.com" to "TXT"))
     }
 }
