@@ -104,6 +104,8 @@ class GatewayRuntime private constructor(context: Context) {
     private val _settings = MutableStateFlow(settingsStore.load())
     val settingsFlow: StateFlow<GatewaySettings> = _settings
     val settings: GatewaySettings get() = _settings.value
+    private val mongoStore = VoicxMongoStore()
+    private val customers = VoicxCustomerRepository(mongoStore)
 
     // Service entry points can run before the worker initializes. Use the actual saved switch and
     // role immediately so opening the app or receiving BOOT_COMPLETED cannot flash an idle notification.
@@ -228,6 +230,7 @@ class GatewayRuntime private constructor(context: Context) {
             }
         }
         configureCallAccess()
+        if (settings.mongoEnabled && settings.mongoUri.isNotBlank()) mongoStore.connect(settings.mongoUri, settings.mongoDatabaseName)
         _health.update { it.copy(takeover = settings.takeover) }
         updateReadiness()
         if (!_health.value.takeover) shizuku.stop()
@@ -788,7 +791,8 @@ class GatewayRuntime private constructor(context: Context) {
     fun startAiCall(number: String, name: String, role: String, company: String) = worker.execute {
         require(settings.geminiApiKey.isNotBlank()) { "Gemini API key is not configured" }
         val clean = number.trim(); require(clean.isNotEmpty()) { "phone number is required" }
-        gemini.setContext(GeminiAiEndpoint.CallContext(name.trim(), role.trim(), company.trim()))
+        val instructions = runCatching { customers.instructionFor(clean) }.getOrDefault("")
+        gemini.setContext(GeminiAiEndpoint.CallContext(name.trim(), role.trim(), company.trim(), instructions))
         gemini.startOutbound(cellular, clean, Party(clean, name.trim().ifBlank { null }))
     }
 
@@ -797,6 +801,32 @@ class GatewayRuntime private constructor(context: Context) {
     fun checkAiConnection(callback: (String) -> Unit) = worker.execute {
         gemini.checkConnection(callback)
     }
+
+    fun testMongoConnection(uri: String, databaseName: String, callback: (String) -> Unit) = worker.execute {
+        val result = mongoStore.test(uri.trim(), databaseName.trim())
+        callback(result.fold({ "نجح اختبار الاتصال خلال ${it} ms" }, { mongoStore.lastError.ifBlank { "فشل اختبار الاتصال" } }))
+    }
+    fun saveMongoSettings(uri: String, databaseName: String, enable: Boolean, callback: (String) -> Unit = {}) = worker.execute {
+        val cleanUri = uri.trim(); val cleanDb = databaseName.trim()
+        require(cleanUri.isEmpty() || cleanUri.startsWith("mongodb")) { "MongoDB URI غير صالح" }
+        require(cleanDb.matches(Regex("[A-Za-z0-9_-]{1,64}"))) { "اسم قاعدة البيانات غير صالح" }
+        if (enable) mongoStore.connect(cleanUri, cleanDb).getOrElse { error(mongoStore.lastError.ifBlank { "تعذر الاتصال بقاعدة البيانات" }) } else mongoStore.disconnect()
+        val updated = settings.copy(mongoUri = cleanUri, mongoDatabaseName = cleanDb, mongoEnabled = enable, mongoLastSuccessAt = mongoStore.lastSuccessAt ?: settings.mongoLastSuccessAt)
+        settingsStore.save(updated); _settings.value = updated
+        callback(if (enable) "تم تفعيل اتصال MongoDB" else "تم حفظ الإعدادات دون تفعيل الاتصال")
+    }
+    fun disconnectMongo() = worker.execute { mongoStore.disconnect(); settingsStore.save(settings.copy(mongoEnabled = false).also { _settings.value = it }) }
+    fun mongoStatus(): String = when (mongoStore.state) {
+        MongoState.CONNECTED -> "MongoDB متصل؛ آخر نجاح: ${mongoStore.lastSuccessAt ?: 0L}"
+        MongoState.ERROR -> "MongoDB خطأ: ${mongoStore.lastError}"
+        MongoState.DISCONNECTED -> "MongoDB غير مفعّل"
+    }
+    fun saveCustomer(customer: VoicxCustomer, callback: (String) -> Unit = {}) = worker.execute { callback(runCatching { customers.upsert(customer) }.getOrElse { "خطأ حفظ العميل: ${it.javaClass.simpleName}" }) }
+    fun searchCustomers(query: String, callback: (String) -> Unit) = worker.execute { callback(runCatching { customers.search(query).joinToString("\n") { "${it.id} | ${it.name} | ${it.phone} | ${it.company}" } }.getOrElse { "خطأ البحث: ${it.javaClass.simpleName}" }.ifBlank { "لا توجد نتائج" }) }
+    fun saveCallSchedule(schedule: CallSchedule, callback: (String) -> Unit) = worker.execute { callback(runCatching { customers.saveSchedule(schedule) }.getOrElse { "خطأ جدولة الاتصال: ${it.javaClass.simpleName}" }) }
+    fun listCallSchedules(callback: (String) -> Unit) = worker.execute { callback(runCatching { customers.listSchedules().joinToString("\n") { "${it.id} | ${it.phone} | ${it.runAt} | ${it.status} | ${it.note}" } }.getOrElse { "خطأ قراءة الجدولة: ${it.javaClass.simpleName}" }.ifBlank { "لا توجد مواعيد" }) }
+    fun sendSms(phone: String, message: String, callback: (String) -> Unit) = worker.execute { callback(SmsApiClient(settings.smsApiKey).send(phone, message).fold({ it }, { "فشل SMS: ${it.message ?: it.javaClass.simpleName}" })) }
+    fun updateSmsApiKey(key: String) = worker.execute { settingsStore.save(settings.copy(smsApiKey = key.trim()).also { _settings.value = it }) }
 
     /** Starts an authenticated Telegram-originated SIM call and bridges it to the registered SIP phone. */
     fun startTelegramSimCall(rawNumber: String, notify: (String) -> Unit) = worker.execute {

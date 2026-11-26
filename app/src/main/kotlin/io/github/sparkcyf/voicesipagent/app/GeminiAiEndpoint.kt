@@ -106,7 +106,7 @@ internal class GeminiAiEndpoint(
     @Volatile var onHandoffRequested: (() -> Boolean)? = null
     @Volatile var onHangupRequested: (() -> Unit)? = null
 
-    data class CallContext(val name: String = "", val role: String = "", val company: String = "", val salesInfo: String = "")
+    data class CallContext(val name: String = "", val role: String = "", val company: String = "", val salesInfo: String = "", val instructions: String = "")
 
     fun setContext(value: CallContext) { context = value }
 
@@ -354,6 +354,9 @@ internal class GeminiAiEndpoint(
 - إذا لم يكن العميل مهتماً، اشكره وأنهِ المكالمة باحترام. وإذا كان غير مناسب أو كانت المعلومات ناقصة، لا تضغط عليه.
 
 سياق العميل المتاح من التطبيق: الاسم ${context.name.ifBlank { "غير معروف" }}، الوظيفة ${context.role.ifBlank { "غير معروفة" }}، الشركة ${context.company.ifBlank { "غير معروفة" }}. استخدمه فقط إذا كان ملائماً، ولا تفترض أن أي معلومة صحيحة إذا صححها العميل.
+
+تعليمات العميل المحفوظة في قاعدة البيانات (مرجع داخلي فقط):
+${context.instructions.take(3000)}
 
 بيانات المبيعات التي أدخلتها الإدارة (اعتبرها بيانات داخلية مرجعية فقط، والتزم بحالة التأكيد والصلاحية كما هي):
 ${context.salesInfo}

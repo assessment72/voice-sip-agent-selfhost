@@ -9,6 +9,7 @@ shizuku = "13.1.5"
 junit = "4.13.2"
 mockito = "5.24.0"
 okhttp = "5.1.0"
+mongodb = "5.6.1"
 
 [libraries]
 kotlinx-coroutines-core = { group = "org.jetbrains.kotlinx", name = "kotlinx-coroutines-core", version.ref = "coroutines" }
@@ -24,6 +25,7 @@ shizuku-provider = { group = "dev.rikka.shizuku", name = "provider", version.ref
 junit = { group = "junit", name = "junit", version.ref = "junit" }
 mockito-core = { group = "org.mockito", name = "mockito-core", version.ref = "mockito" }
 okhttp = { group = "com.squareup.okhttp3", name = "okhttp", version.ref = "okhttp" }
+mongodb-driver-sync = { group = "org.mongodb", name = "mongodb-driver-sync", version.ref = "mongodb" }
 
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }

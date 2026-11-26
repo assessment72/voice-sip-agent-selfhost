@@ -304,7 +304,7 @@ class GatewayService : Service() {
                         val reply = try {
                             when (command) {
                                 "/start", "/help" ->
-                                    "Voicx control جاهز. الأوامر:\n/status - حالة البوابة\n/sip - حالة SIP\n/calls - حالة المكالمات\n/simcall <رقم> - اتصال SIM وربطه بـ SIP\n/call رقم | اسم | وظيفة | شركة - اتصال SIM مع Gemini\n/admin - إعدادات أسعار وتغطية الديزل\n/ai_status - اختبار اتصال Gemini Live API\n/ai_errors - آخر تشخيصات Gemini\n/auto_answer_on - الرد الآلي بواسطة Gemini\n/auto_answer_off - إيقاف الرد الآلي\n/ai_stop - إيقاف مكالمة Gemini\n/simcall_cancel - إنهاء الاتصال الجاري\n/account - سجل المكالمات والصوت والبطارية\n/simcall_delete <id> - حذف سجل\n/service_on - تشغيل البوابة\n/service_off - إيقاف التحويل"
+                                    "Voicx control جاهز. الأوامر:\n/status - حالة البوابة\n/sip - حالة SIP\n/calls - حالة المكالمات\n/db_status - حالة MongoDB\n/customer_search <نص> - البحث عن عميل\n/customer_add رقم | اسم | وظيفة | شركة | تعليمات - إضافة عميل\n/schedule_add customerId | رقم | وقت Unix ms | ملاحظة - جدولة اتصال\n/schedule_list - عرض المواعيد\n/sms رقم | رسالة - إرسال SMS\n/simcall <رقم> - اتصال SIM وربطه بـ SIP\n/call رقم | اسم | وظيفة | شركة - اتصال SIM مع Gemini\n/admin - إعدادات أسعار وتغطية الديزل\n/ai_status - اختبار اتصال Gemini Live API\n/ai_errors - آخر تشخيصات Gemini\n/auto_answer_on - الرد الآلي بواسطة Gemini\n/auto_answer_off - إيقاف الرد الآلي\n/ai_stop - إيقاف مكالمة Gemini\n/simcall_cancel - إنهاء الاتصال الجاري\n/account - سجل المكالمات والصوت والبطارية\n/simcall_delete <id> - حذف سجل\n/service_on - تشغيل البوابة\n/service_off - إيقاف التحويل"
                                 "/status" -> {
                                     val h = GatewayRuntime.get(this@GatewayService).health.value
                                     "Gateway: ${if (h.takeover) "ON" else "OFF"}\nSIP: ${if (h.sip.ready) "ready" else "not ready"}\nActive call: ${h.session != null || h.calls.owned > 0}"
@@ -314,6 +314,27 @@ class GatewayService : Service() {
                                     "SIP: ${if (h.sip.ready) "ready" else "not ready"}\n${h.sip.detail.take(500)}"
                                 }
                                 "/calls" -> GatewayRuntime.get(this@GatewayService).health.value.calls.summary.take(1000)
+                                "/db_status" -> runtime.mongoStatus()
+                                "/customer_search" -> {
+                                    if (argument.isBlank()) "الاستخدام: /customer_search <نص>"
+                                    else { runtime.searchCustomers(argument) { result -> scope.launch(Dispatchers.IO) { runCatching { client.sendMessage(update.chatId, result.take(3900)) } } }; "جارٍ البحث عن العملاء وإرسال النتائج." }
+                                }
+                                "/customer_add" -> {
+                                    val fields = argument.split('|').map { it.trim() }
+                                    if (fields.size < 5 || fields[0].isBlank() || fields[1].isBlank()) "الاستخدام: /customer_add رقم | اسم | وظيفة | شركة | تعليمات"
+                                    else { runtime.saveCustomer(VoicxCustomer(phone = fields[0], name = fields[1], role = fields[2], company = fields[3], instructions = fields.drop(4).joinToString(" | "))) { result -> scope.launch(Dispatchers.IO) { runCatching { client.sendMessage(update.chatId, "نتيجة حفظ العميل: $result") } } }; "تم استلام بيانات العميل للحفظ." }
+                                }
+                                "/schedule_add" -> {
+                                    val fields = argument.split('|').map { it.trim() }; val at = fields.getOrNull(2)?.toLongOrNull()
+                                    if (fields.size < 3 || fields[0].isBlank() || fields[1].isBlank() || at == null || at <= System.currentTimeMillis()) "الاستخدام: /schedule_add customerId | رقم | وقت Unix ms | ملاحظة"
+                                    else { runtime.saveCallSchedule(CallSchedule(customerId = fields[0], phone = fields[1], runAt = at, note = fields.getOrElse(3) { "" })) { result -> scope.launch(Dispatchers.IO) { runCatching { client.sendMessage(update.chatId, "نتيجة الجدولة: $result") } } }; "تم استلام موعد الاتصال." }
+                                }
+                                "/schedule_list" -> { runtime.listCallSchedules { result -> scope.launch(Dispatchers.IO) { runCatching { client.sendMessage(update.chatId, result.take(3900)) } } }; "جارٍ تحميل مواعيد الاتصالات." }
+                                "/sms" -> {
+                                    val fields = argument.split('|', limit = 2).map { it.trim() }
+                                    if (fields.size < 2) "الاستخدام: /sms رقم | رسالة"
+                                    else { runtime.sendSms(fields[0], fields[1]) { result -> scope.launch(Dispatchers.IO) { runCatching { client.sendMessage(update.chatId, result) } } }; "تم استلام طلب SMS." }
+                                }
                                 "/simcall" -> {
                                     if (argument.isBlank()) "الاستخدام: /simcall <رقم>"
                                     else {
