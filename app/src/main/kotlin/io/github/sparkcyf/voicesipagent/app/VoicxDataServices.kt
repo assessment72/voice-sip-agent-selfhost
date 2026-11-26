@@ -11,6 +11,8 @@ import com.mongodb.client.model.Filters
 import com.mongodb.client.model.FindOneAndUpdateOptions
 import com.mongodb.client.model.ReturnDocument
 import com.mongodb.client.model.Updates
+import com.mongodb.spi.dns.DnsClient
+import com.mongodb.spi.dns.DnsException
 import org.bson.Document
 import org.bson.BsonRegularExpression
 import org.bson.conversions.Bson
@@ -42,6 +44,7 @@ internal class VoicxMongoStore {
             val started = System.currentTimeMillis()
             val settings = MongoClientSettings.builder()
                 .applyConnectionString(ConnectionString(uri.trim()))
+                .dnsClient(AndroidDnsClient())
                 .applyToClusterSettings { it.serverSelectionTimeout(8, TimeUnit.SECONDS) }
                 .applyToSocketSettings { it.connectTimeout(8, TimeUnit.SECONDS).readTimeout(8, TimeUnit.SECONDS) }
                 .build()
@@ -60,6 +63,7 @@ internal class VoicxMongoStore {
         disconnect()
         val settings = MongoClientSettings.builder()
             .applyConnectionString(ConnectionString(uri.trim()))
+            .dnsClient(AndroidDnsClient())
             .applyToClusterSettings { it.serverSelectionTimeout(8, TimeUnit.SECONDS) }
             .applyToSocketSettings { it.connectTimeout(8, TimeUnit.SECONDS).readTimeout(8, TimeUnit.SECONDS) }
             .build()
@@ -99,10 +103,45 @@ internal class VoicxMongoStore {
         interestedCustomers().createIndex(Document("campaignCustomerId", 1), com.mongodb.client.model.IndexOptions().unique(true))
     }
 
-    private fun safeError(e: Throwable): String = when (e) {
-        is IllegalArgumentException -> e.message.orEmpty().take(240)
-        else -> "${e.javaClass.simpleName}: connection failed".take(240)
+    private fun safeError(e: Throwable): String {
+        val chain = generateSequence(e) { it.cause }.toList()
+        val missingClass = chain.filterIsInstance<NoClassDefFoundError>().firstOrNull()
+        if (missingClass != null) {
+            return "Missing runtime class: ${missingClass.message.orEmpty().replace('/', '.').take(180)}"
+        }
+        val root = chain.lastOrNull() ?: e
+        return when (root) {
+            is IllegalArgumentException -> root.message.orEmpty().take(240)
+            else -> "${root.javaClass.simpleName}: ${root.message?.take(180).orEmpty().ifBlank { "connection failed" }}".take(240)
+        }
     }
+}
+
+/** Android has no JNDI DNS provider, so mongodb+srv needs an explicit DNS client. */
+private class AndroidDnsClient : DnsClient {
+    private val http = OkHttpClient.Builder().callTimeout(8, TimeUnit.SECONDS).build()
+
+    override fun getResourceRecordData(name: String, type: String): List<String> = runCatching {
+        val encodedName = java.net.URLEncoder.encode(name, "UTF-8")
+        val request = Request.Builder()
+            .url("https://dns.google/resolve?name=$encodedName&type=$type")
+            .header("Accept", "application/dns-json")
+            .get().build()
+        http.newCall(request).execute().use { response ->
+            if (!response.isSuccessful) error("DNS HTTPS request failed (${response.code})")
+            val body = response.body?.string().orEmpty()
+            val json = JSONObject(body)
+            val status = json.optInt("Status", 0)
+            if (status != 0) return@use emptyList<String>()
+            val answers = json.optJSONArray("Answer") ?: return@use emptyList<String>()
+            buildList {
+                for (index in 0 until answers.length()) {
+                    val data = answers.optJSONObject(index)?.optString("data").orEmpty()
+                    if (data.isNotBlank()) add(if (type.equals("TXT", true)) data.trim().removeSurrounding("\"") else data)
+                }
+            }
+        }
+    }.getOrElse { throw DnsException("DNS lookup failed for $name ($type)", it) }
 }
 
 enum class MongoState { DISCONNECTED, CONNECTED, ERROR }
