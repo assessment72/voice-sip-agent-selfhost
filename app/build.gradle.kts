@@ -79,7 +79,6 @@ dependencies {
     implementation(libs.androidx.compose.material3)
     implementation(libs.kotlinx.coroutines.android)
     implementation(libs.okhttp)
-    implementation(libs.firebase.firestore)
     testImplementation(libs.junit)
     testImplementation(libs.mockito.core)
     // Use a real JSON implementation in local JVM tests instead of Android's mockable stubs.

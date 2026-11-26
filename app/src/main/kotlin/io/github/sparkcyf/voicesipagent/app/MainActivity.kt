@@ -357,22 +357,10 @@ private fun SettingsSection(rt: GatewayRuntime) {
         }.onFailure { firebaseResult = "فشل استيراد google-services.json دون كشف محتواه." }
     }
 
-    Section(t("إعدادات Firebase / Firestore", "Firebase / Firestore settings")) {
-        Text(t("يستخدم التطبيق Cloud Firestore مباشرة. يمكنك استيراد google-services.json أو إدخال بيانات مشروع Firebase يدويًا.", "The app uses Cloud Firestore directly. Import google-services.json or enter Firebase project values manually."), style = MaterialTheme.typography.bodySmall)
-        Field(t("معرّف المشروع", "Project ID"), firebaseProjectId) { firebaseProjectId = it }
-        OutlinedTextField(value = firebaseApiKey, onValueChange = { firebaseApiKey = it }, label = { Text("Firebase API key") }, visualTransformation = PasswordVisualTransformation(), singleLine = true, modifier = Modifier.fillMaxWidth())
-        Field(t("معرّف التطبيق", "Application ID"), firebaseApplicationId) { firebaseApplicationId = it }
-        Text(if (cur.firebaseProjectId.isBlank()) t("لا توجد إعدادات محفوظة", "No saved Firebase connection") else t("بيانات Firebase محفوظة ومخفية جزئيًا", "Firebase settings are saved"), style = MaterialTheme.typography.bodySmall)
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            OutlinedButton(onClick = { importFirebaseFile.launch(arrayOf("application/json", "text/*")) }) { Text(t("استيراد google-services.json", "Import google-services.json")) }
-            OutlinedButton(onClick = { rt.testFirebaseConnection(firebaseProjectId, firebaseApiKey, firebaseApplicationId) { firebaseResult = it } }, enabled = firebaseProjectId.isNotBlank() && firebaseApiKey.isNotBlank() && firebaseApplicationId.isNotBlank()) { Text(t("اختبار الاتصال", "Test connection")) }
-        }
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            Button(onClick = { rt.saveFirebaseSettings(firebaseProjectId, firebaseApiKey, firebaseApplicationId, true) { firebaseResult = it }; firebaseApiKey = "" }, enabled = firebaseProjectId.isNotBlank() && firebaseApiKey.isNotBlank() && firebaseApplicationId.isNotBlank()) { Text(t("حفظ وتفعيل", "Save & activate")) }
-            OutlinedButton(onClick = { rt.saveFirebaseSettings(firebaseProjectId, firebaseApiKey, firebaseApplicationId, false) { firebaseResult = it }; firebaseApiKey = "" }) { Text(t("حفظ دون تفعيل", "Save without activating")) }
-            OutlinedButton(onClick = { rt.disconnectFirebase(); firebaseResult = "تم قطع اتصال Firebase" }) { Text(t("قطع الاتصال", "Disconnect")) }
-        }
-        Text(rt.firebaseStatus(), style = MaterialTheme.typography.bodySmall)
+    Section(t("قاعدة البيانات المحلية", "Local database")) {
+        Text(t("يستخدم التطبيق SQLite داخل الهاتف. لا يحتاج Firebase أو إنترنت، ويقرأ التطبيق والبوت البيانات نفسها من هذا الجهاز.", "The app uses SQLite on this phone. It does not need Firebase or internet; the app and bot share the same local data."), style = MaterialTheme.typography.bodySmall)
+        Button(onClick = { rt.testLocalDatabase { firebaseResult = it } }) { Text(t("اختبار قاعدة البيانات", "Test local database")) }
+        Text(rt.localDatabaseStatus(), style = MaterialTheme.typography.bodySmall)
         if (firebaseResult.isNotBlank()) Text(firebaseResult, style = MaterialTheme.typography.bodySmall)
         Text(if (cur.smsApiKey.isBlank()) t("لا يوجد مفتاح SMS محفوظ", "No SMS key saved") else t("مفتاح SMS محفوظ ومخفي", "Saved SMS key is hidden"), style = MaterialTheme.typography.bodySmall)
         OutlinedTextField(value = smsApiKey, onValueChange = { smsApiKey = it }, label = { Text("SMS API key") }, visualTransformation = PasswordVisualTransformation(), singleLine = true, modifier = Modifier.fillMaxWidth())

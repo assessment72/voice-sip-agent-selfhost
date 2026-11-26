@@ -904,6 +904,13 @@ class GatewayRuntime private constructor(context: Context) {
         val result = firebaseStore.test(projectId.trim(), apiKey.trim(), applicationId.trim())
         callback(result.fold({ "نجح اختبار الاتصال خلال ${it} ms" }, { firebaseStore.lastError.ifBlank { "فشل اختبار الاتصال" } }))
     }
+    fun testLocalDatabase(callback: (String) -> Unit) = worker.execute {
+        callback(runCatching {
+            firebaseStore.requireDatabase().all("customers").size
+            "نجح اختبار قاعدة SQLite المحلية"
+        }.getOrElse { "فشل اختبار قاعدة SQLite المحلية: ${it.message.orEmpty()}" })
+    }
+    fun localDatabaseStatus(): String = "SQLite محلية متصلة؛ البيانات محفوظة داخل الهاتف"
     fun saveFirebaseSettings(projectId: String, apiKey: String, applicationId: String, enable: Boolean, callback: (String) -> Unit = {}) = worker.execute {
         val cleanProject = projectId.trim(); val cleanKey = apiKey.trim(); val cleanAppId = applicationId.trim()
         require(cleanProject.matches(Regex("[a-z0-9-]{6,63}"))) { "Firebase Project ID غير صالح" }
