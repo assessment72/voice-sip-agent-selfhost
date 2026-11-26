@@ -248,6 +248,12 @@ class GatewayService : Service() {
                         val leaseToken = command.optString("leaseToken")
                         if (commandId.isBlank()) continue
                         if (command.optString("type") == "telegram.update") {
+                            if (!telegramConfigWebhookMode) {
+                                withContext(Dispatchers.IO) {
+                                    client.reportResult(commandId, "failed", error = "telegram_webhook_mode_required", leaseToken = leaseToken)
+                                }
+                                continue
+                            }
                             val telegram = telegramClient
                             val update = telegram?.fromQueuedCommand(command)
                             if (telegram == null || update == null) {
@@ -341,10 +347,11 @@ class GatewayService : Service() {
         }
         telegramCommandJob = scope.launch {
             while (isActive && foreground) {
+                var queued: QueuedTelegramUpdate? = null
                 try {
                     // In Webhook mode the only Telegram input is the authenticated Vercel queue.
                     // In compatibility mode this is the sole getUpdates caller for the bot token.
-                    val queued = if (webhookMode) {
+                    queued = if (webhookMode) {
                         queuedTelegramUpdates.receive()
                     } else {
                         null
@@ -537,6 +544,9 @@ class GatewayService : Service() {
                 } catch (e: CancellationException) {
                     throw e
                 } catch (e: Exception) {
+                    queued?.result?.complete(org.json.JSONObject().put(
+                        "text", "تعذر تنفيذ الأمر على الهاتف؛ سيُعاد تسليمه بأمان دون تكرار التنفيذ.",
+                    ))
                     // A deliberate poll disconnect during service/config shutdown is not
                     // a Telegram outage and must not be reported as an IllegalStateException.
                     if (!isActive || !foreground) break
