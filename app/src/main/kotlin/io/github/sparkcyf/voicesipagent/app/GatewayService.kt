@@ -28,6 +28,9 @@ import kotlinx.coroutines.withContext
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
+import java.time.LocalDateTime
+import java.time.ZoneId
+import java.time.format.DateTimeFormatter
 
 /**
  * Persistent foreground host for the gateway. The service remains alive independently of the
@@ -47,6 +50,10 @@ class GatewayService : Service() {
     private var bridgeHeartbeatJob: Job? = null
     private var bridgeCommandJob: Job? = null
     private var foreground = false
+    private val campaignTimeFormatter = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm")
+    private fun campaignTime(value: String): Long? = runCatching {
+        LocalDateTime.parse(value.trim().replace('T', ' '), campaignTimeFormatter).atZone(ZoneId.systemDefault()).toInstant().toEpochMilli()
+    }.getOrNull()
     private val salesAdmin by lazy { SalesAdminController(SalesAdminStore(this)) }
     // Held while the gateway runs in the foreground, so Doze on an aggressive OEM (ZTE/Nubia,
     // Xiaomi, Transsion…) cannot suspend the SIP reader thread.  Without it the socket backs up
@@ -349,6 +356,40 @@ class GatewayService : Service() {
                                         }
                                         "تم استلام حملة الاتصال وSMS للجدولة."
                                     }
+                                }
+                                "/campaign_start" -> {
+                                    val fields = argument.split('|').map { it.trim() }
+                                    val startAt = fields.getOrNull(1)?.let(::campaignTime)
+                                    val channel = fields.getOrNull(3).orEmpty().ifBlank { "call_sms" }
+                                    if (fields.size < 4 || fields[0].isBlank() || startAt == null || startAt <= System.currentTimeMillis() || channel !in setOf("call", "sms", "call_sms"))
+                                        "الاستخدام: /campaign_start اسم الحملة | 2026-12-01 09:00 | المجموعة أو all | call أو sms أو call_sms | قالب SMS"
+                                    else {
+                                        runtime.createCampaign(Campaign(name = fields[0], startAt = startAt, targetGroup = fields[2], channel = channel, smsTemplate = fields.getOrElse(4) { "" })) { result ->
+                                            scope.launch(Dispatchers.IO) { runCatching { client.sendMessage(update.chatId, "تم إنشاء الحملة: $result") } }
+                                        }
+                                        "تم استلام طلب إنشاء الحملة."
+                                    }
+                                }
+                                "/followup" -> {
+                                    val fields = argument.split('|').map { it.trim() }
+                                    val callAt = fields.getOrNull(1)?.let(::campaignTime); val smsAt = fields.getOrNull(2)?.takeIf { it.isNotBlank() }?.let(::campaignTime)
+                                    if (fields.size < 2 || fields[0].isBlank() || callAt == null || callAt <= System.currentTimeMillis()) "الاستخدام: /followup رقم الهاتف | 2026-12-03 09:00 | 2026-12-02 17:00 | ملاحظة"
+                                    else { runtime.followUp(fields[0], callAt, smsAt, fields.getOrElse(3) { "" }) { result -> scope.launch(Dispatchers.IO) { runCatching { client.sendMessage(update.chatId, result) } } }; "تم استلام قرار المتابعة." }
+                                }
+                                "/mark_interested" -> {
+                                    val fields = argument.split('|', limit = 2).map { it.trim() }
+                                    if (fields.isEmpty() || fields[0].isBlank()) "الاستخدام: /mark_interested رقم الهاتف | ملاحظة الإدارة"
+                                    else { runtime.markInterested(fields[0], fields.getOrElse(1) { "" }) { result -> scope.launch(Dispatchers.IO) { runCatching { client.sendMessage(update.chatId, result) } } }; "تم استلام تحويل العميل للإدارة." }
+                                }
+                                "/pause_customer" -> {
+                                    val fields = argument.split('|', limit = 2).map { it.trim() }
+                                    if (fields.isEmpty() || fields[0].isBlank()) "الاستخدام: /pause_customer رقم الهاتف | السبب"
+                                    else { runtime.pauseCustomer(fields[0], fields.getOrElse(1) { "" }) { result -> scope.launch(Dispatchers.IO) { runCatching { client.sendMessage(update.chatId, result) } } }; "تم استلام طلب الإيقاف." }
+                                }
+                                "/resume_customer" -> {
+                                    val fields = argument.split('|').map { it.trim() }; val callAt = fields.getOrNull(1)?.let(::campaignTime); val smsAt = fields.getOrNull(2)?.takeIf { it.isNotBlank() }?.let(::campaignTime)
+                                    if (fields.size < 2 || fields[0].isBlank() || callAt == null || callAt <= System.currentTimeMillis()) "الاستخدام: /resume_customer رقم الهاتف | 2026-12-03 09:00 | 2026-12-02 17:00 | ملاحظة"
+                                    else { runtime.resumeCustomer(fields[0], callAt, smsAt, fields.getOrElse(3) { "" }) { result -> scope.launch(Dispatchers.IO) { runCatching { client.sendMessage(update.chatId, result) } } }; "تم استلام طلب الاستئناف." }
                                 }
                                 "/sms" -> {
                                     val fields = argument.split('|', limit = 2).map { it.trim() }

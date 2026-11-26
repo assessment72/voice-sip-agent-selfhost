@@ -136,6 +136,19 @@ class GatewayRuntime private constructor(context: Context) {
                 if (mongoStore.state == MongoState.CONNECTED) {
                     runCatching { customers.saveCallReport(report) }
                         .onFailure { AppLog.w("could not save Gemini call report", it) }
+                    scheduledCampaignCustomerId?.let { ccId ->
+                        val text = (report.conversationTranscript + "\n" + report.outputText + "\n" + report.failureDetail).lowercase()
+                        val outcome = when {
+                            listOf("stop", "unsubscribe", "لا تتصل", "لا أرغب", "إلغاء").any(text::contains) -> "opted_out"
+                            listOf("مهتم", "interested", "الإدارة", "manager", "sales").any(text::contains) -> "interested"
+                            else -> "follow_up"
+                        }
+                        runCatching {
+                            customers.setCampaignDecision(ccId, outcome, "نتيجة المكالمة: ${report.cause?.name.orEmpty()}")
+                            customers.advanceCampaign(ccId)
+                        }.onFailure { AppLog.w("could not advance campaign after call", it) }
+                        scheduledCampaignCustomerId = null
+                    }
                     scheduledCallId?.let { id ->
                         runCatching { customers.updateScheduleStatus(id, "completed") }
                             .onFailure { AppLog.w("could not complete scheduled call $id", it) }
@@ -154,6 +167,8 @@ class GatewayRuntime private constructor(context: Context) {
     private var telegramSimCall: TelegramSimCall? = null
     @Volatile
     private var scheduledCallId: String? = null
+    @Volatile
+    private var scheduledCampaignCustomerId: String? = null
     private var started = false
     private var pendingSettings: GatewaySettings? = null
     private var restartPending = false
@@ -828,6 +843,10 @@ class GatewayRuntime private constructor(context: Context) {
                 AppLog.w("could not claim scheduled call", it)
                 return
             } ?: return
+            if (customers.campaignCustomerBlocked(schedule.campaignCustomerId)) {
+                customers.updateScheduleStatus(schedule.id.orEmpty(), "cancelled", "campaign customer is blocked")
+                return@repeat
+            }
             if (hasActiveWork()) {
                 customers.updateScheduleStatus(schedule.id.orEmpty(), "failed", "gateway busy")
                 AppLog.w("scheduled call ${schedule.id} skipped because gateway is busy")
@@ -841,6 +860,7 @@ class GatewayRuntime private constructor(context: Context) {
                     instructions = customer?.instructions.orEmpty(), memories = customers.memoriesFor(schedule.phone),
                 ))
                 scheduledCallId = schedule.id
+                scheduledCampaignCustomerId = schedule.campaignCustomerId
                 gemini.startOutbound(cellular, schedule.phone, Party(schedule.phone, customer?.name?.ifBlank { null }))
                 customers.updateScheduleStatus(schedule.id.orEmpty(), "running")
                 AppLog.i("scheduled Gemini call started: ${schedule.id}")
@@ -859,6 +879,10 @@ class GatewayRuntime private constructor(context: Context) {
                 AppLog.w("could not claim scheduled SMS", it)
                 return
             } ?: return
+            if (customers.campaignCustomerBlocked(schedule.campaignCustomerId)) {
+                customers.updateSmsScheduleStatus(schedule.id.orEmpty(), "cancelled", "campaign customer is blocked")
+                return@repeat
+            }
             try {
                 SmsApiClient(settings.smsApiKey).send(schedule.phone, schedule.message).getOrThrow()
                 customers.updateSmsScheduleStatus(schedule.id.orEmpty(), "sent")
@@ -896,6 +920,25 @@ class GatewayRuntime private constructor(context: Context) {
         MongoState.DISCONNECTED -> "MongoDB غير مفعّل"
     }
     fun saveCustomer(customer: VoicxCustomer, callback: (String) -> Unit = {}) = worker.execute { callback(runCatching { customers.upsert(customer) }.getOrElse { "خطأ حفظ العميل: ${it.javaClass.simpleName}" }) }
+    fun createCampaign(campaign: Campaign, callback: (String) -> Unit = {}) = worker.execute {
+        callback(runCatching { customers.createCampaign(campaign) }.getOrElse { "خطأ إنشاء الحملة: ${it.javaClass.simpleName}" })
+    }
+    fun followUp(phone: String, nextCallAt: Long?, nextSmsAt: Long?, note: String, callback: (String) -> Unit = {}) = worker.execute {
+        val cc = customers.latestCampaignCustomer(phone)
+        callback(if (cc == null) "لم أعثر على عضوية حملة لهذا الرقم." else if (customers.scheduleFollowUp(cc, nextCallAt, nextSmsAt, note)) "تم حفظ متابعة العميل." else "تعذر حفظ المتابعة؛ قد يكون العميل في الإدارة أو ألغى الاشتراك.")
+    }
+    fun markInterested(phone: String, note: String, callback: (String) -> Unit = {}) = worker.execute {
+        val cc = customers.latestCampaignCustomer(phone)
+        if (cc == null) callback("لم أعثر على عضوية حملة لهذا الرقم.") else { customers.setCampaignDecision(cc, "interested", note); callback("تم تحويل العميل إلى مجموعة المهتمين وإيقاف تذكيراته.") }
+    }
+    fun pauseCustomer(phone: String, reason: String, callback: (String) -> Unit = {}) = worker.execute {
+        val cc = customers.latestCampaignCustomer(phone)
+        if (cc == null) callback("لم أعثر على عضوية حملة لهذا الرقم.") else { customers.setCampaignDecision(cc, "paused", reason); callback("تم إيقاف تذكيرات العميل.") }
+    }
+    fun resumeCustomer(phone: String, callAt: Long, smsAt: Long?, note: String, callback: (String) -> Unit = {}) = worker.execute {
+        val cc = customers.latestCampaignCustomer(phone)
+        callback(if (cc == null) "لم أعثر على عضوية حملة لهذا الرقم." else if (customers.scheduleFollowUp(cc, callAt, smsAt, note)) "تم استئناف العميل بموعد صريح." else "تعذر استئناف العميل.")
+    }
     fun searchCustomers(query: String, callback: (String) -> Unit) = worker.execute { callback(runCatching { customers.search(query).joinToString("\n") { "${it.id} | ${it.name} | ${it.phone} | ${it.company}" } }.getOrElse { "خطأ البحث: ${it.javaClass.simpleName}" }.ifBlank { "لا توجد نتائج" }) }
     fun saveCallSchedule(schedule: CallSchedule, callback: (String) -> Unit) = worker.execute { callback(runCatching { customers.saveSchedule(schedule) }.getOrElse { "خطأ جدولة الاتصال: ${it.javaClass.simpleName}" }) }
     fun listCallSchedules(callback: (String) -> Unit) = worker.execute { callback(runCatching { customers.listSchedules().joinToString("\n") { "${it.id} | ${it.phone} | ${it.runAt} | ${it.status} | ${it.note}" } }.getOrElse { "خطأ قراءة الجدولة: ${it.javaClass.simpleName}" }.ifBlank { "لا توجد مواعيد" }) }
