@@ -1,6 +1,7 @@
 package io.github.sparkcyf.voicesipagent.app
 
 import com.mongodb.ConnectionString
+import com.mongodb.internal.dns.DefaultDnsResolver
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -46,6 +47,8 @@ class AndroidMongoDnsTest {
         assertTrue(connection.isSrvProtocol)
         assertEquals("voicx_sip_prod", connection.database)
         assertEquals(true, connection.retryWritesValue)
+        val resolvedHosts = DefaultDnsResolver(dns).resolveHostFromSrvRecords("cluster.example.com", "mongodb")
+        assertEquals(listOf("shard-00-00.cluster.example.com:27017"), resolvedHosts)
         assertTrue(calls.contains("_mongodb._tcp.cluster.example.com" to "SRV"))
         assertTrue(calls.contains("cluster.example.com" to "TXT"))
     }
