@@ -644,8 +644,13 @@ ${context.salesInfo}
             override fun setClockListener(listener: FrameClockListener?) {}
             @Synchronized override fun readFrame(): ShortArray {
                 if (playbackFrame == null) playbackFrame = output.poll()
-                if (playbackFrame == null) return format.silence()
                 if (playbackNextFrame == null) playbackNextFrame = output.poll()
+                while (playbackPosition >= frameSamples && playbackNextFrame != null) {
+                    playbackPosition -= frameSamples
+                    playbackFrame = playbackNextFrame
+                    playbackNextFrame = output.poll()
+                }
+                if (playbackFrame == null) return format.silence()
                 val result = ShortArray(frameSamples)
                 val rate = speechRate().coerceIn(0.80f, 1.25f).toDouble()
                 for (i in result.indices) {
