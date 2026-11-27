@@ -374,6 +374,12 @@ class GatewayRuntime private constructor(context: Context) {
 
     private fun periodicCheck() {
         if (healthCheck == null) return
+        // Keep a long-running scheduled customer conversation leased so another recovery
+        // worker cannot mistake it for an abandoned call and dial the same customer again.
+        scheduledCallId?.let { id ->
+            runCatching { customers.renewCallScheduleLease(id) }
+                .onFailure { AppLog.w("could not renew scheduled call lease $id", it) }
+        }
         refreshRoleState()
         val svc = shizuku.service ?: return updateReadiness()
         try {
