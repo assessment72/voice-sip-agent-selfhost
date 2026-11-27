@@ -333,3 +333,11 @@
 - `ce476cbd`: تحويل `GatewayRuntime.resolveScheduleReconciliation` إلى `internal` لأن وسيطها يستخدم النوع الداخلي `ScheduleReconciliationPolicy.Decision`. هذا إصلاح لمستوى الإتاحة فقط ولا يغير منطق المصالحة أو المعاملة أو الواجهة.
 - سبب الفشل مثبت من سجل GitHub Actions للالتزام السابق: `EXPOSED_PARAMETER_TYPE` في `GatewayRuntime.kt:1023`. كانت اختبارات JVM وControl Bridge ناجحة، بينما فشل Android unit tests وبناء APK عند تجميع Kotlin.
 - بانتظار تشغيل CI على الالتزام `ce476cbd`؛ لا يُعلن نجاح البناء قبل ظهور النتيجة النهائية.
+
+## 2026-11-27 — Scheduled-call instruction context
+- Updated `GatewayRuntime.runDueSchedules` so each scheduled Gemini call receives both the customer's persistent instructions and the schedule's own `note`.
+- The per-schedule text is explicitly labeled as applying only to that call; persistent customer instructions remain present and are not overwritten.
+- No call/SMS was initiated by this change. No SMS provider, endpoint, file path, storage schema, or scheduling timestamp behavior was changed.
+- Commit: `83abc24ca63377ca1fda13140c1ddc0dc7e5243b`.
+- Remaining scheduling UI gap: Telegram still accepts date/time as typed text in `YYYY-MM-DD HH:mm`; a touch-based calendar/time picker has not been implemented or verified. The app's current UI does not expose an existing scheduling form to attach a native picker to, so this requires a deliberate UI/interaction design rather than changing the current Telegram text flow implicitly.
+- Verification status: pending CI for this commit and a device test proving the merged instructions reach Gemini Live. Do not describe this stage as production-ready until both are verified.
