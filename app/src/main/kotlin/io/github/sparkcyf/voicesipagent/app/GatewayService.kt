@@ -829,7 +829,7 @@ class GatewayService : Service() {
             .chunked(4).map { row -> row }
         return AdminReply(
             listOf(message, "التاريخ: $date\nاختر الوقت (بتوقيت الهاتف المحلي).").filter { it.isNotBlank() }.joinToString("\n"),
-            timeButtons + listOf(listOf(AdminButton("إلغاء", "voicx:cancel_flow"), AdminButton("إلغاء", "voicx:cancel_flow"))),
+            timeButtons + listOf(listOf(AdminButton("إلغاء", "voicx:cancel_flow"))),
         )
     }
 
