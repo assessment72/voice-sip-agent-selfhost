@@ -36,12 +36,14 @@ import androidx.compose.material3.SegmentedButton
 import androidx.compose.material3.SegmentedButtonDefaults
 import androidx.compose.material3.SingleChoiceSegmentedButtonRow
 import androidx.compose.material3.Switch
+import androidx.compose.material3.Slider
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -333,6 +335,10 @@ private fun SettingsSection(rt: GatewayRuntime) {
     var telegramBotToken by remember(cur) { mutableStateOf(cur.telegramBotToken) }
     var telegramAllowedUserId by remember(cur) { mutableStateOf(if (cur.telegramAllowedUserId > 0) cur.telegramAllowedUserId.toString() else "") }
     var geminiApiKey by remember(cur) { mutableStateOf(cur.geminiApiKey) }
+    var geminiSpeechRate by remember(cur) { mutableStateOf(cur.geminiSpeechRate) }
+    var firstCallInstruction by remember { mutableStateOf("") }
+    var reminderCallInstruction by remember { mutableStateOf("") }
+    var busyCallInstruction by remember { mutableStateOf("") }
     var firebaseProjectId by remember(cur) { mutableStateOf(cur.firebaseProjectId) }
     var firebaseApiKey by remember { mutableStateOf("") }
     var firebaseApplicationId by remember(cur) { mutableStateOf(cur.firebaseApplicationId) }
@@ -341,6 +347,13 @@ private fun SettingsSection(rt: GatewayRuntime) {
     var telegramTestRunning by remember { mutableStateOf(false) }
     var telegramTestResult by remember { mutableStateOf("") }
     val telegramScope = rememberCoroutineScope()
+    LaunchedEffect(rt) {
+        rt.loadCallInstructionTemplates { templates ->
+            firstCallInstruction = templates["first"].orEmpty()
+            reminderCallInstruction = templates["reminder"].orEmpty()
+            busyCallInstruction = templates["busy_retry"].orEmpty()
+        }
+    }
     val context = LocalContext.current
     val exportSipJson = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/json")) { uri ->
         if (uri != null) runCatching {
@@ -481,7 +494,27 @@ private fun SettingsSection(rt: GatewayRuntime) {
             Text(t("حفظ اتصال Telegram", "Save Telegram connection"))
         }
         OutlinedTextField(value = geminiApiKey, onValueChange = { geminiApiKey = it }, label = { Text(t("مفتاح Gemini API", "Gemini API key")) }, visualTransformation = PasswordVisualTransformation(), singleLine = true, modifier = Modifier.fillMaxWidth())
-        Button(onClick = { rt.updateGeminiSettings(geminiApiKey) }) { Text(t("حفظ إعداد Gemini", "Save Gemini settings")) }
+        Text(t("سرعة صوت Gemini: ${String.format(java.util.Locale.US, "%.2f", geminiSpeechRate)}×", "Gemini speech rate: ${String.format(java.util.Locale.US, "%.2f", geminiSpeechRate)}×"))
+        Slider(value = geminiSpeechRate, onValueChange = { geminiSpeechRate = it },
+            valueRange = 0.80f..1.25f, steps = 8)
+        Text(t("البطء أو السرعة يطبّقان محلياً على صوت المكالمة؛ قد تتغير حدة الصوت قليلاً.", "Playback speed is adjusted locally; voice pitch may change slightly."),
+            style = MaterialTheme.typography.bodySmall)
+        Button(onClick = { rt.updateGeminiSettings(geminiApiKey, speechRate = geminiSpeechRate) }) {
+            Text(t("حفظ إعداد Gemini وسرعة الصوت", "Save Gemini and speech rate"))
+        }
+        Section(t("نماذج تعليمات مكالمات المبيعات", "Sales call instruction templates")) {
+            Text(t("تُحفظ النماذج في قاعدة SQLite، ويستخدمها Gemini مع ملاحظات العميل والرسائل وسجل مكالماته السابقة.", "Templates are stored in SQLite and combined with customer notes, messages, and previous call history."),
+                style = MaterialTheme.typography.bodySmall)
+            OutlinedTextField(value = firstCallInstruction, onValueChange = { firstCallInstruction = it },
+                label = { Text(t("الاتصال الأول", "First call")) }, minLines = 3, modifier = Modifier.fillMaxWidth())
+            Button(onClick = { rt.saveCallInstructionTemplate("first", firstCallInstruction) }) { Text(t("حفظ تعليمات الاتصال الأول", "Save first-call instructions")) }
+            OutlinedTextField(value = reminderCallInstruction, onValueChange = { reminderCallInstruction = it },
+                label = { Text(t("متابعة بعد أسبوع", "One-week reminder")) }, minLines = 3, modifier = Modifier.fillMaxWidth())
+            Button(onClick = { rt.saveCallInstructionTemplate("reminder", reminderCallInstruction) }) { Text(t("حفظ تعليمات التذكير", "Save reminder instructions")) }
+            OutlinedTextField(value = busyCallInstruction, onValueChange = { busyCallInstruction = it },
+                label = { Text(t("إعادة الاتصال بعد الانشغال", "Busy retry")) }, minLines = 3, modifier = Modifier.fillMaxWidth())
+            Button(onClick = { rt.saveCallInstructionTemplate("busy_retry", busyCallInstruction) }) { Text(t("حفظ تعليمات إعادة الاتصال", "Save busy-retry instructions")) }
+        }
         Toggle(t("الرد الآلي بواسطة Gemini", "Gemini auto-answer"), cur.aiAutoAnswer, { rt.setAiAutoAnswer(it) }, detail = { t("يجيب Gemini على المكالمات الواردة.", "Gemini answers incoming calls.") })
         OutlinedButton(
             enabled = !telegramTestRunning && telegramBotToken.isNotBlank(),
