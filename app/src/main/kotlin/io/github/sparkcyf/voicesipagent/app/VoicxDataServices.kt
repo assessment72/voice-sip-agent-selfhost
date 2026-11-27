@@ -285,6 +285,25 @@ internal class VoicxCustomerRepository(private val store: VoicxFirebaseStore) {
         }
     }
 
+    /** Persist every successful outbound SMS so future calls can use the exact conversation history. */
+    fun recordOutgoingSms(rawPhone: String, body: String, sentAt: Long = System.currentTimeMillis(), scheduleId: String = ""): Boolean {
+        if (body.isBlank()) return false
+        val phone = runCatching { PhoneNumberNormalizer.normalizeYemen(rawPhone) }.getOrNull() ?: return false
+        val customer = findByPhone(phone) ?: return false
+        val stable = "outbound|$phone|$sentAt|$body|$scheduleId"
+        val messageId = java.security.MessageDigest.getInstance("SHA-256")
+            .digest(stable.toByteArray(Charsets.UTF_8)).joinToString("") { "%02x".format(it) }
+        return db.transaction {
+            if (read("customer_messages", messageId) != null) return@transaction false
+            save("customer_messages", messageId, mapOf(
+                "customerId" to customer.id.orEmpty(), "phone" to phone,
+                "direction" to "outbound", "channel" to "sms", "body" to body.take(4000),
+                "scheduleId" to scheduleId, "sentAt" to sentAt, "createdAt" to sentAt,
+            ))
+            true
+        }
+    }
+
     fun customerSmsRepliesSince(customerId: String, since: Long): List<LocalDocument> =
         query("customer_messages") {
             it.text("customerId") == customerId && it.text("direction") == "inbound" &&
