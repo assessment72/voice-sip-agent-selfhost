@@ -90,4 +90,9 @@ class VoicxDataServicesPolicyTest {
             SalesCallDispositionPolicy.classify("", io.github.sparkcyf.voicesipagent.voice.HangupCause.NETWORK_ERROR))
     }
 
+    @Test fun explicitNotInterestedResponseDoesNotCreateAnotherCall() {
+        assertEquals(SalesCallDisposition.NOT_INTERESTED,
+            SalesCallDispositionPolicy.classify("شكراً، نحن غير مهتمين حالياً", io.github.sparkcyf.voicesipagent.voice.HangupCause.NORMAL))
+    }
+
 }
