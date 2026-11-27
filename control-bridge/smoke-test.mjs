@@ -84,13 +84,32 @@ try {
   assert.equal(r.status, 200);
   assert.equal((await r.json()).contacts.length, 1);
 
+  const smsRequest = { contactId: contact.id, message: "Hello", idempotencyKey: "crm-sms-smoke-1" };
   r = await request("/api/v1/crm/sms", admin, {
-    method: "POST", body: JSON.stringify({ contactId: contact.id, message: "Hello" })
+    method: "POST", body: JSON.stringify(smsRequest), headers: { "idempotency-key": "crm-sms-smoke-1" }
   });
   assert.equal(r.status, 202, "SMS should be queued, not falsely reported as sent");
   const sms = await r.json();
   assert.equal(sms.job.status, "queued");
   assert.equal(sms.job.provider, "not_configured");
+
+  r = await request("/api/v1/crm/sms", admin, {
+    method: "POST", body: JSON.stringify(smsRequest), headers: { "idempotency-key": "crm-sms-smoke-1" }
+  });
+  assert.equal(r.status, 200, "replayed idempotency key must return the original job");
+  const duplicateSms = await r.json();
+  assert.equal(duplicateSms.deduplicated, true);
+  assert.equal(duplicateSms.job.id, sms.job.id);
+
+  r = await request("/api/v1/crm/contacts/" + contact.id, admin, {
+    method: "PATCH", body: JSON.stringify({ optedOut: true })
+  });
+  assert.equal(r.status, 200, "contact opt-out update");
+
+  r = await request("/api/v1/crm/sms", admin, {
+    method: "POST", body: JSON.stringify({ phone: contact.phone, message: "Do not send" })
+  });
+  assert.equal(r.status, 409, "direct-phone sends must respect a matching CRM opt-out");
 
   r = await request("/api/v1/crm/tasks", admin, {
     method: "POST", body: JSON.stringify({ title: "Follow up", dueAt: new Date().toISOString(), status: "open" })
