@@ -644,16 +644,17 @@ ${context.salesInfo}
             override fun setClockListener(listener: FrameClockListener?) {}
             @Synchronized override fun readFrame(): ShortArray {
                 if (playbackFrame == null) playbackFrame = output.poll()
-                val current = playbackFrame ?: return format.silence()
+                if (playbackFrame == null) return format.silence()
                 if (playbackNextFrame == null) playbackNextFrame = output.poll()
                 val result = ShortArray(frameSamples)
                 val rate = speechRate().coerceIn(0.80f, 1.25f).toDouble()
                 for (i in result.indices) {
+                    val activeFrame = playbackFrame ?: break
                     val position = playbackPosition
                     val index = position.toInt().coerceIn(0, frameSamples - 1)
                     val fraction = (position - index).coerceIn(0.0, 1.0)
-                    val a = current[index].toInt()
-                    val b = if (index + 1 < frameSamples) current[index + 1].toInt()
+                    val a = activeFrame[index].toInt()
+                    val b = if (index + 1 < frameSamples) activeFrame[index + 1].toInt()
                         else playbackNextFrame?.get(0)?.toInt() ?: a
                     result[i] = (a + (b - a) * fraction).roundToInt()
                         .coerceIn(Short.MIN_VALUE.toInt(), Short.MAX_VALUE.toInt()).toShort()
