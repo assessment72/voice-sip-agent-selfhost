@@ -190,7 +190,6 @@ class GatewayRuntime private constructor(context: Context) {
                         .onFailure { AppLog.w("could not complete scheduled call $id", it) }
                 }
             }
-        }
         },
     )
     @Volatile var onAiReport: ((List<String>) -> Unit)? = null
