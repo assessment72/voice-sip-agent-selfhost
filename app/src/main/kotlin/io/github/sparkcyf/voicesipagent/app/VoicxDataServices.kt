@@ -198,6 +198,28 @@ data class ScheduleReconciliationItem(
 
 private fun idOrNew(id: String?) = id?.takeIf { it.isNotBlank() } ?: UUID.randomUUID().toString()
 
+internal enum class SalesCallDisposition { QUOTE_REQUEST, OPTED_OUT, BUSY_OR_UNAVAILABLE, REMINDER, NO_FOLLOW_UP }
+
+internal object SalesCallDispositionPolicy {
+    fun classify(customerSpeech: String, cause: io.github.sparkcyf.voicesipagent.voice.HangupCause?): SalesCallDisposition {
+        val text = customerSpeech.lowercase().replace(Regex("\\s+"), " ")
+        if (listOf("لا تتصل", "لا ترسل", "لا تتواصل", "وقف الاتصال", "أوقف الاتصال", "unsubscribe", "stop").any(text::contains)) {
+            return SalesCallDisposition.OPTED_OUT
+        }
+        if (listOf("عرض سعر", "عرض أسعار", "عرض اسعار", "أرسل عرض", "ارسل عرض", "جهز عرض", "تسعيرة", "quotation", "quote", "price quote").any(text::contains)) {
+            return SalesCallDisposition.QUOTE_REQUEST
+        }
+        if (cause in setOf(io.github.sparkcyf.voicesipagent.voice.HangupCause.BUSY,
+                io.github.sparkcyf.voicesipagent.voice.HangupCause.NO_ANSWER,
+                io.github.sparkcyf.voicesipagent.voice.HangupCause.UNAVAILABLE) ||
+            listOf("مشغول", "اتصل بعد", "وقت ثاني", "وقت اخر", "لاحقاً", "لاحقا", "الآن ما اقدر", "الآن ما أقدر", "busy", "call later").any(text::contains)) {
+            return SalesCallDisposition.BUSY_OR_UNAVAILABLE
+        }
+        if (cause == io.github.sparkcyf.voicesipagent.voice.HangupCause.NORMAL) return SalesCallDisposition.REMINDER
+        return SalesCallDisposition.NO_FOLLOW_UP
+    }
+}
+
 internal class VoicxCustomerRepository(private val store: VoicxFirebaseStore) {
     private val db get() = store.requireDatabase()
     private fun save(name: String, id: String, data: Map<String, Any?>) = db.patch(name, id, data)
@@ -425,6 +447,22 @@ internal class VoicxCustomerRepository(private val store: VoicxFirebaseStore) {
             calls.takeIf(String::isNotBlank)?.let { appendLine("سجل المكالمات السابقة:\\n$it") }
         }.take(8000)
     }
+
+    fun suppressCustomerPhone(phone: String, reason: String = "opted_out") = db.transaction {
+        val normalized = PhoneNumberNormalizer.normalizeYemen(phone)
+        suppressPhone(normalized, reason)
+        query("call_schedules") { it.text("phone") == normalized && it.text("status") in listOf("pending", "running") }
+            .forEach { save("call_schedules", it.id, mapOf("status" to "cancelled", "error" to reason)) }
+        query("sms_schedules") { it.text("phone") == normalized && it.text("status") in listOf("queued", "pending", "running") }
+            .forEach { save("sms_schedules", it.id, mapOf("status" to "cancelled", "error" to reason)) }
+        query("customer_sms_sequences") { it.text("phone") == normalized && it.text("status") !in listOf("completed", "opted_out") }
+            .forEach { save("customer_sms_sequences", it.id, mapOf("status" to "opted_out", "updatedAt" to System.currentTimeMillis())) }
+    }
+
+    fun salesAdminLeadsReport(limit: Int = 20): String = query("sales_admin_leads") { it.text("status") == "pending" }
+        .sortedByDescending { it.long("createdAt") }.take(limit.coerceIn(1, 50)).joinToString("\\n\\n") {
+            "طلب عرض سعر | ${it.text("name")} | ${it.text("company")} | ${it.text("phone")}\\nالطلب: ${it.text("customerRequest").take(700)}"
+        }.ifBlank { "لا توجد طلبات عروض أسعار معلقة للإدارة." }
 
     fun scheduleAutomaticFollowUp(customer: VoicxCustomer, runAt: Long, stage: String, reason: String, callId: String): String {
         require(stage in setOf("reminder", "busy_retry"))
