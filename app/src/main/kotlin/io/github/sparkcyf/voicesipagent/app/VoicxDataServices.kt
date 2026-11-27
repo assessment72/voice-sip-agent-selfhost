@@ -198,7 +198,7 @@ data class ScheduleReconciliationItem(
 
 private fun idOrNew(id: String?) = id?.takeIf { it.isNotBlank() } ?: UUID.randomUUID().toString()
 
-internal enum class SalesCallDisposition { QUOTE_REQUEST, OPTED_OUT, BUSY_OR_UNAVAILABLE, REMINDER, NO_FOLLOW_UP }
+internal enum class SalesCallDisposition { QUOTE_REQUEST, OPTED_OUT, NOT_INTERESTED, BUSY_OR_UNAVAILABLE, REMINDER, NO_FOLLOW_UP }
 
 internal object SalesCallDispositionPolicy {
     fun classify(customerSpeech: String, cause: io.github.sparkcyf.voicesipagent.voice.HangupCause?): SalesCallDisposition {
@@ -208,6 +208,9 @@ internal object SalesCallDispositionPolicy {
         }
         if (listOf("عرض سعر", "عرض أسعار", "عرض اسعار", "أرسل عرض", "ارسل عرض", "جهز عرض", "تسعيرة", "quotation", "quote", "price quote").any(text::contains)) {
             return SalesCallDisposition.QUOTE_REQUEST
+        }
+        if (listOf("غير مهتم", "ما أنا مهتم", "ما نحتاج", "لا نحتاج", "لا أرغب", "ما عندنا احتياج", "not interested").any(text::contains)) {
+            return SalesCallDisposition.NOT_INTERESTED
         }
         if (cause in setOf(io.github.sparkcyf.voicesipagent.voice.HangupCause.BUSY,
                 io.github.sparkcyf.voicesipagent.voice.HangupCause.NO_ANSWER,
