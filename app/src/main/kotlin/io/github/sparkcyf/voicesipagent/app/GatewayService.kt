@@ -747,7 +747,7 @@ class GatewayService : Service() {
         }
         if (fields.size < expected) {
             if (fields.size == 1 && session.flow in setOf("schedule_call", "sms_schedule", "campaign")) {
-                return scheduleDatePickerReply(session.flow, "اختر التاريخ من الأزرار، أو أرسل التاريخ كتابةً بصيغة YYYY-MM-DD.")
+                return scheduleDatePickerReply(session.flow, "اختر التاريخ من الأزرار، أو اكتب الموعد كاملاً بصيغة YYYY-MM-DD HH:mm.")
             }
             val prompt = when (session.flow) {
                 "add_customer" -> listOf("رقم الجوال", "اسم العميل", "الوظيفة أو تخطي", "الشركة أو تخطي", "تعليمات/ملاحظات أو تخطي")[fields.size]
