@@ -134,31 +134,31 @@ class GatewayRuntime private constructor(context: Context) {
         report = { report ->
             onAiReport?.invoke(report.telegramMessages())
             worker.execute {
-                if (firebaseStore.state == FirebaseState.CONNECTED) {
-                    runCatching { customers.saveCallReport(report, scheduledCallId, scheduledCampaignCustomerId) }
-                        .onFailure { AppLog.w("could not save Gemini call report", it) }
-                    scheduledCampaignCustomerId?.let { ccId ->
-                        val text = (report.conversationTranscript + "\n" + report.outputText + "\n" + report.failureDetail).lowercase()
-                        val outcome = when {
-                            listOf("stop", "unsubscribe", "لا تتصل", "لا أرغب", "إلغاء").any(text::contains) -> "opted_out"
-                            listOf("مهتم", "interested", "الإدارة", "manager", "sales").any(text::contains) -> "interested"
-                            else -> "follow_up"
+                // SQLite is the active offline-first store. Cloud-sync availability must not
+                // gate local call reports or prevent queued work from running.
+                runCatching { customers.saveCallReport(report, scheduledCallId, scheduledCampaignCustomerId) }
+                    .onFailure { AppLog.w("could not save Gemini call report", it) }
+                scheduledCampaignCustomerId?.let { ccId ->
+                    val text = (report.conversationTranscript + "\n" + report.outputText + "\n" + report.failureDetail).lowercase()
+                    val outcome = when {
+                        listOf("stop", "unsubscribe", "لا تتصل", "لا أرغب", "إلغاء").any(text::contains) -> "opted_out"
+                        listOf("مهتم", "interested", "الإدارة", "manager", "sales").any(text::contains) -> "interested"
+                        else -> "follow_up"
+                    }
+                    runCatching {
+                        customers.setCampaignDecision(ccId, outcome, "نتيجة المكالمة: ${report.cause?.name.orEmpty()}")
+                        if (outcome == "follow_up" && report.cause == HangupCause.NORMAL && report.failureDetail.isBlank()) {
+                            customers.scheduleCampaignSmsAfterCall(ccId)
                         }
-                        runCatching {
-                            customers.setCampaignDecision(ccId, outcome, "نتيجة المكالمة: ${report.cause?.name.orEmpty()}")
-                            if (outcome == "follow_up" && report.cause == HangupCause.NORMAL && report.failureDetail.isBlank()) {
-                                customers.scheduleCampaignSmsAfterCall(ccId)
-                            }
-                            customers.advanceCampaign(ccId)
-                        }.onFailure { AppLog.w("could not advance campaign after call", it) }
-                        scheduledCampaignCustomerId = null
-                    }
-                    scheduledCallId?.let { id ->
-                        val status = if (report.cause == HangupCause.NORMAL && report.failureDetail.isBlank()) "completed" else "failed"
-                        runCatching { customers.updateScheduleStatus(id, status, report.failureDetail.ifBlank { report.cause?.name.orEmpty() }) }
-                            .onFailure { AppLog.w("could not complete scheduled call $id", it) }
-                        scheduledCallId = null
-                    }
+                        customers.advanceCampaign(ccId)
+                    }.onFailure { AppLog.w("could not advance campaign after call", it) }
+                    scheduledCampaignCustomerId = null
+                }
+                scheduledCallId?.let { id ->
+                    val status = if (report.cause == HangupCause.NORMAL && report.failureDetail.isBlank()) "completed" else "failed"
+                    runCatching { customers.updateScheduleStatus(id, status, report.failureDetail.ifBlank { report.cause?.name.orEmpty() }) }
+                        .onFailure { AppLog.w("could not complete scheduled call $id", it) }
+                    scheduledCallId = null
                 }
             }
         },
@@ -846,7 +846,7 @@ class GatewayRuntime private constructor(context: Context) {
     }
 
     private fun runDueSchedules() {
-        if (firebaseStore.state != FirebaseState.CONNECTED || !gatewayEnabled) return
+        if (!gatewayEnabled) return
         runDueSmsSchedules()
         repeat(3) {
             val schedule = runCatching { customers.claimDueSchedule() }.getOrElse {
@@ -966,9 +966,9 @@ class GatewayRuntime private constructor(context: Context) {
     }
     fun disconnectFirebase() = worker.execute { firebaseStore.disconnect(); settingsStore.save(settings.copy(firebaseEnabled = false).also { _settings.value = it }) }
     fun firebaseStatus(): String = when (firebaseStore.state) {
-        FirebaseState.CONNECTED -> "Firebase متصل؛ آخر نجاح: ${firebaseStore.lastSuccessAt ?: 0L}"
-        FirebaseState.ERROR -> "Firebase خطأ: ${firebaseStore.lastError}"
-        FirebaseState.DISCONNECTED -> "Firebase غير مفعّل"
+        FirebaseState.CONNECTED -> "مزامنة Firebase متصلة؛ آخر نجاح: ${firebaseStore.lastSuccessAt ?: 0L}"
+        FirebaseState.ERROR -> "مزامنة Firebase غير متاحة: ${firebaseStore.lastError}. البيانات المحلية SQLite ما زالت تعمل."
+        FirebaseState.DISCONNECTED -> "مزامنة Firebase متوقفة؛ البيانات محفوظة محلياً في SQLite."
     }
     fun saveCustomer(customer: VoicxCustomer, callback: (String) -> Unit = {}) = worker.execute { callback(runCatching { customers.upsert(customer) }.getOrElse { "خطأ حفظ العميل: ${it.javaClass.simpleName}" }) }
     fun createCampaign(campaign: Campaign, callback: (String) -> Unit = {}) = worker.execute {
