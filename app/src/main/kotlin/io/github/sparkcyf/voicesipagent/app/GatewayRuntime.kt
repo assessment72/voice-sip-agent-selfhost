@@ -1014,6 +1014,21 @@ class GatewayRuntime private constructor(context: Context) {
     }
     fun searchCustomers(query: String, callback: (String) -> Unit) = worker.execute { callback(runCatching { customers.search(query).joinToString("\n") { "${it.id} | ${it.name} | ${it.phone} | ${it.company}" } }.getOrElse { "خطأ البحث: ${it.javaClass.simpleName}" }.ifBlank { "لا توجد نتائج" }) }
     fun saveCallSchedule(schedule: CallSchedule, callback: (String) -> Unit) = worker.execute { callback(runCatching { customers.saveSchedule(schedule) }.getOrElse { "خطأ جدولة الاتصال: ${it.javaClass.simpleName}" }) }
+    /** Read-only report for schedules quarantined after an unknown external outcome. */
+    fun scheduleReconciliationReport(): String = runCatching {
+        val items = customers.listSchedulesNeedingReconciliation(30)
+        if (items.isEmpty()) return@runCatching "لا توجد مهام تحتاج إلى مصالحة. لا توجد اتصالات أو رسائل معلقة بنتيجة مجهولة."
+        val formatter = java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm")
+        val lines = items.joinToString("\n\n") { item ->
+            val kind = if (item.type == ScheduleType.CALL) "اتصال" else "SMS"
+            val at = runCatching {
+                java.time.Instant.ofEpochMilli(item.runAt).atZone(java.time.ZoneId.systemDefault()).format(formatter)
+            }.getOrDefault("غير محدد")
+            val phone = TelegramSimCall.maskNumber(item.phone)
+            "النوع: $kind | ID: ${item.id}\nالرقم: $phone | الموعد: $at | المحاولات: ${item.attempts}\nالسبب: ${item.error.ifBlank { "لا يوجد وصف محفوظ" }.take(180)}"
+        }
+        "⚠️ مهام تحتاج مراجعة بشرية (${items.size} معروضة):\n\n$lines\n\nهذه القائمة للعرض فقط. لا تُعاد أي مهمة تلقائياً عند عودة الاتصال."
+    }.getOrElse { "تعذر قراءة مهام المصالحة: ${it.javaClass.simpleName}" }
     fun listCallSchedules(callback: (String) -> Unit) = worker.execute { callback(runCatching { customers.listSchedules().joinToString("\n") { "${it.id} | ${it.phone} | ${it.runAt} | ${it.status} | ${it.note}" } }.getOrElse { "خطأ قراءة الجدولة: ${it.javaClass.simpleName}" }.ifBlank { "لا توجد مواعيد" }) }
     fun saveSmsSchedule(schedule: SmsSchedule, callback: (String) -> Unit) = worker.execute { callback(runCatching { customers.saveSmsSchedule(schedule) }.getOrElse { "خطأ جدولة SMS: ${it.javaClass.simpleName}" }) }
     fun listSmsSchedules(callback: (String) -> Unit) = worker.execute { callback(runCatching { customers.listSmsSchedules().joinToString("\n") { "${it.id} | ${it.phone} | ${it.runAt} | ${it.status} | ${it.note} | ${it.message.take(80)}" } }.getOrElse { "خطأ قراءة جدولة SMS: ${it.javaClass.simpleName}" }.ifBlank { "لا توجد رسائل مجدولة" }) }
