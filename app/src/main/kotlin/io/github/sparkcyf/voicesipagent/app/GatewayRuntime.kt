@@ -134,9 +134,7 @@ class GatewayRuntime private constructor(context: Context) {
         model = { settings.geminiModel },
         salesContext = { salesAdminStore.assistantContext() },
         report = { report ->
-            onAiReport?.invoke(report.telegramMessages())
-            // Snapshot and detach this report from mutable current-call state before
-            // handing persistence to the worker. A later call must not steal this report's IDs.
+            // Snapshot and detach this report from mutable current-call state before persistence.
             val (reportScheduleId, reportCampaignCustomerId) = synchronized(scheduledCallLock) {
                 val ids = scheduledCallId to scheduledCampaignCustomerId
                 scheduledCallId = null
@@ -144,31 +142,54 @@ class GatewayRuntime private constructor(context: Context) {
                 ids
             }
             worker.execute {
-                // SQLite is the active offline-first store. Cloud-sync availability must not
-                // gate local call reports or prevent queued work from running.
                 runCatching { customers.saveCallReport(report, reportScheduleId, reportCampaignCustomerId) }
                     .onFailure { AppLog.w("could not save Gemini call report", it) }
-                reportCampaignCustomerId?.let { ccId ->
-                    val text = (report.conversationTranscript + "\n" + report.outputText + "\n" + report.failureDetail).lowercase()
-                    val outcome = when {
-                        listOf("stop", "unsubscribe", "لا تتصل", "لا أرغب", "إلغاء").any(text::contains) -> "opted_out"
-                        listOf("مهتم", "interested", "الإدارة", "manager", "sales").any(text::contains) -> "interested"
-                        else -> "follow_up"
-                    }
-                    runCatching {
-                        customers.setCampaignDecision(ccId, outcome, "نتيجة المكالمة: ${report.cause?.name.orEmpty()}")
-                        if (outcome == "follow_up" && report.cause == HangupCause.NORMAL && report.failureDetail.isBlank()) {
-                            customers.scheduleCampaignSmsAfterCall(ccId)
-                        }
-                        customers.advanceCampaign(ccId)
-                    }.onFailure { AppLog.w("could not advance campaign after call", it) }
+                val customer = report.number?.let {
+                    runCatching { customers.findByPhone(PhoneNumberNormalizer.normalizeYemen(it)) }.getOrNull()
                 }
+                val disposition = SalesCallDispositionPolicy.classify(report.inputText, report.cause)
+                val reason = "نتيجة المكالمة: ${report.cause?.name.orEmpty()}؛ كلام العميل: ${report.inputText.take(500)}"
+                runCatching {
+                    when (disposition) {
+                        SalesCallDisposition.QUOTE_REQUEST -> {
+                            if (customer != null) {
+                                customers.createSalesAdminLead(customer, report)
+                                customers.cancelPendingCallsForPhone(customer.phone, "customer requested quotation; routed to management")
+                            }
+                            reportCampaignCustomerId?.let { customers.setCampaignDecision(it, "interested", reason) }
+                            onAiReport?.invoke(listOf("📩 طلب عرض سعر جديد حُوّل إلى الإدارة.\\nالعميل: ${customer?.name.orEmpty()}\\nالشركة: ${customer?.company.orEmpty()}\\nالرقم: ${report.number.orEmpty()}\\nطلب العميل: ${report.inputText.take(900)}\\nتم إلغاء اتصالات المتابعة المعلقة لهذا الرقم."))
+                        }
+                        SalesCallDisposition.OPTED_OUT -> {
+                            customer?.let { customers.suppressCustomerPhone(it.phone, "customer requested no further contact") }
+                            reportCampaignCustomerId?.let { customers.setCampaignDecision(it, "opted_out", reason) }
+                        }
+                        SalesCallDisposition.BUSY_OR_UNAVAILABLE -> {
+                            customer?.takeIf { !customers.isPhoneOptedOut(it.phone) }?.let {
+                                customers.scheduleAutomaticFollowUp(it, System.currentTimeMillis() + 3L * 60 * 60 * 1000, "busy_retry", reason, report.callId)
+                            }
+                            reportCampaignCustomerId?.let { customers.setCampaignDecision(it, "follow_up", reason) }
+                        }
+                        SalesCallDisposition.REMINDER -> {
+                            customer?.takeIf { !customers.isPhoneOptedOut(it.phone) }?.let {
+                                customers.scheduleAutomaticFollowUp(it, System.currentTimeMillis() + 7L * 24 * 60 * 60 * 1000, "reminder", reason, report.callId)
+                            }
+                            reportCampaignCustomerId?.let {
+                                customers.setCampaignDecision(it, "follow_up", reason)
+                                customers.scheduleCampaignSmsAfterCall(it)
+                            }
+                        }
+                        SalesCallDisposition.NO_FOLLOW_UP -> Unit
+                    }
+                    reportCampaignCustomerId?.let { customers.advanceCampaign(it) }
+                }.onFailure { AppLog.w("could not process sales follow-up after call", it) }
+                onAiReport?.invoke(report.telegramMessages())
                 reportScheduleId?.let { id ->
                     val status = if (report.cause == HangupCause.NORMAL && report.failureDetail.isBlank()) "completed" else "failed"
                     runCatching { customers.updateScheduleStatus(id, status, report.failureDetail.ifBlank { report.cause?.name.orEmpty() }) }
                         .onFailure { AppLog.w("could not complete scheduled call $id", it) }
                 }
             }
+        }
         },
     )
     @Volatile var onAiReport: ((List<String>) -> Unit)? = null
@@ -852,9 +873,19 @@ class GatewayRuntime private constructor(context: Context) {
             check(cellular.status.ready && cellular.hasReadySim() && !cellular.hasCalls && _health.value.session == null) { "SIM or cellular call resource is not ready" }
             check(!hasActiveWork()) { "Another call is already active" }
             val customer = runCatching { customers.findByPhone(clean) ?: customers.findByPhone(number.trim()) }.getOrNull()
+            val firstTemplate = customers.callInstructionTemplate("first")
+            val priorContext = customers.salesContextForCall(clean)
             gemini.setContext(GeminiAiEndpoint.CallContext(
-                name = name.trim(), role = role.trim(), company = company.trim(),
-                instructions = customer?.instructions.orEmpty(), memories = runCatching { customers.memoriesFor(clean) }.getOrDefault(""),
+                name = customer?.name?.ifBlank { name.trim() } ?: name.trim(),
+                role = customer?.role?.ifBlank { role.trim() } ?: role.trim(),
+                company = customer?.company?.ifBlank { company.trim() } ?: company.trim(),
+                instructions = buildString {
+                    appendLine("نموذج تعليمات الاتصال الأول من قاعدة البيانات:")
+                    appendLine(firstTemplate)
+                    customer?.instructions?.takeIf(String::isNotBlank)?.let { appendLine("تعليمات العميل: $it") }
+                    customer?.notes?.takeIf(String::isNotBlank)?.let { appendLine("ملاحظات العميل: $it") }
+                }.take(7000),
+                memories = (runCatching { customers.memoriesFor(clean) }.getOrDefault("") + "\\n" + priorContext).take(10000),
             ))
             gemini.startOutbound(cellular, clean, Party(clean, name.trim().ifBlank { null }))
         } catch (e: Exception) { AppLog.w("outbound AI call rejected before dialing: ${e.message}") }
@@ -888,16 +919,27 @@ class GatewayRuntime private constructor(context: Context) {
                 gemini.setContext(GeminiAiEndpoint.CallContext(
                     name = customer?.name.orEmpty(), role = customer?.role.orEmpty(), company = customer?.company.orEmpty(),
                     instructions = buildString {
+                        val stage = when {
+                            schedule.note.contains("stage:busy_retry") -> "busy_retry"
+                            schedule.note.contains("stage:reminder") -> "reminder"
+                            else -> "reminder"
+                        }
+                        appendLine("نموذج تعليمات مرحلة الاتصال من قاعدة البيانات:")
+                        appendLine(customers.callInstructionTemplate(stage))
                         customer?.instructions?.takeIf(String::isNotBlank)?.let {
                             appendLine("تعليمات العميل الدائمة:")
                             appendLine(it.trim())
                         }
-                        schedule.note.takeIf(String::isNotBlank)?.let {
-                            appendLine("تعليمات خاصة بهذا الاتصال المجدول (تُطبق لهذه المكالمة فقط):")
+                        customer?.notes?.takeIf(String::isNotBlank)?.let {
+                            appendLine("ملاحظات العميل:")
                             appendLine(it.trim())
                         }
-                    }.trim(),
-                    memories = customers.memoriesFor(normalizedPhone),
+                        schedule.note.takeIf(String::isNotBlank)?.let {
+                            appendLine("سبب الاتصال وتعليماته الخاصة:")
+                            appendLine(it.trim())
+                        }
+                    }.trim().take(9000),
+                    memories = (customers.memoriesFor(normalizedPhone) + "\\n" + customers.salesContextForCall(normalizedPhone)).take(12000),
                 ))
                 synchronized(scheduledCallLock) {
                     scheduledCallId = schedule.id
