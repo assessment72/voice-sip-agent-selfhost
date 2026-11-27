@@ -215,6 +215,7 @@ internal object SalesCallDispositionPolicy {
         if (cause in setOf(io.github.sparkcyf.voicesipagent.voice.HangupCause.BUSY,
                 io.github.sparkcyf.voicesipagent.voice.HangupCause.NO_ANSWER,
                 io.github.sparkcyf.voicesipagent.voice.HangupCause.UNAVAILABLE) ||
+            (text.isBlank() && cause == io.github.sparkcyf.voicesipagent.voice.HangupCause.NORMAL) ||
             listOf("مشغول", "اتصل بعد", "وقت ثاني", "وقت اخر", "لاحقاً", "لاحقا", "الآن ما اقدر", "الآن ما أقدر", "مغلق", "الجوال مغلق", "الهاتف مغلق", "غير متاح", "out of coverage", "not reachable", "busy", "call later").any(text::contains)) {
             return SalesCallDisposition.BUSY_OR_UNAVAILABLE
         }
