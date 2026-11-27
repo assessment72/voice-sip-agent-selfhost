@@ -341,3 +341,13 @@
 - Commit: `83abc24ca63377ca1fda13140c1ddc0dc7e5243b`.
 - Remaining scheduling UI gap: Telegram still accepts date/time as typed text in `YYYY-MM-DD HH:mm`; a touch-based calendar/time picker has not been implemented or verified. The app's current UI does not expose an existing scheduling form to attach a native picker to, so this requires a deliberate UI/interaction design rather than changing the current Telegram text flow implicitly.
 - Verification status: pending CI for this commit and a device test proving the merged instructions reach Gemini Live. Do not describe this stage as production-ready until both are verified.
+
+
+## 2026-11-27 — Telegram interactive scheduling picker
+- Added inline date selection to the existing Telegram scheduling flows for calls, SMS, and campaigns. The picker presents the next 14 local dates; the callback validates dates within the next 30 days.
+- Added time selection in 30-minute increments from 08:00 through 20:00, interpreted in the Android phone's local time zone. Past date/time selections are rejected.
+- Existing typed date/time entry remains supported for backward compatibility. The selected date/time continues through the existing preview-and-confirm flow; this change does not directly execute a call or send an SMS.
+- Changes are confined to the existing `GatewayService.kt` file. No file paths, storage schema, scheduling engine, SMS provider, SMS endpoint, or deployment target were changed.
+- Commits: `0062a9b1`, `471f6118`, `a319bb21`.
+- CI status: a prior run `45924535599` completed Control Bridge smoke tests, JVM tests, Android unit tests, and Debug APK build/sign successfully; its Release APK job was still running at the last check. These results predate the picker commits and do not validate the picker.
+- Verification still required: GitHub Actions on the picker commit, then an interactive Telegram test for date/time selection and a device test. No real call or SMS was initiated. Do not treat this as production readiness.
