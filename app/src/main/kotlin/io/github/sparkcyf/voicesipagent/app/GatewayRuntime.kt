@@ -100,6 +100,7 @@ data class HealthState(
 class GatewayRuntime private constructor(context: Context) {
     private val app = context.applicationContext
     private val worker = newWorker()
+    private val smsInboundWorker = java.util.concurrent.Executors.newSingleThreadExecutor { task -> Thread(task, "VoicxSmsInbound").apply { isDaemon = true } }
     val settingsStore = SettingsStore(app)
     private val salesAdminStore = SalesAdminStore(app)
     private val _settings = MutableStateFlow(settingsStore.load())
@@ -940,10 +941,16 @@ class GatewayRuntime private constructor(context: Context) {
                     val since = sequence.long("firstSentAt")
                     val historyDocs = customers.customerSmsHistorySince(customer.id.orEmpty(), since)
                     val replies = historyDocs.filter { it.text("direction") == "inbound" }.map { it.text("body") }
-                    if (replies.isEmpty()) schedule.message else {
+                    val draft = if (replies.isEmpty()) schedule.message else {
                         val history = historyDocs.map { "${it.text("direction")}: ${it.text("body")}" }
                         smsWriter.createFollowUp(customer, stage, replies, history, salesAdminStore.assistantContext())
                     }
+                    val latestReplies = customers.customerSmsRepliesSince(customer.id.orEmpty(), since).map { it.text("body") }
+                    if (latestReplies.size > replies.size) {
+                        val latestHistory = customers.customerSmsHistorySince(customer.id.orEmpty(), since)
+                            .map { "${it.text("direction")}: ${it.text("body")}" }
+                        smsWriter.createFollowUp(customer, stage, latestReplies, latestHistory, salesAdminStore.assistantContext())
+                    } else draft
                 } else schedule.message
                 SmsApiClient(settings.smsApiKey).send(normalizedPhone, finalMessage).getOrThrow()
                 if (stage != null) customers.completeCustomerSmsStage(schedule, finalMessage)
@@ -1312,14 +1319,16 @@ class GatewayRuntime private constructor(context: Context) {
     }
 
     /** Save a matching customer's incoming SIM SMS before forwarding it to the SIP handset. */
-    fun receiveSms(from: String?, text: String, receivedAt: Long) = worker.execute {
+    fun receiveSms(from: String?, text: String, receivedAt: Long) = smsInboundWorker.execute {
         runCatching { customers.recordIncomingSms(from, text, receivedAt) }
             .onFailure { AppLog.w("could not persist incoming customer SMS", it) }
-        val s = sip
-        if (s is SipUserAgent && s.sendMessage(from, text)) {
-            AppLog.i("SMS forwarded to the registered phone")
-        } else {
-            AppLog.w("SMS not forwarded: no phone registered")
+        worker.execute {
+            val s = sip
+            if (s is SipUserAgent && s.sendMessage(from, text)) {
+                AppLog.i("SMS forwarded to the registered phone")
+            } else {
+                AppLog.w("SMS not forwarded: no phone registered")
+            }
         }
     }
 
