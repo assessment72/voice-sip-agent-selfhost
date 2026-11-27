@@ -106,6 +106,12 @@ try {
   });
   assert.equal(r.status, 200, "contact opt-out update");
 
+  r = await request("/api/v1/crm/outbox", admin);
+  assert.equal(r.status, 200, "outbox query after opt-out");
+  const outboxAfterOptOut = await r.json();
+  assert.equal(outboxAfterOptOut.jobs.find(job => job.id === sms.job.id).status, "cancelled",
+    "queued messages for an opted-out contact must be cancelled");
+
   r = await request("/api/v1/crm/sms", admin, {
     method: "POST", body: JSON.stringify({ phone: contact.phone, message: "Do not send" })
   });
