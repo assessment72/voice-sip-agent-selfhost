@@ -214,7 +214,7 @@ internal class VoicxCustomerRepository(private val store: VoicxFirebaseStore) {
         ))
         return id
     }
-        fun claimDueSchedule(now: Long = System.currentTimeMillis()): CallSchedule? = claim("call_schedules", "pending", now) { scheduleFrom(it) }?.second
+    fun claimDueSchedule(now: Long = System.currentTimeMillis()): CallSchedule? = claim("call_schedules", "pending", now) { scheduleFrom(it) }?.second
     fun updateScheduleStatus(id: String, status: String, error: String = "") { if (id.isNotBlank()) save("call_schedules", id, mapOf("status" to status, "error" to error.takeIf(String::isNotBlank))) }
     fun saveSmsSchedule(s: SmsSchedule): String {
         val existing = s.idempotencyKey?.takeIf(String::isNotBlank)?.let { key ->
@@ -231,7 +231,7 @@ internal class VoicxCustomerRepository(private val store: VoicxFirebaseStore) {
         ))
         return id
     }
-        fun claimDueSmsSchedule(now: Long = System.currentTimeMillis()): SmsSchedule? = claim("sms_schedules", "queued", now) { smsScheduleFrom(it) }?.second
+    fun claimDueSmsSchedule(now: Long = System.currentTimeMillis()): SmsSchedule? = claim("sms_schedules", "queued", now) { smsScheduleFrom(it) }?.second
     fun updateSmsScheduleStatus(id: String, status: String, error: String = "") { if (id.isNotBlank()) save("sms_schedules", id, mapOf("status" to status, "error" to error.takeIf(String::isNotBlank))) }
 
     private fun <T> claim(name: String, status: String, now: Long, mapper: (LocalDocument) -> T): Pair<String, T>? =
