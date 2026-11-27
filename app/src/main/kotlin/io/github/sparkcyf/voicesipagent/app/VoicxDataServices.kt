@@ -68,6 +68,11 @@ internal object ScheduleLeasePolicy {
         status == "running" && claimedAt > 0L && claimedAt <= now - CLAIM_LEASE_MS
 }
 
+internal object CustomerSuppressionPolicy {
+    fun isBlocked(memberStatus: String, globallyOptedOut: Boolean): Boolean =
+        globallyOptedOut || memberStatus in listOf("admin", "opted_out", "paused")
+}
+
 internal class LocalDatabase(context: Context) : SQLiteOpenHelper(context, "voicx_local.db", null, 1) {
     private val databaseFile = context.getDatabasePath("voicx_local.db")
     override fun onCreate(db: SQLiteDatabase) {
@@ -283,8 +288,7 @@ internal class VoicxCustomerRepository(private val store: VoicxFirebaseStore) {
 
     fun campaignCustomerBlocked(id: String?): Boolean = id?.takeIf(String::isNotBlank)?.let {
         val member = read("campaign_customers", it) ?: return@let false
-        member.text("status") in listOf("admin", "opted_out", "paused") ||
-            isPhoneOptedOut(member.text("phone"))
+        CustomerSuppressionPolicy.isBlocked(member.text("status"), isPhoneOptedOut(member.text("phone")))
     } ?: false
     fun latestCampaignCustomer(phone: String): String? = query("campaign_customers") { it.text("phone") == phone.trim() }.maxByOrNull { it.long("createdAt") }?.id
     fun saveCallReport(report: AiCallReport, scheduleId: String? = null, campaignCustomerId: String? = null) {
