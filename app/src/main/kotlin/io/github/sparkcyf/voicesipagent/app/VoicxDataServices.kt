@@ -327,6 +327,7 @@ internal class VoicxCustomerRepository(private val store: VoicxFirebaseStore) {
     }
 
     fun customerSmsSequence(id: String): LocalDocument? = read("customer_sms_sequences", id)
+    fun listCustomerSmsSequences(limit: Int = 30): List<LocalDocument> = query("customer_sms_sequences").sortedByDescending { it.long("updatedAt") }.take(limit.coerceIn(1, 100))
 
     fun completeCustomerSmsStage(schedule: SmsSchedule, sentMessage: String, sentAt: Long = System.currentTimeMillis()) = db.transaction {
         val match = Regex("^customer_sequence:([^:]+):([123])$").matchEntire(schedule.note) ?: return@transaction
