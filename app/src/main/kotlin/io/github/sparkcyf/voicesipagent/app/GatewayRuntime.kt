@@ -153,15 +153,17 @@ class GatewayRuntime private constructor(context: Context) {
                 runCatching {
                     when (disposition) {
                         SalesCallDisposition.QUOTE_REQUEST -> {
-                            if (customer != null) {
-                                customers.createSalesAdminLead(customer, report)
-                                customers.cancelPendingCallsForPhone(customer.phone, "customer requested quotation; routed to management")
+                            customers.createSalesAdminLead(customer, report)
+                            report.number?.takeIf(String::isNotBlank)?.let {
+                                customers.cancelPendingCallsForPhone(it, "customer requested quotation; routed to management")
                             }
                             reportCampaignCustomerId?.let { customers.setCampaignDecision(it, "interested", reason) }
                             onAiReport?.invoke(listOf("📩 طلب عرض سعر جديد حُوّل إلى الإدارة.\nالعميل: ${customer?.name.orEmpty()}\nالشركة: ${customer?.company.orEmpty()}\nالرقم: ${report.number.orEmpty()}\nطلب العميل: ${report.inputText.take(900)}\nتم إلغاء اتصالات المتابعة المعلقة لهذا الرقم."))
                         }
                         SalesCallDisposition.OPTED_OUT -> {
-                            customer?.let { customers.suppressCustomerPhone(it.phone, "customer requested no further contact") }
+                            report.number?.takeIf(String::isNotBlank)?.let {
+                                customers.suppressCustomerPhone(it, "customer requested no further contact")
+                            }
                             reportCampaignCustomerId?.let { customers.setCampaignDecision(it, "opted_out", reason) }
                         }
                         SalesCallDisposition.BUSY_OR_UNAVAILABLE -> {
@@ -1166,6 +1168,7 @@ class GatewayRuntime private constructor(context: Context) {
         }
         "⚠️ مهام تحتاج مراجعة بشرية (${items.size} معروضة):\n\n$lines\n\nهذه القائمة للعرض فقط. لا تُعاد أي مهمة تلقائياً عند عودة الاتصال."
     }.getOrElse { "تعذر قراءة مهام المصالحة: ${it.javaClass.simpleName}" }
+    fun salesAdminLeadsReport(): String = runCatching { customers.salesAdminLeadsReport() }.getOrElse { "تعذر تحميل طلبات الإدارة: ${it.javaClass.simpleName}" }
     fun listCallSchedules(callback: (String) -> Unit) = worker.execute { callback(runCatching { customers.listSchedules().joinToString("\n") { "${it.id} | ${it.phone} | ${it.runAt} | ${it.status} | ${it.note}" } }.getOrElse { "خطأ قراءة الجدولة: ${it.javaClass.simpleName}" }.ifBlank { "لا توجد مواعيد" }) }
     fun saveSmsSchedule(schedule: SmsSchedule, callback: (String) -> Unit) = worker.execute { callback(runCatching { customers.saveSmsSchedule(schedule) }.getOrElse { "خطأ جدولة SMS: ${it.javaClass.simpleName}" }) }
     fun listSmsSchedules(callback: (String) -> Unit) = worker.execute { callback(runCatching { customers.listSmsSchedules().joinToString("\n") { "${it.id} | ${it.phone} | ${it.runAt} | ${it.status} | ${it.note} | ${it.message.take(80)}" } }.getOrElse { "خطأ قراءة جدولة SMS: ${it.javaClass.simpleName}" }.ifBlank { "لا توجد رسائل مجدولة" }) }
