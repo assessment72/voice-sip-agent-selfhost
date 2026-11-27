@@ -316,6 +316,10 @@ internal class VoicxCustomerRepository(private val store: VoicxFirebaseStore) {
             else -> current.long("thirdSentAt") > 0L
         }
         if (alreadySent) return@transaction false
+        val activeSchedule = query("sms_schedules") {
+            it.text("note") == "customer_sequence:$id:$stage" && it.text("status") == "running"
+        }.firstOrNull()
+        if (activeSchedule != null) return@transaction false
         val fieldAt = listOf("firstAt", "secondAt", "thirdAt")[stage - 1]
         val fieldMessage = listOf("firstMessage", "secondMessage", "thirdMessage")[stage - 1]
         save("customer_sms_sequences", id, mapOf(fieldAt to runAt, fieldMessage to message.take(1000), "updatedAt" to System.currentTimeMillis()))
