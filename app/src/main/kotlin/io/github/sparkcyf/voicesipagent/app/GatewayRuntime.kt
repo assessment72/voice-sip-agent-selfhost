@@ -133,12 +133,20 @@ class GatewayRuntime private constructor(context: Context) {
         salesContext = { salesAdminStore.assistantContext() },
         report = { report ->
             onAiReport?.invoke(report.telegramMessages())
+            // Snapshot and detach this report from mutable current-call state before
+            // handing persistence to the worker. A later call must not steal this report's IDs.
+            val (reportScheduleId, reportCampaignCustomerId) = synchronized(scheduledCallLock) {
+                val ids = scheduledCallId to scheduledCampaignCustomerId
+                scheduledCallId = null
+                scheduledCampaignCustomerId = null
+                ids
+            }
             worker.execute {
                 // SQLite is the active offline-first store. Cloud-sync availability must not
                 // gate local call reports or prevent queued work from running.
-                runCatching { customers.saveCallReport(report, scheduledCallId, scheduledCampaignCustomerId) }
+                runCatching { customers.saveCallReport(report, reportScheduleId, reportCampaignCustomerId) }
                     .onFailure { AppLog.w("could not save Gemini call report", it) }
-                scheduledCampaignCustomerId?.let { ccId ->
+                reportCampaignCustomerId?.let { ccId ->
                     val text = (report.conversationTranscript + "\n" + report.outputText + "\n" + report.failureDetail).lowercase()
                     val outcome = when {
                         listOf("stop", "unsubscribe", "لا تتصل", "لا أرغب", "إلغاء").any(text::contains) -> "opted_out"
@@ -152,13 +160,11 @@ class GatewayRuntime private constructor(context: Context) {
                         }
                         customers.advanceCampaign(ccId)
                     }.onFailure { AppLog.w("could not advance campaign after call", it) }
-                    scheduledCampaignCustomerId = null
                 }
-                scheduledCallId?.let { id ->
+                reportScheduleId?.let { id ->
                     val status = if (report.cause == HangupCause.NORMAL && report.failureDetail.isBlank()) "completed" else "failed"
                     runCatching { customers.updateScheduleStatus(id, status, report.failureDetail.ifBlank { report.cause?.name.orEmpty() }) }
                         .onFailure { AppLog.w("could not complete scheduled call $id", it) }
-                    scheduledCallId = null
                 }
             }
         },
@@ -170,6 +176,7 @@ class GatewayRuntime private constructor(context: Context) {
     private var echo: EchoEndpoint? = null
     @Volatile
     private var telegramSimCall: TelegramSimCall? = null
+    private val scheduledCallLock = Any()
     @Volatile
     private var scheduledCallId: String? = null
     @Volatile
@@ -376,7 +383,8 @@ class GatewayRuntime private constructor(context: Context) {
         if (healthCheck == null) return
         // Keep a long-running scheduled customer conversation leased so another recovery
         // worker cannot mistake it for an abandoned call and dial the same customer again.
-        scheduledCallId?.let { id ->
+        val activeScheduledCallId = synchronized(scheduledCallLock) { scheduledCallId }
+        activeScheduledCallId?.let { id ->
             runCatching { customers.renewCallScheduleLease(id) }
                 .onFailure { AppLog.w("could not renew scheduled call lease $id", it) }
         }
@@ -879,14 +887,20 @@ class GatewayRuntime private constructor(context: Context) {
                     name = customer?.name.orEmpty(), role = customer?.role.orEmpty(), company = customer?.company.orEmpty(),
                     instructions = customer?.instructions.orEmpty(), memories = customers.memoriesFor(normalizedPhone),
                 ))
-                scheduledCallId = schedule.id
-                scheduledCampaignCustomerId = schedule.campaignCustomerId
+                synchronized(scheduledCallLock) {
+                    scheduledCallId = schedule.id
+                    scheduledCampaignCustomerId = schedule.campaignCustomerId
+                }
                 customers.updateScheduleStatus(schedule.id.orEmpty(), "running")
                 gemini.startOutbound(cellular, normalizedPhone, Party(normalizedPhone, customer?.name?.ifBlank { null }))
                 AppLog.i("scheduled Gemini call started: ${schedule.id}")
             } catch (e: Exception) {
-                scheduledCallId = null
-                scheduledCampaignCustomerId = null
+                synchronized(scheduledCallLock) {
+                    if (scheduledCallId == schedule.id) {
+                        scheduledCallId = null
+                        scheduledCampaignCustomerId = null
+                    }
+                }
                 customers.updateScheduleStatus(schedule.id.orEmpty(), "failed", e.message ?: e.javaClass.simpleName)
                 AppLog.w("scheduled Gemini call failed: ${schedule.id}", e)
             }
