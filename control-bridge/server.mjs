@@ -339,7 +339,10 @@ const server = http.createServer(async (req, res) => {
       const idem = typeof req.headers["idempotency-key"] === "string" ? req.headers["idempotency-key"].slice(0, 128) : null;
       if (idem) {
         const old = state.commands.find(c => c.deviceId === b.deviceId && c.idempotencyKey === idem);
-        if (old) return json(res, 200, { command: old, reused: true });
+        if (old) {
+          if (old.type !== b.type) return json(res, 409, { error: "idempotency_key_conflict" });
+          return json(res, 200, { command: old, reused: true });
+        }
       }
       const c = queueCommand(b.deviceId, b.type, {}, null);
       c.idempotencyKey = idem;
