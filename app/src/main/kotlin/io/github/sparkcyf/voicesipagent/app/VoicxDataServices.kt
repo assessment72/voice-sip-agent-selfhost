@@ -91,6 +91,40 @@ internal class LocalDatabase(context: Context) : SQLiteOpenHelper(context, "voic
         }, SQLiteDatabase.CONFLICT_REPLACE)
     }
 
+    /** Run a group of repository operations under one SQLite write transaction. */
+    @Synchronized fun <T> transaction(block: () -> T): T {
+        val database = writableDatabase
+        database.beginTransaction()
+        try {
+            val result = block()
+            database.setTransactionSuccessful()
+            return result
+        } finally {
+            database.endTransaction()
+        }
+    }
+
+    /**
+     * Merge a partial document update without erasing fields written by earlier steps.
+     * A null value removes that key; non-null values replace only their own keys.
+     */
+    @Synchronized fun patch(collection: String, id: String, values: Map<String, Any?>) {
+        val merged = read(collection, id)?.data ?: JSONObject()
+        values.forEach { (key, value) ->
+            if (value == null) {
+                merged.remove(key)
+            } else {
+                merged.put(key, when (value) {
+                    is List<*> -> JSONArray(value)
+                    else -> value
+                })
+            }
+        }
+        writableDatabase.insertWithOnConflict("documents", null, android.content.ContentValues().apply {
+            put("collection", collection); put("id", id); put("payload", merged.toString())
+        }, SQLiteDatabase.CONFLICT_REPLACE)
+    }
+
     @Synchronized fun read(collection: String, id: String): LocalDocument? {
         readableDatabase.query("documents", arrayOf("id", "payload"), "collection=? AND id=?", arrayOf(collection, id), null, null, null).use {
             return if (it.moveToFirst()) LocalDocument(it.getString(0), JSONObject(it.getString(1))) else null
@@ -126,7 +160,7 @@ private fun idOrNew(id: String?) = id?.takeIf { it.isNotBlank() } ?: UUID.random
 
 internal class VoicxCustomerRepository(private val store: VoicxFirebaseStore) {
     private val db get() = store.requireDatabase()
-    private fun save(name: String, id: String, data: Map<String, Any?>) = db.put(name, id, data)
+    private fun save(name: String, id: String, data: Map<String, Any?>) = db.patch(name, id, data)
     private fun read(name: String, id: String) = db.read(name, id)
     private fun query(name: String, predicate: (LocalDocument) -> Boolean = { true }) = db.all(name).filter(predicate)
 
@@ -145,12 +179,21 @@ internal class VoicxCustomerRepository(private val store: VoicxFirebaseStore) {
     fun claimDueSmsSchedule(now: Long = System.currentTimeMillis()): SmsSchedule? = claim("sms_schedules", "queued", now) { smsScheduleFrom(it) }?.second
     fun updateSmsScheduleStatus(id: String, status: String, error: String = "") { if (id.isNotBlank()) save("sms_schedules", id, mapOf("status" to status, "error" to error.takeIf(String::isNotBlank))) }
 
-    private fun <T> claim(name: String, status: String, now: Long, mapper: (LocalDocument) -> T): Pair<String, T>? {
-        query(name) { it.text("status") == "running" && it.long("claimedAt") in 1..(now - 600_000L) }.forEach { save(name, it.id, mapOf("status" to status, "claimedAt" to null)) }
-        val candidate = query(name) { it.text("status") == status && it.long("runAt") <= now }.minByOrNull { it.long("runAt") } ?: return null
-        save(name, candidate.id, mapOf("status" to "running", "claimedAt" to now, "attempts" to candidate.int("attempts") + 1))
-        return candidate.id to mapper(read(name, candidate.id) ?: candidate)
-    }
+    private fun <T> claim(name: String, status: String, now: Long, mapper: (LocalDocument) -> T): Pair<String, T>? =
+        db.transaction {
+            // Recover abandoned claims, then select and mark one due item while holding
+            // the same SQLite write transaction. Competing workers cannot claim it twice.
+            query(name) { it.text("status") == "running" && it.long("claimedAt") in 1..(now - 600_000L) }
+                .forEach { save(name, it.id, mapOf("status" to status, "claimedAt" to null)) }
+            val candidate = query(name) { it.text("status") == status && it.long("runAt") <= now }
+                .minByOrNull { it.long("runAt") } ?: return@transaction null
+            save(name, candidate.id, mapOf(
+                "status" to "running",
+                "claimedAt" to now,
+                "attempts" to candidate.int("attempts") + 1,
+            ))
+            candidate.id to mapper(read(name, candidate.id) ?: candidate)
+        }
 
     fun campaignCustomerBlocked(id: String?): Boolean = id?.takeIf(String::isNotBlank)?.let { read("campaign_customers", it)?.text("status") in listOf("admin", "opted_out", "paused") } ?: false
     fun latestCampaignCustomer(phone: String): String? = query("campaign_customers") { it.text("phone") == phone.trim() }.maxByOrNull { it.long("createdAt") }?.id
