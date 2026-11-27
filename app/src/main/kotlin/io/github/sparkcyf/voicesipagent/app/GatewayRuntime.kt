@@ -853,8 +853,9 @@ class GatewayRuntime private constructor(context: Context) {
                 AppLog.w("could not claim scheduled call", it)
                 return
             } ?: return
-            if (customers.campaignCustomerBlocked(schedule.campaignCustomerId)) {
-                customers.updateScheduleStatus(schedule.id.orEmpty(), "cancelled", "campaign customer is blocked")
+            if (customers.campaignCustomerBlocked(schedule.campaignCustomerId) ||
+                customers.isPhoneOptedOut(schedule.phone)) {
+                customers.updateScheduleStatus(schedule.id.orEmpty(), "cancelled", "contact is opted out or campaign customer is blocked")
                 return@repeat
             }
             if (hasActiveWork()) {
@@ -893,8 +894,9 @@ class GatewayRuntime private constructor(context: Context) {
                 AppLog.w("could not claim scheduled SMS", it)
                 return
             } ?: return
-            if (customers.campaignCustomerBlocked(schedule.campaignCustomerId)) {
-                customers.updateSmsScheduleStatus(schedule.id.orEmpty(), "cancelled", "campaign customer is blocked")
+            if (customers.campaignCustomerBlocked(schedule.campaignCustomerId) ||
+                customers.isPhoneOptedOut(schedule.phone)) {
+                customers.updateSmsScheduleStatus(schedule.id.orEmpty(), "cancelled", "contact is opted out or campaign customer is blocked")
                 return@repeat
             }
             try {
@@ -995,7 +997,7 @@ class GatewayRuntime private constructor(context: Context) {
     fun listCallSchedules(callback: (String) -> Unit) = worker.execute { callback(runCatching { customers.listSchedules().joinToString("\n") { "${it.id} | ${it.phone} | ${it.runAt} | ${it.status} | ${it.note}" } }.getOrElse { "خطأ قراءة الجدولة: ${it.javaClass.simpleName}" }.ifBlank { "لا توجد مواعيد" }) }
     fun saveSmsSchedule(schedule: SmsSchedule, callback: (String) -> Unit) = worker.execute { callback(runCatching { customers.saveSmsSchedule(schedule) }.getOrElse { "خطأ جدولة SMS: ${it.javaClass.simpleName}" }) }
     fun listSmsSchedules(callback: (String) -> Unit) = worker.execute { callback(runCatching { customers.listSmsSchedules().joinToString("\n") { "${it.id} | ${it.phone} | ${it.runAt} | ${it.status} | ${it.note} | ${it.message.take(80)}" } }.getOrElse { "خطأ قراءة جدولة SMS: ${it.javaClass.simpleName}" }.ifBlank { "لا توجد رسائل مجدولة" }) }
-    fun sendSms(phone: String, message: String, callback: (String) -> Unit) = worker.execute { callback(runCatching { PhoneNumberNormalizer.normalizeYemen(phone) }.fold({ normalized -> SmsApiClient(settings.smsApiKey).send(normalized, message).fold({ it }, { "فشل SMS: ${it.message ?: it.javaClass.simpleName}" }) }, { "فشل SMS: ${it.message}" })) }
+    fun sendSms(phone: String, message: String, callback: (String) -> Unit) = worker.execute { callback(runCatching { PhoneNumberNormalizer.normalizeYemen(phone) }.fold({ normalized -> if (customers.isPhoneOptedOut(normalized)) "مرفوض: العميل ألغى الاشتراك وطلب عدم التواصل." else SmsApiClient(settings.smsApiKey).send(normalized, message).fold({ it }, { "فشل SMS: ${it.message ?: it.javaClass.simpleName}" }) }, { "فشل SMS: ${it.message}" })) }
     fun updateSmsApiKey(key: String) = worker.execute { settingsStore.save(settings.copy(smsApiKey = key.trim()).also { _settings.value = it }) }
 
     /** Starts an authenticated Telegram-originated SIM call and bridges it to the registered SIP phone. */
