@@ -349,5 +349,6 @@
 - Existing typed date/time entry remains supported for backward compatibility. The selected date/time continues through the existing preview-and-confirm flow; this change does not directly execute a call or send an SMS.
 - Changes are confined to the existing `GatewayService.kt` file. No file paths, storage schema, scheduling engine, SMS provider, SMS endpoint, or deployment target were changed.
 - Commits: `0062a9b1`, `471f6118`, `a319bb21`.
-- CI status: a prior run `45924535599` completed Control Bridge smoke tests, JVM tests, Android unit tests, and Debug APK build/sign successfully; its Release APK job was still running at the last check. These results predate the picker commits and do not validate the picker.
+- CI status: prior run `45924535599` is now fully successful, including Control Bridge smoke tests, JVM tests, Android unit tests, Debug APK build/sign, and Release APK build/sign. These results predate the picker commits and do not validate the picker.
+- Picker CI run `45925143620` is in progress on the audit commit (Control Bridge smoke test passed; JVM tests, Android unit tests, and upgrade-compatible APK build were still running at the last check).
 - Verification still required: GitHub Actions on the picker commit, then an interactive Telegram test for date/time selection and a device test. No real call or SMS was initiated. Do not treat this as production readiness.
