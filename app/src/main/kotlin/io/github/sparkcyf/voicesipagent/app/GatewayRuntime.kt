@@ -166,6 +166,12 @@ class GatewayRuntime private constructor(context: Context) {
                             }
                             reportCampaignCustomerId?.let { customers.setCampaignDecision(it, "opted_out", reason) }
                         }
+                        SalesCallDisposition.NOT_INTERESTED -> {
+                            report.number?.takeIf(String::isNotBlank)?.let {
+                                customers.cancelPendingCallsForPhone(it, "customer said not interested")
+                            }
+                            reportCampaignCustomerId?.let { customers.setCampaignDecision(it, "paused", reason) }
+                        }
                         SalesCallDisposition.BUSY_OR_UNAVAILABLE -> {
                             customer?.takeIf { !customers.isPhoneOptedOut(it.phone) }?.let {
                                 customers.scheduleAutomaticFollowUp(it, System.currentTimeMillis() + 3L * 60 * 60 * 1000, "busy_retry", reason, report.callId)
