@@ -157,6 +157,7 @@ data class CallSchedule(val id: String? = null, val customerId: String, val phon
 data class SmsSchedule(val id: String? = null, val customerId: String = "", val phone: String, val runAt: Long, val message: String, val status: String = "queued", val campaignId: String? = null, val note: String = "", val campaignCustomerId: String? = null, val idempotencyKey: String? = null, val attempts: Int = 0)
 
 private fun idOrNew(id: String?) = id?.takeIf { it.isNotBlank() } ?: UUID.randomUUID().toString()
+private const val SCHEDULE_CLAIM_LEASE_MS = 30 * 60 * 1000L
 
 internal class VoicxCustomerRepository(private val store: VoicxFirebaseStore) {
     private val db get() = store.requireDatabase()
@@ -164,7 +165,23 @@ internal class VoicxCustomerRepository(private val store: VoicxFirebaseStore) {
     private fun read(name: String, id: String) = db.read(name, id)
     private fun query(name: String, predicate: (LocalDocument) -> Boolean = { true }) = db.all(name).filter(predicate)
 
-    fun upsert(c: VoicxCustomer): String { val id = idOrNew(c.id); save("customers", id, mapOf("phone" to c.phone.trim(), "name" to c.name.trim(), "role" to c.role.trim(), "company" to c.company.trim(), "instructions" to c.instructions.trim(), "notes" to c.notes.trim(), "groups" to c.groups.distinct().filter(String::isNotBlank), "createdAt" to c.createdAt, "updatedAt" to c.updatedAt)); return id }
+    fun upsert(c: VoicxCustomer): String {
+        val phone = PhoneNumberNormalizer.normalizeYemen(c.phone)
+        val existing = findByPhone(phone) ?: findByPhone(c.phone.trim())
+        val id = c.id?.takeIf(String::isNotBlank) ?: existing?.id ?: idOrNew(null)
+        save("customers", id, mapOf(
+            "phone" to phone,
+            "name" to c.name.trim(),
+            "role" to c.role.trim(),
+            "company" to c.company.trim(),
+            "instructions" to c.instructions.trim(),
+            "notes" to c.notes.trim(),
+            "groups" to c.groups.distinct().filter(String::isNotBlank),
+            "createdAt" to (existing?.createdAt ?: c.createdAt),
+            "updatedAt" to System.currentTimeMillis(),
+        ))
+        return id
+    }
     fun findById(id: String): VoicxCustomer? = if (id.isBlank()) null else read("customers", id)?.let(::from)
     fun findByPhone(phone: String): VoicxCustomer? = query("customers") { it.text("phone") == phone.trim() }.firstOrNull()?.let(::from)
     fun search(q: String, limit: Int = 20): List<VoicxCustomer> { val s = q.trim().lowercase(); return query("customers").mapNotNull(::from).filter { s.isBlank() || listOf(it.phone, it.name, it.company).any { v -> v.lowercase().contains(s) } }.take(limit.coerceIn(1, 50)) }
@@ -172,18 +189,46 @@ internal class VoicxCustomerRepository(private val store: VoicxFirebaseStore) {
     fun instructionFor(phone: String) = findByPhone(phone)?.instructions.orEmpty()
     fun memoriesFor(phone: String, limit: Int = 10): String { val id = findByPhone(phone)?.id ?: return ""; return query("customer_memories") { it.text("customerId") == id }.sortedByDescending { it.long("createdAt") }.take(limit.coerceIn(1, 20)).map { it.text("text") }.filter(String::isNotBlank).asReversed().joinToString("\n") { "- $it" } }
 
-    fun saveSchedule(s: CallSchedule): String { val existing = s.idempotencyKey?.takeIf(String::isNotBlank)?.let { query("call_schedules") { d -> d.text("idempotencyKey") == it }.firstOrNull()?.id }; val id = existing ?: idOrNew(s.id); save("call_schedules", id, mapOf("customerId" to s.customerId, "phone" to s.phone, "runAt" to s.runAt, "status" to s.status, "note" to s.note, "campaignId" to s.campaignId, "campaignCustomerId" to s.campaignCustomerId, "idempotencyKey" to s.idempotencyKey, "attempts" to s.attempts)); return id }
-    fun claimDueSchedule(now: Long = System.currentTimeMillis()): CallSchedule? = claim("call_schedules", "pending", now) { scheduleFrom(it) }?.second
+    fun saveSchedule(s: CallSchedule): String {
+        val existing = s.idempotencyKey?.takeIf(String::isNotBlank)?.let { key ->
+            query("call_schedules") { it.text("idempotencyKey") == key }.firstOrNull()?.id
+        }
+        // Repeated enqueue requests must never reset completed/cancelled work to pending.
+        if (existing != null) return existing
+        val id = idOrNew(s.id)
+        save("call_schedules", id, mapOf(
+            "customerId" to s.customerId, "phone" to s.phone, "runAt" to s.runAt,
+            "status" to s.status, "note" to s.note, "campaignId" to s.campaignId,
+            "campaignCustomerId" to s.campaignCustomerId, "idempotencyKey" to s.idempotencyKey,
+            "attempts" to s.attempts,
+        ))
+        return id
+    }
+        fun claimDueSchedule(now: Long = System.currentTimeMillis()): CallSchedule? = claim("call_schedules", "pending", now) { scheduleFrom(it) }?.second
     fun updateScheduleStatus(id: String, status: String, error: String = "") { if (id.isNotBlank()) save("call_schedules", id, mapOf("status" to status, "error" to error.takeIf(String::isNotBlank))) }
-    fun saveSmsSchedule(s: SmsSchedule): String { val existing = s.idempotencyKey?.takeIf(String::isNotBlank)?.let { query("sms_schedules") { d -> d.text("idempotencyKey") == it }.firstOrNull()?.id }; val id = existing ?: idOrNew(s.id); save("sms_schedules", id, mapOf("customerId" to s.customerId, "phone" to s.phone, "runAt" to s.runAt, "message" to s.message, "status" to s.status, "campaignId" to s.campaignId, "note" to s.note, "campaignCustomerId" to s.campaignCustomerId, "idempotencyKey" to s.idempotencyKey, "attempts" to s.attempts)); return id }
-    fun claimDueSmsSchedule(now: Long = System.currentTimeMillis()): SmsSchedule? = claim("sms_schedules", "queued", now) { smsScheduleFrom(it) }?.second
+    fun saveSmsSchedule(s: SmsSchedule): String {
+        val existing = s.idempotencyKey?.takeIf(String::isNotBlank)?.let { key ->
+            query("sms_schedules") { it.text("idempotencyKey") == key }.firstOrNull()?.id
+        }
+        // Do not resurrect a sent or cancelled SMS when the enqueue operation is replayed.
+        if (existing != null) return existing
+        val id = idOrNew(s.id)
+        save("sms_schedules", id, mapOf(
+            "customerId" to s.customerId, "phone" to s.phone, "runAt" to s.runAt,
+            "message" to s.message, "status" to s.status, "campaignId" to s.campaignId,
+            "note" to s.note, "campaignCustomerId" to s.campaignCustomerId,
+            "idempotencyKey" to s.idempotencyKey, "attempts" to s.attempts,
+        ))
+        return id
+    }
+        fun claimDueSmsSchedule(now: Long = System.currentTimeMillis()): SmsSchedule? = claim("sms_schedules", "queued", now) { smsScheduleFrom(it) }?.second
     fun updateSmsScheduleStatus(id: String, status: String, error: String = "") { if (id.isNotBlank()) save("sms_schedules", id, mapOf("status" to status, "error" to error.takeIf(String::isNotBlank))) }
 
     private fun <T> claim(name: String, status: String, now: Long, mapper: (LocalDocument) -> T): Pair<String, T>? =
         db.transaction {
             // Recover abandoned claims, then select and mark one due item while holding
             // the same SQLite write transaction. Competing workers cannot claim it twice.
-            query(name) { it.text("status") == "running" && it.long("claimedAt") in 1..(now - 600_000L) }
+            query(name) { it.text("status") == "running" && it.long("claimedAt") in 1..(now - SCHEDULE_CLAIM_LEASE_MS) }
                 .forEach { save(name, it.id, mapOf("status" to status, "claimedAt" to null)) }
             val candidate = query(name) { it.text("status") == status && it.long("runAt") <= now }
                 .minByOrNull { it.long("runAt") } ?: return@transaction null
@@ -225,10 +270,55 @@ internal class VoicxCustomerRepository(private val store: VoicxFirebaseStore) {
     fun listSchedules(limit: Int = 20) = query("call_schedules").sortedBy { it.long("runAt") }.take(limit).map(::scheduleFrom)
     fun listSmsSchedules(limit: Int = 20) = query("sms_schedules").sortedBy { it.long("runAt") }.take(limit).map(::smsScheduleFrom)
 
-    fun createCampaign(c: Campaign): String { val id = idOrNew(c.id); save("campaigns", id, mapOf("name" to c.name.trim(), "startAt" to c.startAt, "timezone" to c.timezone, "targetGroup" to c.targetGroup.trim(), "channel" to c.channel, "smsTemplate" to c.smsTemplate.take(1000), "status" to c.status, "createdAt" to c.createdAt, "updatedAt" to c.updatedAt)); val targets = query("customers").mapNotNull(::from).filter { c.targetGroup.isBlank() || c.targetGroup.equals("all", true) || it.groups.contains(c.targetGroup.trim()) }; targets.forEachIndexed { i, customer -> save("campaign_customers", "$id-$i", mapOf("campaignId" to id, "customerId" to customer.id, "phone" to customer.phone, "sequence" to i, "status" to "queued", "attempts" to 0, "createdAt" to System.currentTimeMillis(), "updatedAt" to System.currentTimeMillis())) }; if (targets.isNotEmpty() && c.channel.contains("call")) { val cc = "$id-0"; val first = targets.first(); saveSchedule(CallSchedule(customerId = first.id.orEmpty(), phone = first.phone, runAt = c.startAt, campaignId = id, campaignCustomerId = cc, idempotencyKey = "$id:call:$cc:${c.startAt}")); if (c.channel == "call_sms" && c.smsTemplate.isNotBlank()) saveSmsSchedule(SmsSchedule(customerId = first.id.orEmpty(), phone = first.phone, runAt = c.startAt, message = c.smsTemplate, campaignId = id, campaignCustomerId = cc, idempotencyKey = "$id:sms:$cc:${c.startAt}")); save("campaign_customers", cc, mapOf("status" to "call_scheduled")) } else if (targets.isNotEmpty() && c.channel == "sms" && c.smsTemplate.isNotBlank()) targets.forEachIndexed { i, customer -> val cc = "$id-$i"; saveSmsSchedule(SmsSchedule(customerId = customer.id.orEmpty(), phone = customer.phone, runAt = c.startAt, message = c.smsTemplate, campaignId = id, campaignCustomerId = cc, idempotencyKey = "$id:sms:$cc:${c.startAt}")); save("campaign_customers", cc, mapOf("status" to "sms_scheduled")) }; return id }
+    fun createCampaign(c: Campaign): String { val id = idOrNew(c.id); save("campaigns", id, mapOf("name" to c.name.trim(), "startAt" to c.startAt, "timezone" to c.timezone, "targetGroup" to c.targetGroup.trim(), "channel" to c.channel, "smsTemplate" to c.smsTemplate.take(1000), "status" to c.status, "createdAt" to c.createdAt, "updatedAt" to c.updatedAt)); val targets = query("customers").mapNotNull(::from).filter { c.targetGroup.isBlank() || c.targetGroup.equals("all", true) || it.groups.contains(c.targetGroup.trim()) }; targets.forEachIndexed { i, customer -> save("campaign_customers", "$id-$i", mapOf("campaignId" to id, "customerId" to customer.id, "phone" to customer.phone, "sequence" to i, "status" to "queued", "attempts" to 0, "createdAt" to System.currentTimeMillis(), "updatedAt" to System.currentTimeMillis())) }; if (targets.isNotEmpty() && c.channel.contains("call")) { val cc = "$id-0"; val first = targets.first(); saveSchedule(CallSchedule(customerId = first.id.orEmpty(), phone = first.phone, runAt = c.startAt, campaignId = id, campaignCustomerId = cc, idempotencyKey = "$id:call:$cc")); save("campaign_customers", cc, mapOf("status" to "call_scheduled")) } else if (targets.isNotEmpty() && c.channel == "sms" && c.smsTemplate.isNotBlank()) targets.forEachIndexed { i, customer -> val cc = "$id-$i"; saveSmsSchedule(SmsSchedule(customerId = customer.id.orEmpty(), phone = customer.phone, runAt = c.startAt, message = c.smsTemplate, campaignId = id, campaignCustomerId = cc, idempotencyKey = "$id:sms:$cc:${c.startAt}")); save("campaign_customers", cc, mapOf("status" to "sms_scheduled")) }; return id }
     fun setCampaignDecision(id: String, outcome: String, note: String) { val status = when (outcome) { "interested", "admin" -> "admin"; "opted_out" -> "opted_out"; "paused" -> "paused"; else -> "follow_up" }; save("campaign_customers", id, mapOf("status" to status, "lastOutcome" to outcome, "followUpNote" to note.take(1000), "updatedAt" to System.currentTimeMillis())); if (status in listOf("admin", "opted_out", "paused")) { query("call_schedules") { it.text("campaignCustomerId") == id && it.text("status") == "pending" }.forEach { updateScheduleStatus(it.id, "cancelled") }; query("sms_schedules") { it.text("campaignCustomerId") == id && it.text("status") == "queued" }.forEach { updateSmsScheduleStatus(it.id, "cancelled") } } }
     fun scheduleFollowUp(id: String, nextCallAt: Long?, nextSmsAt: Long?, note: String): Boolean { val cc = read("campaign_customers", id) ?: return false; if (cc.text("status") in listOf("admin", "opted_out")) return false; val customerId = cc.text("customerId"); val phone = cc.text("phone"); val campaignId = cc.text("campaignId"); save("campaign_customers", id, mapOf("status" to "follow_up", "followUpNote" to note.take(1000), "nextCallAt" to nextCallAt, "nextSmsAt" to nextSmsAt, "updatedAt" to System.currentTimeMillis())); nextCallAt?.let { saveSchedule(CallSchedule(customerId = customerId, phone = phone, runAt = it, note = note, campaignId = campaignId, campaignCustomerId = id, idempotencyKey = "$id:call:$it")) }; nextSmsAt?.let { saveSmsSchedule(SmsSchedule(customerId = customerId, phone = phone, runAt = it, message = note, note = note, campaignId = campaignId, campaignCustomerId = id, idempotencyKey = "$id:sms:$it")) }; return true }
-    fun advanceCampaign(id: String) { val current = read("campaign_customers", id) ?: return; val campaignId = current.text("campaignId"); val next = query("campaign_customers") { it.text("campaignId") == campaignId && it.text("status") == "queued" }.minByOrNull { it.int("sequence") } ?: return; val campaign = read("campaigns", campaignId) ?: return; val at = System.currentTimeMillis(); val customerId = next.text("customerId"); val phone = next.text("phone"); if (campaign.text("channel").contains("call")) { saveSchedule(CallSchedule(customerId = customerId, phone = phone, runAt = at, campaignId = campaignId, campaignCustomerId = next.id, idempotencyKey = "$campaignId:call:${next.id}:$at")); if (campaign.text("channel") == "call_sms" && campaign.text("smsTemplate").isNotBlank()) saveSmsSchedule(SmsSchedule(customerId = customerId, phone = phone, runAt = at, message = campaign.text("smsTemplate"), campaignId = campaignId, campaignCustomerId = next.id, idempotencyKey = "$campaignId:sms:${next.id}:$at")); save("campaign_customers", next.id, mapOf("status" to "call_scheduled")) } else if (campaign.text("channel") == "sms" && campaign.text("smsTemplate").isNotBlank()) { saveSmsSchedule(SmsSchedule(customerId = customerId, phone = phone, runAt = at, message = campaign.text("smsTemplate"), campaignId = campaignId, campaignCustomerId = next.id, idempotencyKey = "$campaignId:sms:${next.id}:$at")); save("campaign_customers", next.id, mapOf("status" to "sms_scheduled")) } }
+    /** Queue the campaign SMS only after a completed call, never alongside the call itself. */
+    fun scheduleCampaignSmsAfterCall(id: String, delayMs: Long = 60_000L): Boolean {
+        val member = read("campaign_customers", id) ?: return false
+        if (member.text("status") in listOf("admin", "opted_out", "paused")) return false
+        val campaign = read("campaigns", member.text("campaignId")) ?: return false
+        if (campaign.text("channel") != "call_sms") return false
+        val template = campaign.text("smsTemplate")
+        if (template.isBlank()) return false
+        saveSmsSchedule(SmsSchedule(
+            customerId = member.text("customerId"),
+            phone = member.text("phone"),
+            runAt = System.currentTimeMillis() + delayMs.coerceIn(0L, 86_400_000L),
+            message = template,
+            campaignId = campaign.id,
+            campaignCustomerId = id,
+            idempotencyKey = "$id:sms:after-call",
+        ))
+        return true
+    }
+
+    fun advanceCampaign(id: String) {
+        val current = read("campaign_customers", id) ?: return
+        val campaignId = current.text("campaignId")
+        val next = query("campaign_customers") {
+            it.text("campaignId") == campaignId && it.text("status") == "queued"
+        }.minByOrNull { it.int("sequence") } ?: return
+        val campaign = read("campaigns", campaignId) ?: return
+        val at = System.currentTimeMillis()
+        val customerId = next.text("customerId")
+        val phone = next.text("phone")
+        if (campaign.text("channel").contains("call")) {
+            saveSchedule(CallSchedule(
+                customerId = customerId, phone = phone, runAt = at,
+                campaignId = campaignId, campaignCustomerId = next.id,
+                idempotencyKey = "$campaignId:call:${next.id}",
+            ))
+            save("campaign_customers", next.id, mapOf("status" to "call_scheduled"))
+        } else if (campaign.text("channel") == "sms" && campaign.text("smsTemplate").isNotBlank()) {
+            saveSmsSchedule(SmsSchedule(
+                customerId = customerId, phone = phone, runAt = at,
+                message = campaign.text("smsTemplate"), campaignId = campaignId,
+                campaignCustomerId = next.id, idempotencyKey = "$campaignId:sms:${next.id}",
+            ))
+            save("campaign_customers", next.id, mapOf("status" to "sms_scheduled"))
+        }
+    }
 
     private fun scheduleFrom(d: LocalDocument) = CallSchedule(d.id, d.text("customerId"), d.text("phone"), d.long("runAt"), d.text("status"), d.text("note"), d.nullableText("campaignId"), d.nullableText("campaignCustomerId"), d.nullableText("idempotencyKey"), d.int("attempts"))
     private fun smsScheduleFrom(d: LocalDocument) = SmsSchedule(d.id, d.text("customerId"), d.text("phone"), d.long("runAt"), d.text("message"), d.text("status"), d.nullableText("campaignId"), d.text("note"), d.nullableText("campaignCustomerId"), d.nullableText("idempotencyKey"), d.int("attempts"))
