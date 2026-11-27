@@ -858,8 +858,8 @@ class GatewayRuntime private constructor(context: Context) {
                 return@repeat
             }
             if (hasActiveWork()) {
-                customers.updateScheduleStatus(schedule.id.orEmpty(), "failed", "gateway busy")
-                AppLog.w("scheduled call ${schedule.id} skipped because gateway is busy")
+                customers.deferSchedule(schedule.id.orEmpty(), System.currentTimeMillis() + 60_000L, "gateway busy")
+                AppLog.w("scheduled call ${schedule.id} deferred because gateway is busy")
                 return@repeat
             }
             try {
