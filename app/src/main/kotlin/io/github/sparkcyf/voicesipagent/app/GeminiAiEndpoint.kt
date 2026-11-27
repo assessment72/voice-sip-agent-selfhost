@@ -693,7 +693,7 @@ ${context.salesInfo}
                     if (turnSpeechStartedAt == null) turnSpeechStartedAt = now
                     lastSpeechAt = now
                 } else if (turnSpeechStartedAt != null && lastSpeechAt != null &&
-                    now - lastSpeechAt!! >= 600 && turnEndGate.trySignal()) {
+                    now - lastSpeechAt!! >= 350 && turnEndGate.trySignal()) {
                     // Finalize the caller turn explicitly. Without this signal Gemini can keep
                     // waiting for a server-side VAD edge that is unreliable on narrowband
                     // cellular audio, leaving the caller unheard after the opening greeting.
