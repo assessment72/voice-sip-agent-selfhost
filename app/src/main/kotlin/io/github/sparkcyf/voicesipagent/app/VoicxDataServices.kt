@@ -247,6 +247,15 @@ internal class VoicxCustomerRepository(private val store: VoicxFirebaseStore) {
                 "receivedAt" to receivedAt,
                 "createdAt" to System.currentTimeMillis(),
             ))
+            val normalizedReply = body.trim().lowercase().replace(Regex("\\s+"), " ")
+            val optedOut = normalizedReply in setOf("stop", "unsubscribe", "cancel", "إلغاء", "الغاء", "وقف", "لا ترسل", "لا ترسل لي", "أوقف الرسائل", "اوقف الرسائل")
+            if (optedOut) {
+                suppressPhone(phone)
+                query("sms_schedules") { it.text("phone") == phone && it.text("status") in listOf("queued", "pending", "running") }
+                    .forEach { save("sms_schedules", it.id, mapOf("status" to "cancelled", "error" to "customer opted out via inbound SMS")) }
+                query("customer_sms_sequences") { it.text("phone") == phone && it.text("status") != "completed" }
+                    .forEach { save("customer_sms_sequences", it.id, mapOf("status" to "opted_out", "updatedAt" to System.currentTimeMillis())) }
+            }
             true
         }
     }
