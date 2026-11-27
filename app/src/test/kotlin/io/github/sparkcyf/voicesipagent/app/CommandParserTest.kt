@@ -1,0 +1,23 @@
+package io.github.sparkcyf.voicesipagent.app
+
+import org.junit.Assert.assertEquals
+import org.junit.Test
+
+class CommandParserTest {
+    @Test fun commandNameIgnoresBotSuffixAndLeadingWhitespace() {
+        val command = CommandParser.parse("  /sms@voicx_bot  +967730501035 | أهلاً  ")
+        assertEquals("/sms", command.name)
+        assertEquals("+967730501035 | أهلاً", command.argument)
+    }
+
+    @Test fun finalFieldKeepsVerticalBarsInsideMessage() {
+        val fields = CommandParser.parse("/sms +967730501035 | عرض | سعر | اليوم").fields(limit = 2)
+        assertEquals(listOf("+967730501035", "عرض | سعر | اليوم"), fields)
+    }
+
+    @Test fun blankInputProducesNoCommandOrFields() {
+        val command = CommandParser.parse("   ")
+        assertEquals("", command.name)
+        assertEquals(emptyList<String>(), command.fields())
+    }
+}

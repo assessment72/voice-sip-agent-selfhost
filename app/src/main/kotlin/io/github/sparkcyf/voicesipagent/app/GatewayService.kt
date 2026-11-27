@@ -342,9 +342,9 @@ class GatewayService : Service() {
                             withContext(Dispatchers.IO) { client.sendMessage(update.chatId, adminReply.text, adminReply.buttons) }
                             continue
                         }
-                        val commandParts = update.text.trim().split(Regex("\\s+"), limit = 2)
-                        val command = commandParts.firstOrNull().orEmpty().substringBefore('@').lowercase()
-                        val argument = commandParts.getOrNull(1).orEmpty().trim()
+                        val parsedCommand = CommandParser.parse(update.text)
+                        val command = parsedCommand.name
+                        val argument = parsedCommand.argument
                         val reply = try {
                             when (command) {
                                 "/start", "/help" ->
@@ -367,24 +367,24 @@ class GatewayService : Service() {
                                     else { runtime.searchCustomers(argument) { result -> scope.launch(Dispatchers.IO) { runCatching { client.sendMessage(update.chatId, result.take(3900)) } } }; "جارٍ البحث عن العملاء وإرسال النتائج." }
                                 }
                                 "/customer_add" -> {
-                                    val fields = argument.split('|').map { it.trim() }
+                                    val fields = parsedCommand.fields()
                                     if (fields.size < 5 || fields[0].isBlank() || fields[1].isBlank()) "الاستخدام: /customer_add رقم | اسم | وظيفة | شركة | تعليمات"
                                     else { runtime.saveCustomer(VoicxCustomer(phone = fields[0], name = fields[1], role = fields[2], company = fields[3], instructions = fields.drop(4).joinToString(" | "))) { result -> scope.launch(Dispatchers.IO) { runCatching { client.sendMessage(update.chatId, "نتيجة حفظ العميل: $result") } } }; "تم استلام بيانات العميل للحفظ." }
                                 }
                                 "/schedule_add" -> {
-                                    val fields = argument.split('|').map { it.trim() }; val at = fields.getOrNull(2)?.toLongOrNull()
+                                    val fields = parsedCommand.fields(); val at = fields.getOrNull(2)?.toLongOrNull()
                                     if (fields.size < 3 || fields[0].isBlank() || fields[1].isBlank() || at == null || at <= System.currentTimeMillis()) "الاستخدام: /schedule_add customerId | رقم | وقت Unix ms | ملاحظة"
                                     else { runtime.saveCallSchedule(CallSchedule(customerId = fields[0], phone = fields[1], runAt = at, note = fields.getOrElse(3) { "" })) { result -> scope.launch(Dispatchers.IO) { runCatching { client.sendMessage(update.chatId, "نتيجة الجدولة: $result") } } }; "تم استلام موعد الاتصال." }
                                 }
                                 "/schedule_list" -> { runtime.listCallSchedules { result -> scope.launch(Dispatchers.IO) { runCatching { client.sendMessage(update.chatId, result.take(3900)) } } }; "جارٍ تحميل مواعيد الاتصالات." }
                                 "/sms_schedule_add" -> {
-                                    val fields = argument.split('|').map { it.trim() }; val at = fields.getOrNull(2)?.toLongOrNull()
+                                    val fields = parsedCommand.fields(); val at = fields.getOrNull(2)?.toLongOrNull()
                                     if (fields.size < 4 || fields[0].isBlank() || fields[1].isBlank() || at == null || at <= System.currentTimeMillis() || fields[3].isBlank()) "الاستخدام: /sms_schedule_add customerId | رقم | وقت Unix ms | رسالة | ملاحظة"
                                     else { runtime.saveSmsSchedule(SmsSchedule(customerId = fields[0], phone = fields[1], runAt = at ?: 0L, message = fields[3], note = fields.getOrElse(4) { "" })) { result -> scope.launch(Dispatchers.IO) { runCatching { client.sendMessage(update.chatId, "نتيجة جدولة SMS: $result") } } }; "تم استلام موعد SMS." }
                                 }
                                 "/sms_schedule_list" -> { runtime.listSmsSchedules { result -> scope.launch(Dispatchers.IO) { runCatching { client.sendMessage(update.chatId, result.take(3900)) } } }; "جارٍ تحميل رسائل SMS المجدولة." }
                                 "/campaign_add" -> {
-                                    val fields = argument.split('|').map { it.trim() }
+                                    val fields = parsedCommand.fields()
                                     val callAt = fields.getOrNull(2)?.toLongOrNull(); val smsAt = fields.getOrNull(3)?.toLongOrNull()
                                     if (fields.size < 5 || fields[0].isBlank() || fields[1].isBlank() || callAt == null || smsAt == null || callAt <= System.currentTimeMillis() || smsAt <= System.currentTimeMillis() || fields[4].isBlank()) "الاستخدام: /campaign_add customerId | رقم | وقت الاتصال Unix ms | وقت SMS Unix ms | الرسالة | ملاحظة"
                                     else {
@@ -398,7 +398,7 @@ class GatewayService : Service() {
                                     }
                                 }
                                 "/campaign_start" -> {
-                                    val fields = argument.split('|').map { it.trim() }
+                                    val fields = parsedCommand.fields()
                                     val startAt = fields.getOrNull(1)?.let(::campaignTime)
                                     val channel = fields.getOrNull(3).orEmpty().ifBlank { "call_sms" }
                                     if (fields.size < 4 || fields[0].isBlank() || startAt == null || startAt <= System.currentTimeMillis() || channel !in setOf("call", "sms", "call_sms"))
@@ -411,34 +411,34 @@ class GatewayService : Service() {
                                     }
                                 }
                                 "/followup" -> {
-                                    val fields = argument.split('|').map { it.trim() }
+                                    val fields = parsedCommand.fields()
                                     val callAt = fields.getOrNull(1)?.let(::campaignTime); val smsAt = fields.getOrNull(2)?.takeIf { it.isNotBlank() }?.let(::campaignTime)
                                     if (fields.size < 2 || fields[0].isBlank() || callAt == null || callAt <= System.currentTimeMillis()) "الاستخدام: /followup رقم الهاتف | 2026-12-03 09:00 | 2026-12-02 17:00 | ملاحظة"
                                     else { runtime.followUp(fields[0], callAt, smsAt, fields.getOrElse(3) { "" }) { result -> scope.launch(Dispatchers.IO) { runCatching { client.sendMessage(update.chatId, result) } } }; "تم استلام قرار المتابعة." }
                                 }
                                 "/mark_interested" -> {
-                                    val fields = argument.split('|', limit = 2).map { it.trim() }
+                                    val fields = parsedCommand.fields(limit = 2)
                                     if (fields.isEmpty() || fields[0].isBlank()) "الاستخدام: /mark_interested رقم الهاتف | ملاحظة الإدارة"
                                     else { runtime.markInterested(fields[0], fields.getOrElse(1) { "" }) { result -> scope.launch(Dispatchers.IO) { runCatching { client.sendMessage(update.chatId, result) } } }; "تم استلام تحويل العميل للإدارة." }
                                 }
                                 "/pause_customer" -> {
-                                    val fields = argument.split('|', limit = 2).map { it.trim() }
+                                    val fields = parsedCommand.fields(limit = 2)
                                     if (fields.isEmpty() || fields[0].isBlank()) "الاستخدام: /pause_customer رقم الهاتف | السبب"
                                     else { runtime.pauseCustomer(fields[0], fields.getOrElse(1) { "" }) { result -> scope.launch(Dispatchers.IO) { runCatching { client.sendMessage(update.chatId, result) } } }; "تم استلام طلب الإيقاف." }
                                 }
                                 "/resume_customer" -> {
-                                    val fields = argument.split('|').map { it.trim() }; val callAt = fields.getOrNull(1)?.let(::campaignTime); val smsAt = fields.getOrNull(2)?.takeIf { it.isNotBlank() }?.let(::campaignTime)
+                                    val fields = parsedCommand.fields(); val callAt = fields.getOrNull(1)?.let(::campaignTime); val smsAt = fields.getOrNull(2)?.takeIf { it.isNotBlank() }?.let(::campaignTime)
                                     if (fields.size < 2 || fields[0].isBlank() || callAt == null || callAt <= System.currentTimeMillis()) "الاستخدام: /resume_customer رقم الهاتف | 2026-12-03 09:00 | 2026-12-02 17:00 | ملاحظة"
                                     else { runtime.resumeCustomer(fields[0], callAt, smsAt, fields.getOrElse(3) { "" }) { result -> scope.launch(Dispatchers.IO) { runCatching { client.sendMessage(update.chatId, result) } } }; "تم استلام طلب الاستئناف." }
                                 }
                                 "/sms" -> {
-                                    val fields = argument.split('|', limit = 2).map { it.trim() }
+                                    val fields = parsedCommand.fields(limit = 2)
                                     if (fields.size < 2) "الاستخدام: /sms رقم | رسالة"
                                     else { runtime.sendSms(fields[0], fields[1]) { result -> scope.launch(Dispatchers.IO) { runCatching { client.sendMessage(update.chatId, result) } } }; "تم استلام طلب SMS." }
                                 }
 
                                 "/sms_sequence" -> {
-                                    val fields = argument.split('|').map { it.trim() }
+                                    val fields = parsedCommand.fields()
                                     val firstAt = fields.getOrNull(1)?.let(::campaignTime)
                                     if (fields.size < 2 || fields[0].isBlank() || firstAt == null || firstAt <= System.currentTimeMillis()) {
                                         "الاستخدام: /sms_sequence رقم | 2026-12-01 09:00\nينشئ Gemini ثلاث رسائل مخصصة ويحفظها، ثم يجدول الرسالة الأولى تلقائياً."
@@ -450,7 +450,7 @@ class GatewayService : Service() {
                                     }
                                 }
                                 "/sms_sequence_all" -> {
-                                    val fields = argument.split('|').map { it.trim() }
+                                    val fields = parsedCommand.fields()
                                     val firstAt = fields.getOrNull(1)?.let(::campaignTime)
                                     if (fields.size < 2 || fields[0].isBlank() || firstAt == null || firstAt <= System.currentTimeMillis()) {
                                         "الاستخدام: /sms_sequence_all المجموعة أو all | 2026-12-01 09:00\nينشئ ثلاث رسائل مخصصة لكل عميل في المجموعة، ويحفظها ويجدول الأولى تلقائياً. تُستثنى أرقام إلغاء الاشتراك."
@@ -477,7 +477,7 @@ class GatewayService : Service() {
                                     }
                                 }
                                 "/sms_sequence_edit" -> {
-                                    val fields = argument.split('|', limit = 4).map { it.trim() }
+                                    val fields = parsedCommand.fields(limit = 4)
                                     val stage = fields.getOrNull(1)?.toIntOrNull()
                                     val at = fields.getOrNull(2)?.let(::campaignTime)
                                     if (fields.size < 4 || fields[0].isBlank() || stage == null || stage !in 1..3 || at == null || at <= System.currentTimeMillis() || fields[3].isBlank()) {
@@ -539,7 +539,7 @@ class GatewayService : Service() {
                                 }
                                 "/ai_stop" -> { runtime.stopAiCall(); "تم قبول طلب إيقاف مكالمة Gemini." }
                                 "/call" -> {
-                                    val fields = argument.split('|').map { it.trim() }
+                                    val fields = parsedCommand.fields()
                                     if (fields.size < 4 || fields[0].isBlank()) "الاستخدام: /call الرقم | الاسم | الوظيفة | الشركة"
                                     else {
                                         runtime.startAiCall(fields[0], fields[1], fields[2], fields[3])

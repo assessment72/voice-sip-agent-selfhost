@@ -80,13 +80,25 @@ internal object CustomerSuppressionPolicy {
         globallyOptedOut || memberStatus in listOf("admin", "opted_out", "paused")
 }
 
-internal class LocalDatabase(context: Context) : SQLiteOpenHelper(context, "voicx_local.db", null, 1) {
+internal class LocalDatabase(context: Context) : SQLiteOpenHelper(context, "voicx_local.db", null, 2) {
     private val databaseFile = context.getDatabasePath("voicx_local.db")
-    override fun onCreate(db: SQLiteDatabase) {
-        db.execSQL("CREATE TABLE documents (collection TEXT NOT NULL, id TEXT NOT NULL, payload TEXT NOT NULL, PRIMARY KEY(collection, id))")
-        db.execSQL("CREATE INDEX documents_collection_idx ON documents(collection)")
+    override fun onConfigure(db: SQLiteDatabase) {
+        super.onConfigure(db)
+        db.setForeignKeyConstraintsEnabled(true)
+        db.enableWriteAheadLogging()
     }
-    override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) = Unit
+    override fun onCreate(db: SQLiteDatabase) {
+        db.execSQL("CREATE TABLE documents (collection TEXT NOT NULL, id TEXT NOT NULL, payload TEXT NOT NULL, updated_at INTEGER NOT NULL, PRIMARY KEY(collection, id))")
+        db.execSQL("CREATE INDEX documents_collection_idx ON documents(collection)")
+        db.execSQL("CREATE INDEX documents_updated_at_idx ON documents(updated_at)")
+    }
+    override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
+        if (oldVersion < 2) {
+            db.execSQL("ALTER TABLE documents ADD COLUMN updated_at INTEGER NOT NULL DEFAULT 0")
+            db.execSQL("UPDATE documents SET updated_at = ? WHERE updated_at = 0", arrayOf<Any>(System.currentTimeMillis()))
+            db.execSQL("CREATE INDEX IF NOT EXISTS documents_updated_at_idx ON documents(updated_at)")
+        }
+    }
 
     @Synchronized fun exportTo(output: OutputStream) {
         writableDatabase.execSQL("PRAGMA wal_checkpoint(FULL)")
@@ -99,6 +111,9 @@ internal class LocalDatabase(context: Context) : SQLiteOpenHelper(context, "voic
         val header = temp.inputStream().use { it.readNBytes(16).toString(Charsets.US_ASCII) }
         require(header == "SQLite format 3\u0000") { "الملف ليس قاعدة SQLite صالحة" }
         SQLiteDatabase.openDatabase(temp.path, null, SQLiteDatabase.OPEN_READONLY).use { checkDb ->
+            checkDb.rawQuery("PRAGMA integrity_check", null).use { cursor ->
+                require(cursor.moveToFirst() && cursor.getString(0) == "ok") { "قاعدة SQLite تالفة" }
+            }
             checkDb.rawQuery("SELECT count(*) FROM documents", null).use { cursor -> require(cursor.moveToFirst()) { "قاعدة SQLite لا تحتوي على جدول Voicx" } }
         }
         close()
@@ -125,7 +140,7 @@ internal class LocalDatabase(context: Context) : SQLiteOpenHelper(context, "voic
             else -> value
         }) }
         writableDatabase.insertWithOnConflict("documents", null, android.content.ContentValues().apply {
-            put("collection", collection); put("id", id); put("payload", json.toString())
+            put("collection", collection); put("id", id); put("payload", json.toString()); put("updated_at", System.currentTimeMillis())
         }, SQLiteDatabase.CONFLICT_REPLACE)
     }
 
@@ -149,7 +164,7 @@ internal class LocalDatabase(context: Context) : SQLiteOpenHelper(context, "voic
     @Synchronized fun patch(collection: String, id: String, values: Map<String, Any?>) {
         val merged = LocalDocumentPatch.merge(read(collection, id)?.data, values)
         writableDatabase.insertWithOnConflict("documents", null, android.content.ContentValues().apply {
-            put("collection", collection); put("id", id); put("payload", merged.toString())
+            put("collection", collection); put("id", id); put("payload", merged.toString()); put("updated_at", System.currentTimeMillis())
         }, SQLiteDatabase.CONFLICT_REPLACE)
     }
 
