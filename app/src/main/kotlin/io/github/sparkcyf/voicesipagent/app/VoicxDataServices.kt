@@ -270,15 +270,24 @@ internal class VoicxCustomerRepository(private val store: VoicxFirebaseStore) {
             "customerId" to customerId, "phone" to customer.phone, "firstAt" to firstAt,
             "secondAt" to secondAt, "thirdAt" to thirdAt,
             "firstMessage" to first.take(1000), "secondMessage" to second.take(1000),
-            "thirdMessage" to third.take(1000), "status" to "scheduled",
+            "thirdMessage" to third.take(1000), "status" to "draft",
             "firstSentAt" to 0L, "secondSentAt" to 0L, "thirdSentAt" to 0L,
             "createdAt" to System.currentTimeMillis(), "updatedAt" to System.currentTimeMillis(),
         ))
+        id
+    }
+
+    fun activateCustomerSmsSequence(id: String): Boolean = db.transaction {
+        val sequence = read("customer_sms_sequences", id) ?: return@transaction false
+        if (sequence.text("status") != "draft") return@transaction false
+        if (isPhoneOptedOut(sequence.text("phone"))) return@transaction false
         saveSmsScheduleInTransaction(SmsSchedule(
-            customerId = customerId, phone = customer.phone, runAt = firstAt, message = first,
+            customerId = sequence.text("customerId"), phone = sequence.text("phone"),
+            runAt = sequence.long("firstAt"), message = sequence.text("firstMessage"),
             note = "customer_sequence:$id:1", idempotencyKey = "customer-sequence:$id:1",
         ))
-        id
+        save("customer_sms_sequences", id, mapOf("status" to "scheduled", "updatedAt" to System.currentTimeMillis()))
+        true
     }
 
     fun updateCustomerSmsSequence(id: String, stage: Int, runAt: Long, message: String): Boolean = db.transaction {
