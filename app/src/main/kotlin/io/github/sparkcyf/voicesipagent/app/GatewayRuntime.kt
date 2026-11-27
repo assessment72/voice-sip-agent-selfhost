@@ -975,7 +975,7 @@ class GatewayRuntime private constructor(context: Context) {
     fun localDatabaseStatus(): String = "SQLite محلية متصلة؛ البيانات محفوظة داخل الهاتف"
     fun localDatabaseSummary(): String = runCatching {
         val db = firebaseStore.requireDatabase()
-        listOf("customers", "customer_memories", "call_summaries", "call_schedules", "sms_schedules", "campaigns", "campaign_customers")
+        listOf("customers", "customer_memories", "customer_messages", "customer_sms_sequences", "call_summaries", "call_schedules", "sms_schedules", "campaigns", "campaign_customers")
             .joinToString("\n") { "$it: ${db.all(it).size}" }
     }.getOrElse { "تعذر قراءة قاعدة البيانات المحلية: ${it.javaClass.simpleName}" }
     fun localDatabaseCustomers(): String = runCatching {
@@ -1035,6 +1035,15 @@ class GatewayRuntime private constructor(context: Context) {
         callback(runCatching { customers.activateCustomerSmsSequence(id) }
             .fold({ if (it) "تم تفعيل التسلسل؛ الرسالة الأولى مجدولة، والثانية بعد 7 أيام على الأقل من إرسال الأولى، والثالثة بعد 7 أيام على الأقل من الثانية." else "لم يتم التفعيل؛ تحقق من المعرّف أو حالة العميل." },
                 { "تعذر التفعيل: ${it.message ?: it.javaClass.simpleName}" }))
+    }
+    fun listCustomerSmsSequences(callback: (String) -> Unit) = worker.execute {
+        callback(runCatching {
+            customers.listCustomerSmsSequences().joinToString("\\n") { sequence ->
+                val local = java.time.Instant.ofEpochMilli(sequence.long("firstAt")).atZone(java.time.ZoneId.systemDefault())
+                    .format(java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm"))
+                "${sequence.id} | ${sequence.text("phone")} | ${sequence.text("status")} | الأولى: $local"
+            }.ifBlank { "لا توجد تسلسلات رسائل للعملاء." }
+        }.getOrElse { "تعذر قراءة تسلسلات الرسائل: ${it.javaClass.simpleName}" })
     }
     fun editCustomerSmsSequence(id: String, stage: Int, runAt: Long, message: String, callback: (String) -> Unit = {}) = worker.execute {
         callback(runCatching { customers.updateCustomerSmsSequence(id, stage, runAt, message) }
