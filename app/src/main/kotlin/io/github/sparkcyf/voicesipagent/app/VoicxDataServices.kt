@@ -42,6 +42,27 @@ internal class VoicxFirebaseStore(context: Context) {
 
 enum class FirebaseState { DISCONNECTED, CONNECTED, ERROR }
 
+internal object LocalDocumentPatch {
+    fun merge(existing: JSONObject?, values: Map<String, Any?>): JSONObject {
+        val merged = existing?.let { JSONObject(it.toString()) } ?: JSONObject()
+        values.forEach { (key, value) ->
+            if (value == null) merged.remove(key)
+            else merged.put(key, when (value) {
+                is List<*> -> JSONArray(value)
+                else -> value
+            })
+        }
+        return merged
+    }
+}
+
+internal object ScheduleLeasePolicy {
+    const val CLAIM_LEASE_MS = 30 * 60 * 1000L
+
+    fun isExpired(status: String, claimedAt: Long, now: Long): Boolean =
+        status == "running" && claimedAt > 0L && claimedAt <= now - CLAIM_LEASE_MS
+}
+
 internal class LocalDatabase(context: Context) : SQLiteOpenHelper(context, "voicx_local.db", null, 1) {
     private val databaseFile = context.getDatabasePath("voicx_local.db")
     override fun onCreate(db: SQLiteDatabase) {
@@ -109,17 +130,7 @@ internal class LocalDatabase(context: Context) : SQLiteOpenHelper(context, "voic
      * A null value removes that key; non-null values replace only their own keys.
      */
     @Synchronized fun patch(collection: String, id: String, values: Map<String, Any?>) {
-        val merged = read(collection, id)?.data ?: JSONObject()
-        values.forEach { (key, value) ->
-            if (value == null) {
-                merged.remove(key)
-            } else {
-                merged.put(key, when (value) {
-                    is List<*> -> JSONArray(value)
-                    else -> value
-                })
-            }
-        }
+        val merged = LocalDocumentPatch.merge(read(collection, id)?.data, values)
         writableDatabase.insertWithOnConflict("documents", null, android.content.ContentValues().apply {
             put("collection", collection); put("id", id); put("payload", merged.toString())
         }, SQLiteDatabase.CONFLICT_REPLACE)
@@ -157,7 +168,6 @@ data class CallSchedule(val id: String? = null, val customerId: String, val phon
 data class SmsSchedule(val id: String? = null, val customerId: String = "", val phone: String, val runAt: Long, val message: String, val status: String = "queued", val campaignId: String? = null, val note: String = "", val campaignCustomerId: String? = null, val idempotencyKey: String? = null, val attempts: Int = 0)
 
 private fun idOrNew(id: String?) = id?.takeIf { it.isNotBlank() } ?: UUID.randomUUID().toString()
-private const val SCHEDULE_CLAIM_LEASE_MS = 30 * 60 * 1000L
 
 internal class VoicxCustomerRepository(private val store: VoicxFirebaseStore) {
     private val db get() = store.requireDatabase()
@@ -228,7 +238,7 @@ internal class VoicxCustomerRepository(private val store: VoicxFirebaseStore) {
         db.transaction {
             // Recover abandoned claims, then select and mark one due item while holding
             // the same SQLite write transaction. Competing workers cannot claim it twice.
-            query(name) { it.text("status") == "running" && it.long("claimedAt") in 1..(now - SCHEDULE_CLAIM_LEASE_MS) }
+            query(name) { ScheduleLeasePolicy.isExpired(it.text("status"), it.long("claimedAt"), now) }
                 .forEach { save(name, it.id, mapOf("status" to status, "claimedAt" to null)) }
             val candidate = query(name) { it.text("status") == status && it.long("runAt") <= now }
                 .minByOrNull { it.long("runAt") } ?: return@transaction null
