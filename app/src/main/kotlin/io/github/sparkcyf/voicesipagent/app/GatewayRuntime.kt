@@ -107,6 +107,7 @@ class GatewayRuntime private constructor(context: Context) {
     val settings: GatewaySettings get() = _settings.value
     private val firebaseStore = VoicxFirebaseStore(app)
     private val customers = VoicxCustomerRepository(firebaseStore)
+    private val smsWriter = GeminiSmsWriter { settings.geminiApiKey }
 
     // Service entry points can run before the worker initializes. Use the actual saved switch and
     // role immediately so opening the app or receiving BOOT_COMPLETED cannot flash an idle notification.
@@ -931,8 +932,22 @@ class GatewayRuntime private constructor(context: Context) {
             }
             try {
                 val normalizedPhone = PhoneNumberNormalizer.normalizeYemen(schedule.phone)
-                SmsApiClient(settings.smsApiKey).send(normalizedPhone, schedule.message).getOrThrow()
-                customers.updateSmsScheduleStatus(schedule.id.orEmpty(), "sent")
+                val stage = customers.sequenceStage(schedule)
+                val finalMessage = if (stage != null && stage > 1) {
+                    val sequenceId = schedule.note.split(':').getOrNull(1).orEmpty()
+                    val sequence = customers.customerSmsSequence(sequenceId) ?: error("سجل تسلسل الرسائل غير موجود")
+                    val customer = customers.findById(sequence.text("customerId")) ?: error("بيانات العميل غير موجودة")
+                    val since = if (stage == 2) sequence.long("firstSentAt") else sequence.long("secondSentAt")
+                    val replies = customers.customerSmsRepliesSince(customer.id.orEmpty(), since).map { it.text("body") }
+                    val prior = buildList {
+                        add(sequence.text("firstMessage"))
+                        if (stage == 3) add(sequence.text("secondMessage"))
+                    }
+                    smsWriter.createFollowUp(customer, stage, replies, prior, salesAdminStore.assistantContext())
+                } else schedule.message
+                SmsApiClient(settings.smsApiKey).send(normalizedPhone, finalMessage).getOrThrow()
+                if (stage != null) customers.completeCustomerSmsStage(schedule, finalMessage)
+                else customers.updateSmsScheduleStatus(schedule.id.orEmpty(), "sent")
                 AppLog.i("scheduled SMS sent: ${schedule.id}")
             } catch (e: Exception) {
                 customers.updateSmsScheduleStatus(schedule.id.orEmpty(), "failed", e.message ?: e.javaClass.simpleName)
@@ -1003,6 +1018,29 @@ class GatewayRuntime private constructor(context: Context) {
         FirebaseState.DISCONNECTED -> "مزامنة Firebase متوقفة؛ البيانات محفوظة محلياً في SQLite."
     }
     fun saveCustomer(customer: VoicxCustomer, callback: (String) -> Unit = {}) = worker.execute { callback(runCatching { customers.upsert(customer) }.getOrElse { "خطأ حفظ العميل: ${it.javaClass.simpleName}" }) }
+
+    /** Generate and persist three editable SMS drafts. Sending is impossible until confirmCustomerSmsSequence. */
+    fun prepareCustomerSmsSequence(phone: String, firstAt: Long, callback: (String) -> Unit) = worker.execute {
+        callback(runCatching {
+            require(settings.geminiApiKey.isNotBlank()) { "مفتاح Gemini API غير مضبوط" }
+            val normalized = PhoneNumberNormalizer.normalizeYemen(phone)
+            require(!customers.isPhoneOptedOut(normalized)) { "العميل ألغى الاشتراك في الرسائل" }
+            val customer = customers.findByPhone(normalized) ?: error("الرقم غير مسجل كعميل؛ أضف العميل أولاً")
+            val drafts = smsWriter.createThreeMessages(customer, salesAdminStore.assistantContext())
+            val id = customers.createCustomerSmsSequence(customer.id.orEmpty(), firstAt, drafts[0], drafts[1], drafts[2])
+            "تم إنشاء مسودات الرسائل الثلاث للعميل ${customer.name}. لم يتم جدولة الإرسال بعد.\nالمعرّف: $id\n1) ${drafts[0]}\n2) ${drafts[1]}\n3) ${drafts[2]}\nللتفعيل بعد المراجعة: /sms_sequence_confirm $id"
+        }.getOrElse { "تعذر إعداد رسائل العميل: ${it.message ?: it.javaClass.simpleName}" })
+    }
+    fun confirmCustomerSmsSequence(id: String, callback: (String) -> Unit = {}) = worker.execute {
+        callback(runCatching { customers.activateCustomerSmsSequence(id) }
+            .fold({ if (it) "تم تفعيل التسلسل؛ الرسالة الأولى مجدولة، والثانية بعد 7 أيام على الأقل من إرسال الأولى، والثالثة بعد 7 أيام على الأقل من الثانية." else "لم يتم التفعيل؛ تحقق من المعرّف أو حالة العميل." },
+                { "تعذر التفعيل: ${it.message ?: it.javaClass.simpleName}" }))
+    }
+    fun editCustomerSmsSequence(id: String, stage: Int, runAt: Long, message: String, callback: (String) -> Unit = {}) = worker.execute {
+        callback(runCatching { customers.updateCustomerSmsSequence(id, stage, runAt, message) }
+            .fold({ if (it) "تم حفظ تعديل الرسالة $stage وموعدها." else "لم يتم التعديل؛ تحقق من المعرّف والحالة." },
+                { "تعذر التعديل: ${it.message ?: it.javaClass.simpleName}" }))
+    }
     fun createCampaign(campaign: Campaign, callback: (String) -> Unit = {}) = worker.execute {
         callback(runCatching { customers.createCampaign(campaign) }.getOrElse { "خطأ إنشاء الحملة: ${it.javaClass.simpleName}" })
     }
