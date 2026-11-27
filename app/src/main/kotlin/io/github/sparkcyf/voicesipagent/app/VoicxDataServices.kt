@@ -653,8 +653,14 @@ internal class VoicxCustomerRepository(private val store: VoicxFirebaseStore) {
         id
     }
 
-        fun claimDueSchedule(now: Long = System.currentTimeMillis()): CallSchedule? = claim("call_schedules", "pending", now) { scheduleFrom(it) }?.second
+    fun claimDueSchedule(now: Long = System.currentTimeMillis()): CallSchedule? = claim("call_schedules", "pending", now) { scheduleFrom(it) }?.second
     fun updateScheduleStatus(id: String, status: String, error: String = "") { if (id.isNotBlank()) save("call_schedules", id, mapOf("status" to status, "error" to error.takeIf(String::isNotBlank))) }
+    fun cancelCallSchedule(id: String, reason: String = "cancelled by administrator"): Boolean = db.transaction {
+        val current = read("call_schedules", id) ?: return@transaction false
+        if (current.text("status") in setOf("completed", "cancelled", "needs_reconciliation")) return@transaction false
+        save("call_schedules", id, mapOf("status" to "cancelled", "error" to reason.take(300)))
+        true
+    }
     fun renewCallScheduleLease(id: String, now: Long = System.currentTimeMillis()) {
         if (id.isNotBlank()) db.transaction {
             val current = read("call_schedules", id) ?: return@transaction
@@ -687,8 +693,14 @@ internal class VoicxCustomerRepository(private val store: VoicxFirebaseStore) {
 
     fun saveSmsSchedule(s: SmsSchedule): String = db.transaction { saveSmsScheduleInTransaction(s) }
 
-        fun claimDueSmsSchedule(now: Long = System.currentTimeMillis()): SmsSchedule? = claim("sms_schedules", "queued", now) { smsScheduleFrom(it) }?.second
+    fun claimDueSmsSchedule(now: Long = System.currentTimeMillis()): SmsSchedule? = claim("sms_schedules", "queued", now) { smsScheduleFrom(it) }?.second
     fun updateSmsScheduleStatus(id: String, status: String, error: String = "") { if (id.isNotBlank()) save("sms_schedules", id, mapOf("status" to status, "error" to error.takeIf(String::isNotBlank))) }
+    fun cancelSmsSchedule(id: String, reason: String = "cancelled by administrator"): Boolean = db.transaction {
+        val current = read("sms_schedules", id) ?: return@transaction false
+        if (current.text("status") in setOf("sent", "cancelled", "needs_reconciliation")) return@transaction false
+        save("sms_schedules", id, mapOf("status" to "cancelled", "error" to reason.take(300)))
+        true
+    }
 
     private fun <T> claim(name: String, status: String, now: Long, mapper: (LocalDocument) -> T): Pair<String, T>? =
         db.transaction {

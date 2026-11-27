@@ -324,7 +324,7 @@ class GatewayService : Service() {
                             continue
                         }
                         val initialCommand = CommandParser.parse(update.text).name
-                        if (initialCommand in setOf("/start", "/panel", "/db")) {
+                        if (initialCommand in setOf("/start", "/panel", "/menu", "/db")) {
                             panelSessions.remove(update.chatId)
                             val response = when (initialCommand) {
                                 "/db" -> handleVoicxPanel("voicx:db", runtime, update.chatId, client)
@@ -349,7 +349,7 @@ class GatewayService : Service() {
                         val reply = try {
                             when (command) {
                                 "/start", "/help", "/commands" ->
-                                    "Voicx Control جاهز. افتح اللوحة التفاعلية عبر /panel.\n\nأوامر سريعة:\n/status - حالة البوابة\n/sip - حالة SIP\n/calls - حالة المكالمات\n/db أو /db_status - ملخص SQLite المحلية\n/db_cleanup - حذف السجلات التشغيلية المنتهية القديمة فقط\n/db_customers - قراءة العملاء\n/db_schedules - قراءة الجدولة\n/db_export - يذكّرك بالتصدير من التطبيق (لا تُرسل نسخة قاعدة البيانات تلقائياً)\n/customer_search <نص> - البحث عن عميل\n/customer_add رقم | اسم | وظيفة | شركة | تعليمات - إضافة عميل\n/schedule_add customerId | رقم | وقت Unix ms | ملاحظة - جدولة اتصال\n/schedule_list - عرض مواعيد الاتصالات\n/sms_schedule_list - عرض رسائل SMS المجدولة\n/sms_sequence رقم | YYYY-MM-DD HH:mm - إنشاء وحفظ 3 رسائل Gemini وجدولة الأولى تلقائياً\n/sms_sequence_all المجموعة أو all | YYYY-MM-DD HH:mm - إنشاء تسلسلات مخصصة للمجموعة وجدولة الأولى تلقائياً\n/sms_sequence_list - عرض تسلسلات العملاء\n/sms_sequence_confirm ID - تفعيل مسودة قديمة\n/sms_sequence_edit ID | المرحلة | YYYY-MM-DD HH:mm | النص - تعديل رسالة وموعد\n/campaign_add ... - إنشاء حملة\n/admin - إعدادات المبيعات\n/account - سجل المكالمات\n/service_on أو /service_off - تشغيل أو إيقاف البوابة"
+                                    "Voicx Control جاهز. افتح القائمة عبر /menu أو /panel.\n\nالحالة: /status أو /health\nقاعدة البيانات: /db أو /database\nالعملاء: /customers أو /find نص\nإضافة عميل: /add_customer رقم | اسم | وظيفة | شركة | تعليمات\nجدولة اتصال: /schedule customerId | رقم | وقت Unix ms | ملاحظة\nجدولة SMS: /sms_schedule customerId | رقم | وقت Unix ms | رسالة | ملاحظة\nعرض الجدولة: /schedules أو /list_schedules\nإلغاء اتصال: /cancel_schedule ID\nإلغاء SMS: /cancel_sms ID\nتسلسلات SMS: /sms_sequence رقم | YYYY-MM-DD HH:mm\nالحملات: /campaign_start اسم | YYYY-MM-DD HH:mm | المجموعة | call أو sms أو call_sms | قالب SMS\nالصيانة: /db_cleanup\nالمبيعات: /admin\nسجل المكالمات: /account\nتشغيل أو إيقاف البوابة: /enable أو /disable"
                                 "/status", "/health" -> {
                                     val h = GatewayRuntime.get(this@GatewayService).health.value
                                     "Gateway: ${if (h.takeover) "ON" else "OFF"}\nSIP: ${if (h.sip.ready) "ready" else "not ready"}\nActive call: ${h.session != null || h.calls.owned > 0}"
@@ -365,29 +365,43 @@ class GatewayService : Service() {
                                     "جارٍ تنفيذ صيانة قاعدة البيانات؛ ستصل النتيجة بعد الانتهاء."
                                 }
                                 "/db_customers", "/customers" -> runtime.searchCustomers("") { result -> scope.launch(Dispatchers.IO) { runCatching { client.sendMessage(update.chatId, "العملاء:\n${result.take(3800)}") } } }.let { "جارٍ قراءة العملاء من SQLite المحلية." }
-                                "/db_schedules", "/schedules" -> { runtime.listCallSchedules { result -> scope.launch(Dispatchers.IO) { runCatching { client.sendMessage(update.chatId, "جدولة الاتصالات:\n${result.take(1800)}") } } }; runtime.listSmsSchedules { result -> scope.launch(Dispatchers.IO) { runCatching { client.sendMessage(update.chatId, "جدولة SMS:\n${result.take(1800)}") } } }; "جارٍ قراءة الجداول من SQLite المحلية." }
+                                "/db_schedules", "/schedules", "/list_schedules" -> { runtime.listCallSchedules { result -> scope.launch(Dispatchers.IO) { runCatching { client.sendMessage(update.chatId, "جدولة الاتصالات:\n${result.take(1800)}") } } }; runtime.listSmsSchedules { result -> scope.launch(Dispatchers.IO) { runCatching { client.sendMessage(update.chatId, "جدولة SMS:\n${result.take(1800)}") } } }; "جارٍ قراءة الجداول من SQLite المحلية." }
                                 "/db_export" -> "التصدير متاح من التطبيق عبر قسم قاعدة البيانات المحلية. لا أرسل ملف SQLite تلقائياً عبر Telegram لحماية بيانات العملاء؛ استخدم زر التصدير ثم شارك الملف يدوياً عند الحاجة."
-                                "/customer_search" -> {
+                                "/customer_search", "/find" -> {
                                     if (argument.isBlank()) "الاستخدام: /customer_search <نص>"
                                     else { runtime.searchCustomers(argument) { result -> scope.launch(Dispatchers.IO) { runCatching { client.sendMessage(update.chatId, result.take(3900)) } } }; "جارٍ البحث عن العملاء وإرسال النتائج." }
                                 }
-                                "/customer_add" -> {
+                                "/customer_add", "/add_customer" -> {
                                     val fields = parsedCommand.fields()
                                     if (fields.size < 5 || fields[0].isBlank() || fields[1].isBlank()) "الاستخدام: /customer_add رقم | اسم | وظيفة | شركة | تعليمات"
                                     else { runtime.saveCustomer(VoicxCustomer(phone = fields[0], name = fields[1], role = fields[2], company = fields[3], instructions = fields.drop(4).joinToString(" | "))) { result -> scope.launch(Dispatchers.IO) { runCatching { client.sendMessage(update.chatId, "نتيجة حفظ العميل: $result") } } }; "تم استلام بيانات العميل للحفظ." }
                                 }
-                                "/schedule_add" -> {
+                                "/schedule_add", "/schedule" -> {
                                     val fields = parsedCommand.fields(); val at = fields.getOrNull(2)?.toLongOrNull()
                                     if (fields.size < 3 || fields[0].isBlank() || fields[1].isBlank() || at == null || at <= System.currentTimeMillis()) "الاستخدام: /schedule_add customerId | رقم | وقت Unix ms | ملاحظة"
                                     else { runtime.saveCallSchedule(CallSchedule(customerId = fields[0], phone = fields[1], runAt = at, note = fields.getOrElse(3) { "" })) { result -> scope.launch(Dispatchers.IO) { runCatching { client.sendMessage(update.chatId, "نتيجة الجدولة: $result") } } }; "تم استلام موعد الاتصال." }
                                 }
-                                "/schedule_list" -> { runtime.listCallSchedules { result -> scope.launch(Dispatchers.IO) { runCatching { client.sendMessage(update.chatId, result.take(3900)) } } }; "جارٍ تحميل مواعيد الاتصالات." }
-                                "/sms_schedule_add" -> {
+                                "/schedule_list", "/list_calls" -> { runtime.listCallSchedules { result -> scope.launch(Dispatchers.IO) { runCatching { client.sendMessage(update.chatId, result.take(3900)) } } }; "جارٍ تحميل مواعيد الاتصالات." }
+                                "/schedule_cancel", "/cancel_schedule" -> {
+                                    if (argument.isBlank()) "الاستخدام: /cancel_schedule ID\nاعرض المواعيد أولاً عبر /list_schedules."
+                                    else {
+                                        runtime.cancelCallSchedule(argument) { cancelled -> scope.launch(Dispatchers.IO) { runCatching { client.sendMessage(update.chatId, if (cancelled) "تم إلغاء موعد الاتصال $argument." else "تعذر إلغاء الموعد؛ قد يكون غير موجود أو منفذاً بالفعل.") } } }
+                                        "جارٍ إلغاء موعد الاتصال."
+                                    }
+                                }
+                                "/sms_schedule_add", "/sms_schedule" -> {
                                     val fields = parsedCommand.fields(); val at = fields.getOrNull(2)?.toLongOrNull()
                                     if (fields.size < 4 || fields[0].isBlank() || fields[1].isBlank() || at == null || at <= System.currentTimeMillis() || fields[3].isBlank()) "الاستخدام: /sms_schedule_add customerId | رقم | وقت Unix ms | رسالة | ملاحظة"
                                     else { runtime.saveSmsSchedule(SmsSchedule(customerId = fields[0], phone = fields[1], runAt = at ?: 0L, message = fields[3], note = fields.getOrElse(4) { "" })) { result -> scope.launch(Dispatchers.IO) { runCatching { client.sendMessage(update.chatId, "نتيجة جدولة SMS: $result") } } }; "تم استلام موعد SMS." }
                                 }
-                                "/sms_schedule_list" -> { runtime.listSmsSchedules { result -> scope.launch(Dispatchers.IO) { runCatching { client.sendMessage(update.chatId, result.take(3900)) } } }; "جارٍ تحميل رسائل SMS المجدولة." }
+                                "/sms_schedule_list", "/list_sms" -> { runtime.listSmsSchedules { result -> scope.launch(Dispatchers.IO) { runCatching { client.sendMessage(update.chatId, result.take(3900)) } } }; "جارٍ تحميل رسائل SMS المجدولة." }
+                                "/sms_schedule_cancel", "/cancel_sms" -> {
+                                    if (argument.isBlank()) "الاستخدام: /cancel_sms ID\nاعرض المواعيد عبر /list_schedules."
+                                    else {
+                                        runtime.cancelSmsSchedule(argument) { cancelled -> scope.launch(Dispatchers.IO) { runCatching { client.sendMessage(update.chatId, if (cancelled) "تم إلغاء موعد SMS $argument." else "تعذر إلغاء موعد SMS؛ قد يكون غير موجود أو مرسلاً بالفعل.") } } }
+                                        "جارٍ إلغاء موعد SMS."
+                                    }
+                                }
                                 "/campaign_add" -> {
                                     val fields = parsedCommand.fields()
                                     val callAt = fields.getOrNull(2)?.toLongOrNull(); val smsAt = fields.getOrNull(3)?.toLongOrNull()

@@ -1190,6 +1190,7 @@ class GatewayRuntime private constructor(context: Context) {
     }
     fun searchCustomers(query: String, callback: (String) -> Unit) = worker.execute { callback(runCatching { customers.search(query).joinToString("\n") { "${it.id} | ${it.name} | ${it.phone} | ${it.company}" } }.getOrElse { "خطأ البحث: ${it.javaClass.simpleName}" }.ifBlank { "لا توجد نتائج" }) }
     fun saveCallSchedule(schedule: CallSchedule, callback: (String) -> Unit) = worker.execute { callback(runCatching { customers.saveSchedule(schedule) }.getOrElse { "خطأ جدولة الاتصال: ${it.javaClass.simpleName}" }) }
+    fun cancelCallSchedule(id: String, callback: (Boolean) -> Unit) = worker.execute { callback(runCatching { customers.cancelCallSchedule(id.trim()) }.getOrDefault(false)) }
     fun scheduleReconciliationItems(limit: Int = 8): List<ScheduleReconciliationItem> =
         runCatching { customers.listSchedulesNeedingReconciliation(limit.coerceIn(1, 20)) }.getOrDefault(emptyList())
 
@@ -1222,6 +1223,7 @@ class GatewayRuntime private constructor(context: Context) {
     fun salesAdminLeadsReport(): String = runCatching { customers.salesAdminLeadsReport() }.getOrElse { "تعذر تحميل طلبات الإدارة: ${it.javaClass.simpleName}" }
     fun listCallSchedules(callback: (String) -> Unit) = worker.execute { callback(runCatching { customers.listSchedules().joinToString("\n") { "${it.id} | ${it.phone} | ${it.runAt} | ${it.status} | ${it.note}" } }.getOrElse { "خطأ قراءة الجدولة: ${it.javaClass.simpleName}" }.ifBlank { "لا توجد مواعيد" }) }
     fun saveSmsSchedule(schedule: SmsSchedule, callback: (String) -> Unit) = worker.execute { callback(runCatching { customers.saveSmsSchedule(schedule) }.getOrElse { "خطأ جدولة SMS: ${it.javaClass.simpleName}" }) }
+    fun cancelSmsSchedule(id: String, callback: (Boolean) -> Unit) = worker.execute { callback(runCatching { customers.cancelSmsSchedule(id.trim()) }.getOrDefault(false)) }
     fun listSmsSchedules(callback: (String) -> Unit) = worker.execute { callback(runCatching { customers.listSmsSchedules().joinToString("\n") { "${it.id} | ${it.phone} | ${it.runAt} | ${it.status} | ${it.note} | ${it.message.take(80)}" } }.getOrElse { "خطأ قراءة جدولة SMS: ${it.javaClass.simpleName}" }.ifBlank { "لا توجد رسائل مجدولة" }) }
     fun sendSms(phone: String, message: String, callback: (String) -> Unit) = worker.execute {
         callback(runCatching { PhoneNumberNormalizer.normalizeYemen(phone) }.fold({ normalized ->
