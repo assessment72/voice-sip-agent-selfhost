@@ -1014,9 +1014,23 @@ class GatewayRuntime private constructor(context: Context) {
     }
     fun searchCustomers(query: String, callback: (String) -> Unit) = worker.execute { callback(runCatching { customers.search(query).joinToString("\n") { "${it.id} | ${it.name} | ${it.phone} | ${it.company}" } }.getOrElse { "خطأ البحث: ${it.javaClass.simpleName}" }.ifBlank { "لا توجد نتائج" }) }
     fun saveCallSchedule(schedule: CallSchedule, callback: (String) -> Unit) = worker.execute { callback(runCatching { customers.saveSchedule(schedule) }.getOrElse { "خطأ جدولة الاتصال: ${it.javaClass.simpleName}" }) }
+    fun scheduleReconciliationItems(limit: Int = 8): List<ScheduleReconciliationItem> =
+        runCatching { customers.listSchedulesNeedingReconciliation(limit.coerceIn(1, 20)) }.getOrDefault(emptyList())
+
+    fun resolveScheduleReconciliation(
+        type: ScheduleType,
+        scheduleId: String,
+        decision: ScheduleReconciliationPolicy.Decision,
+        callback: (String) -> Unit,
+    ) = worker.execute {
+        callback(runCatching { customers.resolveScheduleReconciliation(type, scheduleId, decision) }
+            .fold({ if (it) "تم تحديث حالة المهمة وتسجيل دليل المراجعة." else "لم تعد المهمة موجودة؛ لم يتغير شيء." },
+                { "تعذرت المصالحة: ${it.message ?: it.javaClass.simpleName}" }))
+    }
+
     /** Read-only report for schedules quarantined after an unknown external outcome. */
     fun scheduleReconciliationReport(): String = runCatching {
-        val items = customers.listSchedulesNeedingReconciliation(30)
+        val items = customers.listSchedulesNeedingReconciliation(8)
         if (items.isEmpty()) return@runCatching "لا توجد مهام تحتاج إلى مصالحة. لا توجد اتصالات أو رسائل معلقة بنتيجة مجهولة."
         val formatter = java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm")
         val lines = items.joinToString("\n\n") { item ->
