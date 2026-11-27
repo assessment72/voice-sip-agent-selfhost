@@ -225,6 +225,37 @@ internal class VoicxCustomerRepository(private val store: VoicxFirebaseStore) {
     fun findByPhone(phone: String): VoicxCustomer? = query("customers") { it.text("phone") == phone.trim() }.firstOrNull()?.let(::from)
     fun search(q: String, limit: Int = 20): List<VoicxCustomer> { val s = q.trim().lowercase(); return query("customers").mapNotNull(::from).filter { s.isBlank() || listOf(it.phone, it.name, it.company).any { v -> v.lowercase().contains(s) } }.take(limit.coerceIn(1, 50)) }
     fun addMemory(customerId: String, text: String, source: String) = save("customer_memories", UUID.randomUUID().toString(), mapOf("customerId" to customerId, "text" to text.take(4000), "source" to source, "createdAt" to System.currentTimeMillis()))
+
+    /** Persist inbound SMS only when the sender matches a known customer. Message IDs are
+     * deterministic so Android broadcast re-delivery cannot create duplicate replies. */
+    fun recordIncomingSms(rawPhone: String?, body: String, receivedAt: Long): Boolean {
+        if (rawPhone.isNullOrBlank() || body.isBlank()) return false
+        val phone = runCatching { PhoneNumberNormalizer.normalizeYemen(rawPhone) }.getOrNull() ?: return false
+        val customer = findByPhone(phone) ?: return false
+        val stable = "$phone|$receivedAt|$body"
+        val messageId = java.security.MessageDigest.getInstance("SHA-256")
+            .digest(stable.toByteArray(Charsets.UTF_8)).joinToString("") { "%02x".format(it) }
+        return db.transaction {
+            if (read("customer_messages", messageId) != null) return@transaction false
+            save("customer_messages", messageId, mapOf(
+                "customerId" to customer.id.orEmpty(),
+                "phone" to phone,
+                "direction" to "inbound",
+                "channel" to "sms",
+                "body" to body.take(4000),
+                "receivedAt" to receivedAt,
+                "createdAt" to System.currentTimeMillis(),
+            ))
+            true
+        }
+    }
+
+    fun customerSmsRepliesSince(customerId: String, since: Long): List<LocalDocument> =
+        query("customer_messages") {
+            it.text("customerId") == customerId && it.text("direction") == "inbound" &&
+                it.text("channel") == "sms" && it.long("receivedAt") >= since
+        }.sortedBy { it.long("receivedAt") }
+
     fun instructionFor(phone: String) = findByPhone(phone)?.instructions.orEmpty()
     fun memoriesFor(phone: String, limit: Int = 10): String { val id = findByPhone(phone)?.id ?: return ""; return query("customer_memories") { it.text("customerId") == id }.sortedByDescending { it.long("createdAt") }.take(limit.coerceIn(1, 20)).map { it.text("text") }.filter(String::isNotBlank).asReversed().joinToString("\n") { "- $it" } }
 
