@@ -183,6 +183,17 @@ data class Campaign(val id: String? = null, val name: String, val startAt: Long,
 data class CampaignCustomer(val id: String? = null, val campaignId: String, val customerId: String, val phone: String, val sequence: Int, val status: String = "queued", val attempts: Int = 0, val lastCallAt: Long? = null, val lastSmsAt: Long? = null, val nextCallAt: Long? = null, val nextSmsAt: Long? = null, val lastOutcome: String = "", val followUpNote: String = "", val interestedAt: Long? = null, val adminAt: Long? = null, val pausedAt: Long? = null, val optedOutAt: Long? = null, val createdAt: Long = System.currentTimeMillis(), val updatedAt: Long = System.currentTimeMillis())
 data class CallSchedule(val id: String? = null, val customerId: String, val phone: String, val runAt: Long, val status: String = "pending", val note: String = "", val campaignId: String? = null, val campaignCustomerId: String? = null, val idempotencyKey: String? = null, val attempts: Int = 0)
 data class SmsSchedule(val id: String? = null, val customerId: String = "", val phone: String, val runAt: Long, val message: String, val status: String = "queued", val campaignId: String? = null, val note: String = "", val campaignCustomerId: String? = null, val idempotencyKey: String? = null, val attempts: Int = 0)
+enum class ScheduleType { CALL, SMS }
+data class ScheduleReconciliationItem(
+    val type: ScheduleType,
+    val id: String,
+    val customerId: String,
+    val phone: String,
+    val runAt: Long,
+    val attempts: Int,
+    val error: String,
+    val claimedAt: Long,
+)
 
 private fun idOrNew(id: String?) = id?.takeIf { it.isNotBlank() } ?: UUID.randomUUID().toString()
 
@@ -337,6 +348,59 @@ internal class VoicxCustomerRepository(private val store: VoicxFirebaseStore) {
     }
     fun listSchedules(limit: Int = 20) = query("call_schedules").sortedBy { it.long("runAt") }.take(limit).map(::scheduleFrom)
     fun listSmsSchedules(limit: Int = 20) = query("sms_schedules").sortedBy { it.long("runAt") }.take(limit).map(::smsScheduleFrom)
+
+    /**
+     * Lists quarantined external side effects for human review. Returning online does not
+     * change these records or authorize another call/SMS attempt.
+     */
+    fun listSchedulesNeedingReconciliation(limit: Int = 100): List<ScheduleReconciliationItem> {
+        val safeLimit = limit.coerceIn(1, 500)
+        val calls = query("call_schedules") { ScheduleReconciliationPolicy.requiresReview(it.text("status")) }
+            .map { ScheduleReconciliationItem(ScheduleType.CALL, it.id, it.text("customerId"), it.text("phone"),
+                it.long("runAt"), it.int("attempts"), it.text("error"), it.long("claimedAt")) }
+        val sms = query("sms_schedules") { ScheduleReconciliationPolicy.requiresReview(it.text("status")) }
+            .map { ScheduleReconciliationItem(ScheduleType.SMS, it.id, it.text("customerId"), it.text("phone"),
+                it.long("runAt"), it.int("attempts"), it.text("error"), it.long("claimedAt")) }
+        return (calls + sms).sortedBy { it.runAt }.take(safeLimit)
+    }
+
+    /**
+     * Resolves one quarantined schedule and writes its audit record in the same SQLite
+     * transaction. Callers must enforce manager authentication before invoking this method.
+     */
+    fun resolveScheduleReconciliation(
+        type: ScheduleType,
+        scheduleId: String,
+        decision: ScheduleReconciliationPolicy.Decision,
+        now: Long = System.currentTimeMillis(),
+    ): Boolean = db.transaction {
+        require(scheduleId.isNotBlank()) { "Schedule ID is required" }
+        val collection = if (type == ScheduleType.CALL) "call_schedules" else "sms_schedules"
+        val current = read(collection, scheduleId) ?: return@transaction false
+        val result = ScheduleReconciliationPolicy.resolve(current.text("status"), decision)
+        save(collection, scheduleId, mapOf(
+            "status" to result.status,
+            "claimedAt" to null,
+            "error" to null,
+        ))
+        save("schedule_reconciliation_audit", UUID.randomUUID().toString(), mapOf(
+            "scheduleType" to type.name.lowercase(),
+            "scheduleId" to scheduleId,
+            "actor" to decision.actor.trim(),
+            "evidence" to decision.evidence.trim().take(2000),
+            "action" to result.auditAction,
+            "previousStatus" to current.text("status"),
+            "newStatus" to result.status,
+            "createdAt" to now,
+        ))
+        true
+    }
+
+    fun listScheduleReconciliationAudit(scheduleId: String, limit: Int = 50): List<LocalDocument> {
+        if (scheduleId.isBlank()) return emptyList()
+        return query("schedule_reconciliation_audit") { it.text("scheduleId") == scheduleId }
+            .sortedByDescending { it.long("createdAt") }.take(limit.coerceIn(1, 200))
+    }
 
     fun createCampaign(c: Campaign): String = db.transaction {
         val id = idOrNew(c.id)
