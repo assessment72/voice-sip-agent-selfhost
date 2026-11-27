@@ -212,7 +212,7 @@ internal object SalesCallDispositionPolicy {
         if (cause in setOf(io.github.sparkcyf.voicesipagent.voice.HangupCause.BUSY,
                 io.github.sparkcyf.voicesipagent.voice.HangupCause.NO_ANSWER,
                 io.github.sparkcyf.voicesipagent.voice.HangupCause.UNAVAILABLE) ||
-            listOf("مشغول", "اتصل بعد", "وقت ثاني", "وقت اخر", "لاحقاً", "لاحقا", "الآن ما اقدر", "الآن ما أقدر", "busy", "call later").any(text::contains)) {
+            listOf("مشغول", "اتصل بعد", "وقت ثاني", "وقت اخر", "لاحقاً", "لاحقا", "الآن ما اقدر", "الآن ما أقدر", "مغلق", "الجوال مغلق", "الهاتف مغلق", "غير متاح", "out of coverage", "not reachable", "busy", "call later").any(text::contains)) {
             return SalesCallDisposition.BUSY_OR_UNAVAILABLE
         }
         if (cause == io.github.sparkcyf.voicesipagent.voice.HangupCause.NORMAL) return SalesCallDisposition.REMINDER
@@ -484,16 +484,16 @@ internal class VoicxCustomerRepository(private val store: VoicxFirebaseStore) {
     }
 
     /** Creates a deduplicated management lead when the customer explicitly requests a quote. */
-    fun createSalesAdminLead(customer: VoicxCustomer, report: AiCallReport): Boolean = db.transaction {
+    fun createSalesAdminLead(customer: VoicxCustomer?, report: AiCallReport): Boolean = db.transaction {
         val callId = report.callId.ifBlank { "${report.startedAt}-${report.endedAt}" }
         if (query("sales_admin_leads") { it.text("callId") == callId }.isNotEmpty()) return@transaction false
         save("sales_admin_leads", UUID.randomUUID().toString(), mapOf(
-            "callId" to callId, "customerId" to customer.id.orEmpty(), "phone" to customer.phone,
-            "name" to customer.name, "role" to customer.role, "company" to customer.company,
+            "callId" to callId, "customerId" to customer?.id.orEmpty(), "phone" to (customer?.phone ?: report.number.orEmpty()),
+            "name" to (customer?.name ?: report.name.orEmpty()), "role" to (customer?.role ?: report.role.orEmpty()), "company" to (customer?.company ?: report.company.orEmpty()),
             "requestType" to "quotation", "status" to "pending",
             "customerRequest" to report.inputText.take(6000),
             "conversationTranscript" to report.conversationTranscript.take(12000),
-            "customerNotes" to customer.notes.take(3000),
+            "customerNotes" to customer?.notes.orEmpty().take(3000),
             "createdAt" to System.currentTimeMillis(),
         ))
         true
