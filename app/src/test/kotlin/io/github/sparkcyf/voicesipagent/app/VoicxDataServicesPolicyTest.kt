@@ -37,6 +37,7 @@ class VoicxDataServicesPolicyTest {
         assertTrue(ScheduleLeasePolicy.isExpired("running", now - ScheduleLeasePolicy.CLAIM_LEASE_MS - 1L, now))
         assertFalse(ScheduleLeasePolicy.isExpired("running", now - ScheduleLeasePolicy.CLAIM_LEASE_MS + 1L, now))
         assertFalse(ScheduleLeasePolicy.isExpired("completed", now - ScheduleLeasePolicy.CLAIM_LEASE_MS - 1L, now))
+        assertFalse(ScheduleLeasePolicy.isExpired("running", now - 60_000L, now))
         assertFalse(ScheduleLeasePolicy.isExpired("running", 0L, now))
     }
 
