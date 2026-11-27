@@ -885,7 +885,17 @@ class GatewayRuntime private constructor(context: Context) {
                 val customer = customers.findById(schedule.customerId) ?: customers.findByPhone(normalizedPhone)
                 gemini.setContext(GeminiAiEndpoint.CallContext(
                     name = customer?.name.orEmpty(), role = customer?.role.orEmpty(), company = customer?.company.orEmpty(),
-                    instructions = customer?.instructions.orEmpty(), memories = customers.memoriesFor(normalizedPhone),
+                    instructions = buildString {
+                        customer?.instructions?.takeIf(String::isNotBlank)?.let {
+                            appendLine("تعليمات العميل الدائمة:")
+                            appendLine(it.trim())
+                        }
+                        schedule.note.takeIf(String::isNotBlank)?.let {
+                            appendLine("تعليمات خاصة بهذا الاتصال المجدول (تُطبق لهذه المكالمة فقط):")
+                            appendLine(it.trim())
+                        }
+                    }.trim(),
+                    memories = customers.memoriesFor(normalizedPhone),
                 ))
                 synchronized(scheduledCallLock) {
                     scheduledCallId = schedule.id
