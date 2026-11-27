@@ -228,6 +228,12 @@ internal class VoicxCustomerRepository(private val store: VoicxFirebaseStore) {
 
         fun claimDueSchedule(now: Long = System.currentTimeMillis()): CallSchedule? = claim("call_schedules", "pending", now) { scheduleFrom(it) }?.second
     fun updateScheduleStatus(id: String, status: String, error: String = "") { if (id.isNotBlank()) save("call_schedules", id, mapOf("status" to status, "error" to error.takeIf(String::isNotBlank))) }
+    fun renewCallScheduleLease(id: String, now: Long = System.currentTimeMillis()) {
+        if (id.isNotBlank()) db.transaction {
+            val current = read("call_schedules", id) ?: return@transaction
+            if (current.text("status") == "running") save("call_schedules", id, mapOf("claimedAt" to now))
+        }
+    }
     fun deferSchedule(id: String, runAt: Long, reason: String) {
         if (id.isBlank()) return
         save("call_schedules", id, mapOf(
