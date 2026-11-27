@@ -436,6 +436,41 @@ class GatewayService : Service() {
                                     if (fields.size < 2) "الاستخدام: /sms رقم | رسالة"
                                     else { runtime.sendSms(fields[0], fields[1]) { result -> scope.launch(Dispatchers.IO) { runCatching { client.sendMessage(update.chatId, result) } } }; "تم استلام طلب SMS." }
                                 }
+
+                                "/sms_sequence" -> {
+                                    val fields = argument.split('|').map { it.trim() }
+                                    val firstAt = fields.getOrNull(1)?.let(::campaignTime)
+                                    if (fields.size < 2 || fields[0].isBlank() || firstAt == null || firstAt <= System.currentTimeMillis()) {
+                                        "الاستخدام: /sms_sequence رقم | 2026-12-01 09:00\nينشئ Gemini ثلاث مسودات مخصصة. لن تُجدول قبل تأكيدك."
+                                    } else {
+                                        runtime.prepareCustomerSmsSequence(fields[0], firstAt) { result ->
+                                            scope.launch(Dispatchers.IO) { runCatching { client.sendMessage(update.chatId, result) } }
+                                        }
+                                        "جارٍ إنشاء مسودات الرسائل الثلاث بواسطة Gemini. لن تُرسل أي رسالة قبل أمر التأكيد."
+                                    }
+                                }
+                                "/sms_sequence_confirm" -> {
+                                    if (argument.isBlank()) "الاستخدام: /sms_sequence_confirm معرّف_التسلسل"
+                                    else {
+                                        runtime.confirmCustomerSmsSequence(argument.trim()) { result ->
+                                            scope.launch(Dispatchers.IO) { runCatching { client.sendMessage(update.chatId, result) } }
+                                        }
+                                        "جارٍ التحقق من المسودة وتفعيل الجدولة."
+                                    }
+                                }
+                                "/sms_sequence_edit" -> {
+                                    val fields = argument.split('|', limit = 4).map { it.trim() }
+                                    val stage = fields.getOrNull(1)?.toIntOrNull()
+                                    val at = fields.getOrNull(2)?.let(::campaignTime)
+                                    if (fields.size < 4 || fields[0].isBlank() || stage !in 1..3 || at == null || at <= System.currentTimeMillis() || fields[3].isBlank()) {
+                                        "الاستخدام: /sms_sequence_edit ID | 1 أو 2 أو 3 | 2026-12-08 09:00 | نص الرسالة"
+                                    } else {
+                                        runtime.editCustomerSmsSequence(fields[0], stage!!, at, fields[3]) { result ->
+                                            scope.launch(Dispatchers.IO) { runCatching { client.sendMessage(update.chatId, result) } }
+                                        }
+                                        "جارٍ حفظ تعديل الرسالة وموعدها."
+                                    }
+                                }
                                 "/simcall" -> {
                                     if (argument.isBlank()) "الاستخدام: /simcall <رقم>"
                                     else {
