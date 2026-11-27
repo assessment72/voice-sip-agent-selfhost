@@ -937,13 +937,11 @@ class GatewayRuntime private constructor(context: Context) {
                     val sequenceId = schedule.note.split(':').getOrNull(1).orEmpty()
                     val sequence = customers.customerSmsSequence(sequenceId) ?: error("سجل تسلسل الرسائل غير موجود")
                     val customer = customers.findById(sequence.text("customerId")) ?: error("بيانات العميل غير موجودة")
-                    val since = if (stage == 2) sequence.long("firstSentAt") else sequence.long("secondSentAt")
-                    val replies = customers.customerSmsRepliesSince(customer.id.orEmpty(), since).map { it.text("body") }
-                    val prior = buildList {
-                        add(sequence.text("firstMessage"))
-                        if (stage == 3) add(sequence.text("secondMessage"))
-                    }
-                    smsWriter.createFollowUp(customer, stage, replies, prior, salesAdminStore.assistantContext())
+                    val since = sequence.long("firstSentAt")
+                    val historyDocs = customers.customerSmsHistorySince(customer.id.orEmpty(), since)
+                    val replies = historyDocs.filter { it.text("direction") == "inbound" }.map { it.text("body") }
+                    val history = historyDocs.map { "${it.text("direction")}: ${it.text("body")}" }
+                    smsWriter.createFollowUp(customer, stage, replies, history, salesAdminStore.assistantContext())
                 } else schedule.message
                 SmsApiClient(settings.smsApiKey).send(normalizedPhone, finalMessage).getOrThrow()
                 if (stage != null) customers.completeCustomerSmsStage(schedule, finalMessage)
