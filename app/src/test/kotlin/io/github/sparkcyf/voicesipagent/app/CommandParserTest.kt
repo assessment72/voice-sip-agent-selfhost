@@ -49,6 +49,16 @@ class CommandParserTest {
         assertEquals(null, ScheduleCommandParser.parseEpochMillis("tomorrow"))
     }
 
+    @Test fun invalidLegacyScheduleRowsAreNotDisplayable() {
+        assertEquals(false, ScheduleCommandParser.isDisplayableSchedule("", 0L))
+        assertEquals(false, ScheduleCommandParser.isDisplayableSchedule("+967730501035", 0L))
+        assertEquals(true, ScheduleCommandParser.isDisplayableSchedule("+967730501035", 1_700_000_000_000L))
+    }
+
+    @Test fun scheduleTextIsCompactedWithoutChangingItsContentOrder() {
+        assertEquals("stage:busy_retry نتيجة المكالمة: NORMAL كلام العميل: نعم", ScheduleCommandParser.compactScheduleText("stage:busy_retry\nنتيجة المكالمة: NORMAL\nكلام العميل: نعم"))
+    }
+
     @Test fun recurrenceAcceptsOnceDailyWeeklyAndMonthly() {
         assertEquals("none", ScheduleCommandParser.recurrence("مرة واحدة"))
         assertEquals("daily", ScheduleCommandParser.recurrence("يومي"))

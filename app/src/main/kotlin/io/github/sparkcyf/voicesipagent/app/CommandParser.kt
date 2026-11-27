@@ -35,6 +35,14 @@ internal object ScheduleCommandParser {
         ?.toLongOrNull()
         ?.let { if (it in 1_000_000_000L..9_999_999_999L) it * 1000 else it }
 
+    /** Rejects legacy rows that would otherwise be rendered as an empty contact at Unix epoch. */
+    fun isDisplayableSchedule(phone: String, runAt: Long): Boolean =
+        phone.isNotBlank() && runAt >= 946_684_800_000L
+
+    /** Keeps Telegram schedule rows on one line and prevents oversized notes from flooding the chat. */
+    fun compactScheduleText(value: String, maxLength: Int = 180): String =
+        value.replace(Regex("\\s+"), " ").trim().take(maxLength)
+
     fun displayTime(epochMs: Long): String = runCatching { displayFormatter.format(Instant.ofEpochMilli(epochMs)) }
         .getOrElse { epochMs.toString() }
 

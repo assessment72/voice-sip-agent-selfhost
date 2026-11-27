@@ -866,6 +866,9 @@ internal class VoicxCustomerRepository(private val store: VoicxFirebaseStore) {
     }
 
     private fun saveScheduleInTransaction(s: CallSchedule): String {
+        require(ScheduleCommandParser.isDisplayableSchedule(s.phone, s.runAt)) {
+            "رقم الهاتف ووقت الاتصال مطلوبان وبصيغة صحيحة"
+        }
         val existing = s.idempotencyKey?.takeIf(String::isNotBlank)?.let { key ->
             db.findByIdempotency("call_schedules", key)?.id
         }
@@ -932,6 +935,9 @@ internal class VoicxCustomerRepository(private val store: VoicxFirebaseStore) {
         ))
     }
     private fun saveSmsScheduleInTransaction(s: SmsSchedule): String {
+        require(ScheduleCommandParser.isDisplayableSchedule(s.phone, s.runAt)) {
+            "رقم الهاتف ووقت الرسالة مطلوبان وبصيغة صحيحة"
+        }
         val existing = s.idempotencyKey?.takeIf(String::isNotBlank)?.let { key ->
             db.findByIdempotency("sms_schedules", key)?.id
         }
@@ -1095,8 +1101,16 @@ internal class VoicxCustomerRepository(private val store: VoicxFirebaseStore) {
         ))
         report.number?.let(::findByPhone)?.id?.let { addMemory(it, "نتيجة مكالمة ${report.endedAt}: ${report.cause?.name ?: "NORMAL"}\n${report.conversationTranscript.ifBlank { report.outputText }}", "gemini_call") }
     }
-    fun listSchedules(limit: Int = 20) = query("call_schedules").sortedBy { it.long("runAt") }.take(limit).map(::scheduleFrom)
-    fun listSmsSchedules(limit: Int = 20) = query("sms_schedules").sortedBy { it.long("runAt") }.take(limit).map(::smsScheduleFrom)
+    fun listSchedules(limit: Int = 20) = query("call_schedules")
+        .map(::scheduleFrom)
+        .filter { ScheduleCommandParser.isDisplayableSchedule(it.phone, it.runAt) }
+        .sortedBy { it.runAt }
+        .take(limit.coerceIn(1, 100))
+    fun listSmsSchedules(limit: Int = 20) = query("sms_schedules")
+        .map(::smsScheduleFrom)
+        .filter { ScheduleCommandParser.isDisplayableSchedule(it.phone, it.runAt) }
+        .sortedBy { it.runAt }
+        .take(limit.coerceIn(1, 100))
 
     /** Removes only completed operational history; customer data and reconciliation records remain intact. */
     fun purgeOldOperationalData(now: Long = System.currentTimeMillis()): Int = db.transaction {
