@@ -550,6 +550,15 @@ class GatewayService : Service() {
             session.values += selectedDate.toString()
             return scheduleTimePickerReply(selectedDate.toString())
         }
+        if (action == "voicx:pick_back") {
+            val session = panelSessions[chatId]
+                ?: return AdminReply("انتهت جلسة اختيار الموعد.", home)
+            if (session.flow !in setOf("schedule_call", "sms_schedule", "campaign") || session.values.size != 2) {
+                return AdminReply("لا يمكن الرجوع إلى اختيار التاريخ الآن.", home)
+            }
+            session.values.removeAt(1)
+            return scheduleDatePickerReply(session.flow)
+        }
         if (action.startsWith("voicx:pick_time:")) {
             val session = panelSessions[chatId]
                 ?: return AdminReply("انتهت جلسة اختيار الموعد. ابدأ الجدولة من جديد.", home)
@@ -829,7 +838,7 @@ class GatewayService : Service() {
             .chunked(4).map { row -> row }
         return AdminReply(
             listOf(message, "التاريخ: $date\nاختر الوقت (بتوقيت الهاتف المحلي).").filter { it.isNotBlank() }.joinToString("\n"),
-            timeButtons + listOf(listOf(AdminButton("إلغاء", "voicx:cancel_flow"))),
+            timeButtons + listOf(listOf(AdminButton("رجوع للتاريخ", "voicx:pick_back"), AdminButton("إلغاء", "voicx:cancel_flow"))),
         )
     }
 
