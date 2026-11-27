@@ -1038,7 +1038,7 @@ class GatewayRuntime private constructor(context: Context) {
     }
     fun listCustomerSmsSequences(callback: (String) -> Unit) = worker.execute {
         callback(runCatching {
-            customers.listCustomerSmsSequences().joinToString("\\n") { sequence ->
+            customers.listCustomerSmsSequences().joinToString("\n") { sequence ->
                 val local = java.time.Instant.ofEpochMilli(sequence.long("firstAt")).atZone(java.time.ZoneId.systemDefault())
                     .format(java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm"))
                 "${sequence.id} | ${sequence.text("phone")} | ${sequence.text("status")} | الأولى: $local"
