@@ -1017,7 +1017,7 @@ class GatewayRuntime private constructor(context: Context) {
     fun scheduleReconciliationItems(limit: Int = 8): List<ScheduleReconciliationItem> =
         runCatching { customers.listSchedulesNeedingReconciliation(limit.coerceIn(1, 20)) }.getOrDefault(emptyList())
 
-    fun resolveScheduleReconciliation(
+    internal fun resolveScheduleReconciliation(
         type: ScheduleType,
         scheduleId: String,
         decision: ScheduleReconciliationPolicy.Decision,
