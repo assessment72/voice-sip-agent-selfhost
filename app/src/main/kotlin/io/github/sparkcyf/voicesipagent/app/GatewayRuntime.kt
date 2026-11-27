@@ -132,6 +132,7 @@ class GatewayRuntime private constructor(context: Context) {
     private val gemini = GeminiAiEndpoint(
         apiKey = { settings.geminiApiKey },
         model = { settings.geminiModel },
+        speechRate = { settings.geminiSpeechRate },
         salesContext = { salesAdminStore.assistantContext() },
         report = { report ->
             // Snapshot and detach this report from mutable current-call state before persistence.
@@ -830,12 +831,25 @@ class GatewayRuntime private constructor(context: Context) {
         AppLog.i(if (clean.isEmpty()) "Telegram control disabled" else "Telegram bot settings saved")
     }
 
-    fun updateGeminiSettings(apiKey: String, model: String = settings.geminiModel) = worker.execute {
+    fun updateGeminiSettings(apiKey: String, model: String = settings.geminiModel, speechRate: Float = settings.geminiSpeechRate) = worker.execute {
         val cleanKey = apiKey.trim()
         require(cleanKey.isEmpty() || cleanKey.length >= 20) { "Invalid Gemini API key" }
         val cleanModel = model.trim().ifEmpty { "gemini-2.5-flash-native-audio-preview-12-2025" }
-        val updated = settings.copy(geminiApiKey = cleanKey, geminiModel = cleanModel)
+        val updated = settings.copy(geminiApiKey = cleanKey, geminiModel = cleanModel, geminiSpeechRate = speechRate.coerceIn(0.80f, 1.25f))
         settingsStore.save(updated); _settings.value = updated
+    }
+
+    fun loadCallInstructionTemplates(callback: (Map<String, String>) -> Unit) = worker.execute {
+        callback(mapOf(
+            "first" to customers.callInstructionTemplate("first"),
+            "reminder" to customers.callInstructionTemplate("reminder"),
+            "busy_retry" to customers.callInstructionTemplate("busy_retry"),
+        ))
+    }
+
+    fun saveCallInstructionTemplate(stage: String, instruction: String, callback: (String) -> Unit = {}) = worker.execute {
+        callback(runCatching { customers.saveCallInstructionTemplate(stage, instruction) }
+            .fold({ "تم حفظ نموذج تعليمات الاتصال في SQLite." }, { "تعذر حفظ النموذج: ${it.message ?: it.javaClass.simpleName}" }))
     }
 
     fun setAiAutoAnswer(on: Boolean, callback: (String) -> Unit = {}) = worker.execute {
