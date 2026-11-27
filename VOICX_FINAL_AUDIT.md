@@ -327,4 +327,9 @@
 
 ### تصحيح توافق Telegram
 - `f3afcfac`: اختصار callback data لأزرار المصالحة إلى صيغة لا تتجاوز حد Telegram البالغ 64 بايت، مع الإبقاء على التحقق من نوع المهمة والإجراء والمعرّف قبل بدء جلسة الدليل.
-- لا يوجد إجراء إعادة محاولة ضمن لوحة Telegram. 
+- لا يوجد إجراء إعادة محاولة ضمن لوحة Telegram.
+
+### إصلاح فشل تجميع Kotlin في مرحلة المصالحة
+- `ce476cbd`: تحويل `GatewayRuntime.resolveScheduleReconciliation` إلى `internal` لأن وسيطها يستخدم النوع الداخلي `ScheduleReconciliationPolicy.Decision`. هذا إصلاح لمستوى الإتاحة فقط ولا يغير منطق المصالحة أو المعاملة أو الواجهة.
+- سبب الفشل مثبت من سجل GitHub Actions للالتزام السابق: `EXPOSED_PARAMETER_TYPE` في `GatewayRuntime.kt:1023`. كانت اختبارات JVM وControl Bridge ناجحة، بينما فشل Android unit tests وبناء APK عند تجميع Kotlin.
+- بانتظار تشغيل CI على الالتزام `ce476cbd`؛ لا يُعلن نجاح البناء قبل ظهور النتيجة النهائية.
