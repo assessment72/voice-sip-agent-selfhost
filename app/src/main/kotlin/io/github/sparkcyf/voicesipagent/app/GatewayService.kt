@@ -47,6 +47,8 @@ class GatewayService : Service() {
     private var telegramConfigToken: String? = null
     private var telegramConfigUserId: Long = 0L
     private var telegramUpdateOffset: Long = 0L
+    private val panelMessageIds = java.util.concurrent.ConcurrentHashMap<Long, Long>()
+    private val panelSessions = java.util.concurrent.ConcurrentHashMap<Long, PanelSession>()
     private var bridgeHeartbeatJob: Job? = null
     private var bridgeCommandJob: Job? = null
     private var foreground = false
@@ -55,6 +57,23 @@ class GatewayService : Service() {
         LocalDateTime.parse(value.trim().replace('T', ' '), campaignTimeFormatter).atZone(ZoneId.systemDefault()).toInstant().toEpochMilli()
     }.getOrNull()
     private val salesAdmin by lazy { SalesAdminController(SalesAdminStore(this)) }
+    private data class PanelSession(
+        val flow: String,
+        val values: MutableList<String> = mutableListOf(),
+        var confirmationToken: String? = null,
+        var action: PanelAction? = null,
+    )
+    private sealed interface PanelAction {
+        data class AddCustomer(val phone: String, val name: String, val role: String, val company: String, val instructions: String) : PanelAction
+        data class GeminiCall(val phone: String, val name: String, val role: String, val company: String) : PanelAction
+        data class SimCall(val phone: String) : PanelAction
+        data class SendSms(val phone: String, val text: String) : PanelAction
+        data class ScheduleCall(val phone: String, val at: Long, val note: String) : PanelAction
+        data class ScheduleSms(val phone: String, val at: Long, val text: String) : PanelAction
+        data class CreateCampaign(val name: String, val at: Long, val group: String, val channel: String, val template: String) : PanelAction
+        data class DeleteCall(val id: String) : PanelAction
+        data class ToggleGateway(val enabled: Boolean) : PanelAction
+    }
     // Held while the gateway runs in the foreground, so Doze on an aggressive OEM (ZTE/Nubia,
     // Xiaomi, Transsion…) cannot suspend the SIP reader thread.  Without it the socket backs up
     // and the softphone's registration silently drops until the phone next wakes — the battery
@@ -297,15 +316,24 @@ class GatewayService : Service() {
                         if (update.callbackQueryId != null) {
                             withContext(Dispatchers.IO) { runCatching { client.answerCallbackQuery(update.callbackQueryId) } }
                             val response = withContext(Dispatchers.IO) {
-                                if (update.callbackData.orEmpty().startsWith("voicx:")) handleVoicxPanel(update.callbackData.orEmpty(), runtime)
+                                if (update.callbackData.orEmpty().startsWith("voicx:")) handleVoicxPanel(update.callbackData.orEmpty(), runtime, update.chatId, client)
                                 else salesAdmin.handleCallback(update.callbackData.orEmpty(), update.senderId)
                             }
-                            withContext(Dispatchers.IO) { client.sendMessage(update.chatId, response.text, response.buttons) }
+                            withContext(Dispatchers.IO) { renderPanel(update.chatId, client, response, update.messageId) }
                             continue
                         }
-                        if (update.text.trim().equals("/panel", true) || update.text.trim().equals("/db", true)) {
-                            val response = if (update.text.trim().equals("/db", true)) handleVoicxPanel("voicx:db", runtime) else handleVoicxPanel("voicx:home", runtime)
-                            withContext(Dispatchers.IO) { client.sendMessage(update.chatId, response.text, response.buttons) }
+                        if (update.text.trim().equals("/start", true) || update.text.trim().equals("/panel", true) || update.text.trim().equals("/db", true)) {
+                            panelSessions.remove(update.chatId)
+                            val response = when (update.text.trim().lowercase()) {
+                                "/db" -> handleVoicxPanel("voicx:db", runtime, update.chatId, client)
+                                else -> handleVoicxPanel("voicx:home", runtime, update.chatId, client)
+                            }
+                            withContext(Dispatchers.IO) { renderPanel(update.chatId, client, response) }
+                            continue
+                        }
+                        val panelReply = handlePanelText(update.chatId, update.text, runtime, client)
+                        if (panelReply != null) {
+                            withContext(Dispatchers.IO) { renderPanel(update.chatId, client, panelReply) }
                             continue
                         }
                         val adminReply = withContext(Dispatchers.IO) { salesAdmin.handleText(update.text, update.senderId) }
@@ -491,37 +519,237 @@ class GatewayService : Service() {
         }
     }
 
-    private fun handleVoicxPanel(action: String, runtime: GatewayRuntime): AdminReply {
+    private fun handleVoicxPanel(action: String, runtime: GatewayRuntime, chatId: Long, client: TelegramBotClient): AdminReply {
+        if (action == "voicx:home") panelSessions.remove(chatId)
         val home = listOf(
-            listOf(AdminButton("الحالة العامة", "voicx:status"), AdminButton("SIP", "voicx:sip")),
-            listOf(AdminButton("المكالمات", "voicx:calls"), AdminButton("قاعدة البيانات", "voicx:db")),
-            listOf(AdminButton("العملاء", "voicx:customers"), AdminButton("الجدولة", "voicx:schedules")),
-            listOf(AdminButton("تحديث اللوحة", "voicx:home")),
+            listOf(AdminButton("📊 لوحة المعلومات", "voicx:status"), AdminButton("📞 الاتصالات", "voicx:calls_menu")),
+            listOf(AdminButton("🧠 Gemini Live", "voicx:gemini"), AdminButton("👥 إدارة العملاء", "voicx:customers_menu")),
+            listOf(AdminButton("💬 الرسائل SMS", "voicx:sms_menu"), AdminButton("📅 إدارة المواعيد", "voicx:schedules_menu")),
+            listOf(AdminButton("📢 الحملات", "voicx:campaigns"), AdminButton("📈 التقارير والسجلات", "voicx:reports")),
+            listOf(AdminButton("⛽ إدارة الديزل", "voicx:diesel"), AdminButton("⚙️ إدارة النظام", "voicx:system")),
+            listOf(AdminButton("🔄 تحديث", "voicx:home")),
         )
-        val back = listOf(listOf(AdminButton("رجوع إلى اللوحة الرئيسية", "voicx:home")))
+        val back = listOf(listOf(AdminButton("⬅️ رجوع", "voicx:home")))
+        if (action == "voicx:cancel_flow") {
+            panelSessions.remove(chatId)
+            return AdminReply("تم الإلغاء. لم يُنفذ أي إجراء.", home)
+        }
+        if (action.startsWith("voicx:confirm:")) {
+            val session = panelSessions[chatId]
+            val token = action.substringAfterLast(':')
+            if (session?.confirmationToken != token || session.action == null) return AdminReply("انتهت صلاحية التأكيد أو نُفذ مسبقاً. لم يُكرر الإجراء.", home)
+            val confirmed = session.action!!
+            panelSessions.remove(chatId)
+            return executePanelAction(confirmed, runtime, chatId, client, home)
+        }
         return when (action) {
-            "voicx:home" -> AdminReply("لوحة Voicx Control\nاختر القسم المطلوب:", home)
+            "voicx:home" -> {
+                val h = runtime.health.value
+                val keyStatus = if (runtime.settings.geminiApiKey.isBlank()) "مفتاح Gemini غير مضبوط" else "المفتاح مضبوط؛ حالة Live تحتاج فحصاً"
+                val db = runtime.localDatabaseSummary().lineSequence().take(3).joinToString("\n")
+                val last = AppLog.tail.value.lastOrNull()?.take(150) ?: "لا يوجد نشاط مسجل"
+                AdminReply("Voicx Control\n\nالبوابة: ${if (h.takeover) "🟢 مفعلة" else "🔴 متوقفة"}\nSIP: ${if (h.sip.ready) "🟢 جاهز" else "🔴 غير جاهز"}\nGemini Live: $keyStatus\nFirebase: ${runtime.firebaseStatus().take(180)}\nقاعدة البيانات المحلية: SQLite\nالرد الآلي: ${if (runtime.settings.aiAutoAnswer) "مفعل" else "متوقف"}\nالمكالمات: ${h.calls.summary.take(180)}\nآخر نشاط: $last\n\nاختر قسماً:", home)
+            }
             "voicx:status" -> {
                 val h = runtime.health.value
-                AdminReply("الحالة العامة\nالبوابة: ${if (h.takeover) "مفعلة" else "متوقفة"}\nSIP: ${if (h.sip.ready) "جاهز" else "غير جاهز"}\nمكالمة نشطة: ${if (h.session != null || h.calls.owned > 0) "نعم" else "لا"}", back)
+                AdminReply("📊 لوحة المعلومات\nالبوابة: ${if (h.takeover) "مفعلة" else "متوقفة"}\nSIP: ${if (h.sip.ready) "جاهز" else "غير جاهز"} — ${h.sip.detail.take(240)}\nGemini: ${if (runtime.settings.geminiApiKey.isBlank()) "مفتاح غير مضبوط" else "مفتاح مضبوط؛ اضغط فحص الاتصال للتأكد من Live"}\nFirebase: ${runtime.firebaseStatus().take(220)}\nقاعدة البيانات المحلية: SQLite\nالرد الآلي: ${if (runtime.settings.aiAutoAnswer) "مفعل" else "متوقف"}\nالمكالمات الجارية: ${h.calls.summary.take(500)}\nآخر نشاط: ${AppLog.tail.value.lastOrNull()?.take(180) ?: "لا يوجد"}", listOf(listOf(AdminButton("فحص Gemini Live", "voicx:ai_status"), AdminButton("SIP", "voicx:sip")), listOf(AdminButton("قاعدة البيانات", "voicx:db")), back.first()))
             }
-            "voicx:sip" -> {
-                val sip = runtime.health.value.sip
-                AdminReply("حالة SIP\n${if (sip.ready) "جاهز" else "غير جاهز"}\n${sip.detail.take(700)}", back)
-            }
-            "voicx:calls" -> AdminReply("المكالمات\n${runtime.health.value.calls.summary.take(1200)}", back)
-            "voicx:db" -> AdminReply("قاعدة البيانات المحلية SQLite\n${runtime.localDatabaseSummary()}\n\nالأسرار (Telegram/Gemini/SMS) خارج ملف SQLite.", listOf(
-                listOf(AdminButton("قراءة العملاء", "voicx:customers"), AdminButton("قراءة الجدولة", "voicx:schedules")),
-                listOf(AdminButton("رجوع", "voicx:home")),
-            ))
-            "voicx:customers" -> AdminReply("العملاء\n${runtime.localDatabaseCustomers().take(3000)}\n\nللبحث التفصيلي استخدم /customer_search.", listOf(
-                listOf(AdminButton("تحديث", "voicx:customers"), AdminButton("رجوع", "voicx:home")),
-            ))
-            "voicx:schedules" -> AdminReply("الجدولة\n${runtime.localDatabaseSchedules().take(3000)}", listOf(
-                listOf(AdminButton("تحديث", "voicx:schedules"), AdminButton("رجوع", "voicx:home")),
-            ))
-            else -> AdminReply("إجراء غير معروف", home)
+            "voicx:calls_menu" -> AdminReply("📞 <b>الاتصالات</b>\nاختر نوع العملية. سيطلب البوت البيانات ثم يعرض ملخصاً وزر تأكيد قبل الاتصال.", listOf(listOf(AdminButton("اتصال Gemini", "voicx:flow:gemini")), listOf(AdminButton("اتصال SIM مع SIP", "voicx:flow:sim")), listOf(AdminButton("إنهاء SIM", "voicx:cancel_sim"), AdminButton("إيقاف Gemini", "voicx:stop_ai")), back.first()))
+            "voicx:gemini" -> AdminReply("🧠 <b>Gemini Live</b>\nالحالة الظاهرة هنا هي حالة الإعداد، وليست تأكيداً لاتصال حي. استخدم الفحص للتحقق من الخدمة.", listOf(listOf(AdminButton("اختبار اتصال Live", "voicx:ai_status"), AdminButton("آخر التشخيصات", "voicx:ai_errors")), listOf(AdminButton("تشغيل الرد الآلي", "voicx:auto_on"), AdminButton("إيقاف الرد الآلي", "voicx:auto_off")), back.first()))
+            "voicx:customers_menu" -> AdminReply("👥 <b>إدارة العملاء</b>", listOf(listOf(AdminButton("البحث عن عميل", "voicx:flow:search"), AdminButton("إضافة عميل", "voicx:flow:add_customer")), listOf(AdminButton("عرض العملاء", "voicx:customers")), back.first()))
+            "voicx:sms_menu" -> AdminReply("💬 <b>الرسائل النصية</b>\nالإرسال الفوري أو المجدول يتطلب مراجعة البيانات ثم تأكيداً صريحاً.", listOf(listOf(AdminButton("إرسال SMS", "voicx:flow:sms"), AdminButton("جدولة SMS", "voicx:flow:sms_schedule")), listOf(AdminButton("الرسائل المجدولة", "voicx:sms_list")), back.first()))
+            "voicx:schedules_menu" -> AdminReply("📅 <b>إدارة المواعيد</b>", listOf(listOf(AdminButton("جدولة اتصال", "voicx:flow:schedule_call"), AdminButton("عرض المواعيد", "voicx:schedule_list")), listOf(AdminButton("جدولة SMS", "voicx:flow:sms_schedule"), AdminButton("رسائل SMS المجدولة", "voicx:sms_list")), back.first()))
+            "voicx:campaigns" -> AdminReply("📢 <b>إنشاء حملة</b>\nسيطلب البوت البيانات على مراحل، ثم يعرض معاينة قبل حفظ الحملة وجدولتها.", listOf(listOf(AdminButton("إنشاء حملة جديدة", "voicx:flow:campaign")), listOf(AdminButton("عرض الجداول", "voicx:schedules")), back.first()))
+            "voicx:reports" -> AdminReply("📈 <b>التقارير والسجلات</b>\n${runtime.telegramAccountReport().take(2800)}", listOf(listOf(AdminButton("حذف سجل مكالمة", "voicx:flow:delete_call")), back.first()))
+            "voicx:diesel" -> salesAdmin.handleText("/admin", runtime.settings.telegramAllowedUserId) ?: AdminReply("تعذر فتح إعدادات المبيعات.", back)
+            "voicx:system" -> AdminReply("⚙️ <b>إدارة النظام</b>\nالتغييرات لا تنفذ إلا بعد اختيار التأكيد.", listOf(listOf(AdminButton("تشغيل البوابة", "voicx:confirm_gateway_on"), AdminButton("إيقاف البوابة", "voicx:confirm_gateway_off")), back.first()))
+            "voicx:confirm_gateway_on" -> askConfirmation(chatId, "تشغيل البوابة الآن؟", PanelAction.ToggleGateway(true))
+            "voicx:confirm_gateway_off" -> askConfirmation(chatId, "إيقاف التحويل؟ لن يُقطع اتصال نشط؛ سيسري الإيقاف وفق منطق التطبيق الحالي.", PanelAction.ToggleGateway(false))
+            "voicx:db" -> AdminReply("قاعدة البيانات المحلية SQLite\n${runtime.localDatabaseSummary()}\n\nحالة Firebase: ${runtime.firebaseStatus()}\nالأسرار خارج ملف SQLite.", listOf(listOf(AdminButton("العملاء", "voicx:customers"), AdminButton("الجدولة", "voicx:schedules")), back.first()))
+            "voicx:customers" -> AdminReply("👥 <b>العملاء</b>\n${runtime.localDatabaseCustomers().take(2600)}", listOf(listOf(AdminButton("بحث", "voicx:flow:search"), AdminButton("إضافة", "voicx:flow:add_customer")), back.first()))
+            "voicx:schedules" -> AdminReply("📅 <b>الجدولة</b>\n${runtime.localDatabaseSchedules().take(2700)}", listOf(listOf(AdminButton("إضافة اتصال", "voicx:flow:schedule_call"), AdminButton("إضافة SMS", "voicx:flow:sms_schedule")), back.first()))
+            "voicx:sip" -> { val sip = runtime.health.value.sip; AdminReply("📡 <b>حالة SIP</b>\n${if (sip.ready) "جاهز" else "غير جاهز"}\n${sip.detail.take(700)}", back) }
+            "voicx:calls" -> AdminReply("📞 <b>المكالمات</b>\n${runtime.health.value.calls.summary.take(1200)}", back)
+            "voicx:ai_status" -> { runtime.checkAiConnection { asyncPanelReply(chatId, client, it) }; AdminReply("جارٍ اختبار اتصال Gemini Live الحقيقي…", back) }
+            "voicx:ai_errors" -> { val logs = AppLog.tail.value.filter { it.contains("Gemini", true) }.takeLast(12); AdminReply("🧠 آخر تشخيصات Gemini:\n${logs.joinToString("\n").ifBlank { "لا توجد تشخيصات مسجلة." }.take(2800)}", back) }
+            "voicx:auto_on", "voicx:auto_off" -> { val enabled = action.endsWith("on"); runtime.setAiAutoAnswer(enabled) { asyncPanelReply(chatId, client, it) }; AdminReply(if (enabled) "جارٍ تشغيل الرد الآلي…" else "جارٍ إيقاف الرد الآلي…", back) }
+            "voicx:cancel_sim" -> AdminReply(if (runtime.cancelTelegramSimCall()) "أُرسل طلب إنهاء مكالمة SIM." else "لا توجد مكالمة SIM نشطة.", back)
+            "voicx:stop_ai" -> { runtime.stopAiCall(); AdminReply("تم إرسال طلب إيقاف Gemini.", back) }
+            "voicx:schedule_list" -> { runtime.listCallSchedules { asyncPanelReply(chatId, client, "📅 المواعيد:\n${it}") }; AdminReply("جارٍ تحميل المواعيد…", back) }
+            "voicx:sms_list" -> { runtime.listSmsSchedules { asyncPanelReply(chatId, client, "💬 رسائل SMS المجدولة:\n${it}") }; AdminReply("جارٍ تحميل رسائل SMS…", back) }
+            "voicx:flow:search" -> beginPanelFlow(chatId, "search")
+            "voicx:flow:add_customer" -> beginPanelFlow(chatId, "add_customer")
+            "voicx:flow:gemini" -> beginPanelFlow(chatId, "gemini")
+            "voicx:flow:sim" -> beginPanelFlow(chatId, "sim")
+            "voicx:flow:sms" -> beginPanelFlow(chatId, "sms")
+            "voicx:flow:schedule_call" -> beginPanelFlow(chatId, "schedule_call")
+            "voicx:flow:sms_schedule" -> beginPanelFlow(chatId, "sms_schedule")
+            "voicx:flow:campaign" -> beginPanelFlow(chatId, "campaign")
+            "voicx:flow:delete_call" -> beginPanelFlow(chatId, "delete_call")
+            else -> AdminReply("إجراء غير معروف أو انتهت صلاحيته.", home)
         }
+    }
+
+    private fun renderPanel(chatId: Long, client: TelegramBotClient, reply: AdminReply, messageId: Long? = null) {
+        val safeText = reply.text.replace(Regex("</?b>", RegexOption.IGNORE_CASE), "")
+        val target = messageId ?: panelMessageIds[chatId]
+        if (target != null) {
+            val edited = runCatching { client.editMessageText(chatId, target, safeText, reply.buttons) }
+            if (edited.isSuccess || edited.exceptionOrNull()?.message?.contains("message is not modified", true) == true) {
+                panelMessageIds[chatId] = target
+                return
+            }
+            val reason = edited.exceptionOrNull()?.message.orEmpty()
+            val staleMessage = reason.contains("message to edit not found", true) || reason.contains("message can't be edited", true) || reason.contains("message_id_invalid", true)
+            if (!staleMessage) {
+                AppLog.w("Telegram panel edit failed; suppressing fallback send to avoid duplicate panel: ${reason.take(120)}")
+                return
+            }
+        }
+        runCatching { client.sendMessage(chatId, safeText, reply.buttons) }.onSuccess { sent ->
+            if (sent != null) panelMessageIds[chatId] = sent
+        }.onFailure { AppLog.w("could not render Telegram panel: ${it.javaClass.simpleName}") }
+    }
+
+    private fun asyncPanelReply(chatId: Long, client: TelegramBotClient, text: String) {
+        scope.launch(Dispatchers.IO) { renderPanel(chatId, client, AdminReply(text, listOf(listOf(AdminButton("⬅️ القائمة الرئيسية", "voicx:home"))))) }
+    }
+
+    private fun beginPanelFlow(chatId: Long, flow: String): AdminReply {
+        panelSessions[chatId] = PanelSession(flow)
+        val prompts = mapOf(
+            "search" to "أرسل جزءاً من الاسم أو رقم الهاتف للبحث في العملاء.",
+            "add_customer" to "إضافة عميل (1/5): أرسل رقم الجوال اليمني.",
+            "gemini" to "اتصال Gemini (1/4): أرسل رقم الجوال اليمني.",
+            "sim" to "اتصال SIM مع SIP (1/1): أرسل رقم الجوال اليمني.",
+            "sms" to "إرسال SMS (1/2): أرسل رقم الجوال اليمني.",
+            "schedule_call" to "جدولة اتصال (1/3): أرسل رقم الجوال اليمني.",
+            "sms_schedule" to "جدولة SMS (1/3): أرسل رقم الجوال اليمني.",
+            "campaign" to "إنشاء حملة (1/4): أرسل اسم الحملة.",
+            "delete_call" to "حذف سجل (1/1): أرسل معرّف السجل الظاهر في تقرير المكالمات.",
+        )
+        return AdminReply("${prompts[flow] ?: "أدخل البيانات المطلوبة."}\nأرسل /cancel للإلغاء.", listOf(listOf(AdminButton("إلغاء", "voicx:cancel_flow")), listOf(AdminButton("القائمة الرئيسية", "voicx:home"))))
+    }
+
+    private fun askConfirmation(chatId: Long, summary: String, action: PanelAction): AdminReply {
+        val session = panelSessions[chatId] ?: PanelSession("confirm").also { panelSessions[chatId] = it }
+        val token = java.util.UUID.randomUUID().toString().replace("-", "").take(16)
+        session.confirmationToken = token
+        session.action = action
+        return AdminReply("معاينة قبل التنفيذ:\n$summary\n\nهل تؤكد؟", listOf(listOf(AdminButton("تأكيد التنفيذ", "voicx:confirm:$token"), AdminButton("إلغاء", "voicx:cancel_flow"))))
+    }
+
+    private fun handlePanelText(chatId: Long, rawText: String, runtime: GatewayRuntime, client: TelegramBotClient): AdminReply? {
+        val session = panelSessions[chatId] ?: return null
+        val text = rawText.trim()
+        if (text.equals("/cancel", true) || text.equals("إلغاء", true)) {
+            panelSessions.remove(chatId)
+            return AdminReply("تم إلغاء النموذج. لم يُنفذ أي إجراء.", listOf(listOf(AdminButton("القائمة الرئيسية", "voicx:home"))))
+        }
+        if (text.startsWith("/")) return null
+        if (text.isBlank()) return AdminReply("لم يصل نص. أرسل البيانات المطلوبة أو /cancel للإلغاء.")
+        if (session.flow == "search") {
+            panelSessions.remove(chatId)
+            runtime.searchCustomers(text) { asyncPanelReply(chatId, client, "نتائج البحث:\n${it.take(3400)}") }
+            return AdminReply("جارٍ البحث في قاعدة SQLite المحلية…")
+        }
+        var value = if (text.equals("تخطي", true)) "" else text
+        val phoneStep = when (session.flow) {
+            "add_customer", "gemini", "sim", "sms", "schedule_call", "sms_schedule" -> session.values.isEmpty()
+            else -> false
+        }
+        if (phoneStep) {
+            value = runCatching { PhoneNumberNormalizer.normalizeYemen(value) }.getOrElse { return AdminReply("رقم غير صالح. أدخل جوالاً يمنياً مثل 730501035 أو +967730501035.") }
+        }
+        session.values += value
+        val fields = session.values
+        val expected = when (session.flow) {
+            "add_customer" -> 5
+            "gemini" -> 4
+            "sim", "delete_call" -> 1
+            "sms" -> 2
+            "sms_schedule" -> 3
+            "schedule_call" -> 3
+            "campaign" -> if (fields.size >= 4 && fields[3].lowercase() in setOf("اتصال", "call")) 4 else 5
+            else -> fields.size
+        }
+        if (fields.size < expected) {
+            val prompt = when (session.flow) {
+                "add_customer" -> listOf("رقم الجوال", "اسم العميل", "الوظيفة أو تخطي", "الشركة أو تخطي", "تعليمات/ملاحظات أو تخطي")[fields.size]
+                "gemini" -> listOf("رقم الجوال", "الاسم أو تخطي", "الوظيفة أو تخطي", "الشركة أو تخطي")[fields.size]
+                "sms" -> listOf("رقم الجوال", "نص الرسالة")[fields.size]
+                "sms_schedule" -> listOf("رقم الجوال", "موعد الإرسال YYYY-MM-DD HH:mm", "نص الرسالة")[fields.size]
+                "schedule_call" -> listOf("رقم الجوال", "موعد الاتصال YYYY-MM-DD HH:mm", "ملاحظة أو تخطي")[fields.size]
+                "campaign" -> listOf("اسم الحملة", "موعد البدء YYYY-MM-DD HH:mm", "مجموعة العملاء أو all", "نوع الحملة: call أو sms أو call_sms", "نص SMS أو تخطي")[fields.size]
+                else -> "البيانات المطلوبة"
+            }
+            return AdminReply("تم استلام ${fields.size}/$expected. $prompt\nأرسل /cancel للإلغاء.", listOf(listOf(AdminButton("إلغاء", "voicx:cancel_flow"))))
+        }
+
+        val action = when (session.flow) {
+            "add_customer" -> PanelAction.AddCustomer(fields[0], fields[1], fields[2], fields[3], fields[4])
+            "gemini" -> PanelAction.GeminiCall(fields[0], fields[1], fields[2], fields[3])
+            "sim" -> PanelAction.SimCall(fields[0])
+            "sms" -> PanelAction.SendSms(fields[0], fields[1])
+            "schedule_call" -> {
+                val at = campaignTime(fields[1]) ?: return retryPanelStep(session, "صيغة الموعد غير صحيحة. استخدم YYYY-MM-DD HH:mm (مثال 2026-12-01 09:30).")
+                if (at <= System.currentTimeMillis()) return retryPanelStep(session, "يجب أن يكون الموعد في المستقبل. أعد إدخاله بصيغة YYYY-MM-DD HH:mm.")
+                PanelAction.ScheduleCall(fields[0], at, fields[2])
+            }
+            "sms_schedule" -> {
+                val at = campaignTime(fields[1]) ?: return retryPanelStep(session, "صيغة الموعد غير صحيحة. استخدم YYYY-MM-DD HH:mm.")
+                if (at <= System.currentTimeMillis()) return retryPanelStep(session, "موعد الإرسال يجب أن يكون في المستقبل.")
+                PanelAction.ScheduleSms(fields[0], at, fields[2])
+            }
+            "campaign" -> {
+                if (fields[0].isBlank()) return retryPanelStep(session, "اسم الحملة مطلوب.")
+                val at = campaignTime(fields[1]) ?: return retryPanelStep(session, "صيغة الموعد غير صحيحة. استخدم YYYY-MM-DD HH:mm.")
+                if (at <= System.currentTimeMillis()) return retryPanelStep(session, "موعد بدء الحملة يجب أن يكون في المستقبل.")
+                val channel = when (fields[3].lowercase()) { "اتصال", "call" -> "call"; "sms", "رسائل" -> "sms"; "call_sms", "كلاهما", "اتصال ورسائل" -> "call_sms"; else -> return retryPanelStep(session, "نوع الحملة غير معروف. اكتب call أو sms أو call_sms.") }
+                PanelAction.CreateCampaign(fields[0], at, fields[2].ifBlank { "all" }, channel, fields.getOrElse(4) { "" })
+            }
+            "delete_call" -> PanelAction.DeleteCall(fields[0])
+            else -> { panelSessions.remove(chatId); return AdminReply("انتهى النموذج؛ ابدأ من القائمة الرئيسية.") }
+        }
+        val summary = when (action) {
+            is PanelAction.AddCustomer -> "إضافة العميل ${action.name} — ${action.phone}"
+            is PanelAction.GeminiCall -> "اتصال Gemini إلى ${action.phone} (${action.name.ifBlank { "بلا اسم" }})"
+            is PanelAction.SimCall -> "اتصال SIM مع ربط SIP إلى ${action.phone}. قد تُحتسب رسوم المشغّل."
+            is PanelAction.SendSms -> "إرسال SMS إلى ${action.phone}:\n${action.text}"
+            is PanelAction.ScheduleCall -> "جدولة اتصال إلى ${action.phone} في ${java.time.Instant.ofEpochMilli(action.at).atZone(ZoneId.systemDefault()).toLocalDateTime()}"
+            is PanelAction.ScheduleSms -> "جدولة SMS إلى ${action.phone} في ${java.time.Instant.ofEpochMilli(action.at).atZone(ZoneId.systemDefault()).toLocalDateTime()}:\n${action.text}"
+            is PanelAction.CreateCampaign -> "إنشاء حملة ${action.name}؛ المجموعة=${action.group}؛ القناة=${action.channel}؛ البدء=${java.time.Instant.ofEpochMilli(action.at).atZone(ZoneId.systemDefault()).toLocalDateTime()}"
+            is PanelAction.DeleteCall -> "حذف سجل المكالمة بالمعرّف ${action.id} نهائياً من سجل Telegram المحلي."
+            is PanelAction.ToggleGateway -> if (action.enabled) "تشغيل البوابة" else "إيقاف التحويل"
+        }
+        session.flow.let { }
+        return askConfirmation(chatId, summary, action)
+    }
+
+    private fun retryPanelStep(session: PanelSession, message: String): AdminReply {
+        if (session.values.isNotEmpty()) session.values.removeAt(session.values.lastIndex)
+        val next = when (session.flow) {
+            "schedule_call" -> "أعد إدخال الموعد YYYY-MM-DD HH:mm."
+            "sms_schedule" -> "أعد إدخال موعد الإرسال YYYY-MM-DD HH:mm."
+            "campaign" -> "أعد إدخال البيانات الصحيحة للخطوة الحالية."
+            else -> "أعد إدخال القيمة المطلوبة."
+        }
+        return AdminReply("$message\n$next", listOf(listOf(AdminButton("إلغاء", "voicx:cancel_flow"))))
+    }
+
+    private fun executePanelAction(action: PanelAction, runtime: GatewayRuntime, chatId: Long, client: TelegramBotClient, home: List<List<AdminButton>>): AdminReply {
+        when (action) {
+            is PanelAction.AddCustomer -> runtime.saveCustomer(VoicxCustomer(phone = action.phone, name = action.name, role = action.role, company = action.company, instructions = action.instructions)) { asyncPanelReply(chatId, client, "حفظ العميل: $it") }
+            is PanelAction.GeminiCall -> runtime.startAiCall(action.phone, action.name, action.role, action.company)
+            is PanelAction.SimCall -> runtime.startTelegramSimCall(action.phone) { asyncPanelReply(chatId, client, it) }
+            is PanelAction.SendSms -> runtime.sendSms(action.phone, action.text) { asyncPanelReply(chatId, client, "نتيجة SMS: $it") }
+            is PanelAction.ScheduleCall -> runtime.saveCallSchedule(CallSchedule(customerId = "", phone = action.phone, runAt = action.at, note = action.note)) { asyncPanelReply(chatId, client, "نتيجة جدولة الاتصال: $it") }
+            is PanelAction.ScheduleSms -> runtime.saveSmsSchedule(SmsSchedule(phone = action.phone, runAt = action.at, message = action.text)) { asyncPanelReply(chatId, client, "نتيجة جدولة SMS: $it") }
+            is PanelAction.CreateCampaign -> runtime.createCampaign(Campaign(name = action.name, startAt = action.at, targetGroup = action.group, channel = action.channel, smsTemplate = action.template)) { asyncPanelReply(chatId, client, "نتيجة إنشاء الحملة: $it") }
+            is PanelAction.DeleteCall -> return AdminReply(if (runtime.deleteTelegramCallRecord(action.id)) "تم حذف السجل المحدد." else "لم يوجد سجل بهذا المعرّف؛ لم يُحذف شيء.", home)
+            is PanelAction.ToggleGateway -> runtime.setTakeover(action.enabled)
+        }
+        return AdminReply("تم قبول الإجراء المؤكد. ستظهر النتيجة هنا عند اكتمال الحفظ أو الفحص.", home)
     }
 
     private suspend fun executeControlCommand(

@@ -32,6 +32,7 @@ internal class TelegramBotClient(
         val chatId: Long,
         val privateChat: Boolean,
         val text: String,
+        val messageId: Long? = null,
         val callbackQueryId: String? = null,
         val callbackData: String? = null,
     )
@@ -51,7 +52,7 @@ internal class TelegramBotClient(
         return (0 until updates.length()).mapNotNull { index ->
             val update = updates.optJSONObject(index) ?: return@mapNotNull null
             val callback = update.optJSONObject("callback_query")
-            val message = if (callback == null) update.optJSONObject("message") else callback.optJSONObject("message")
+            val message = (if (callback == null) update.optJSONObject("message") else callback.optJSONObject("message"))
                 ?: return@mapNotNull null
             val from = (callback?.optJSONObject("from") ?: message.optJSONObject("from")) ?: return@mapNotNull null
             val chat = message.optJSONObject("chat") ?: return@mapNotNull null
@@ -64,13 +65,14 @@ internal class TelegramBotClient(
                 chatId = chat.optLong("id", -1L),
                 privateChat = chat.optString("type") == "private",
                 text = text,
+                messageId = message.optLong("message_id", 0L).takeIf { it > 0L },
                 callbackQueryId = callback?.optString("id")?.takeIf(String::isNotBlank),
                 callbackData = callbackData,
             ).takeIf { it.updateId >= 0 && it.senderId >= 0 && it.chatId >= 0 }
         }
     }
 
-    fun sendMessage(chatId: Long, text: String, buttons: List<List<AdminButton>> = emptyList()) {
+    fun sendMessage(chatId: Long, text: String, buttons: List<List<AdminButton>> = emptyList()): Long? {
         require(text.length <= 3_900)
         val body = JSONObject().put("chat_id", chatId).put("text", text)
         if (buttons.isNotEmpty()) {
@@ -84,7 +86,20 @@ internal class TelegramBotClient(
             }
             body.put("reply_markup", JSONObject().put("inline_keyboard", rows))
         }
-        request("POST", "/sendMessage", body)
+        return request("POST", "/sendMessage", body).optJSONObject("result")?.optLong("message_id")?.takeIf { it > 0L }
+    }
+
+    fun editMessageText(chatId: Long, messageId: Long, text: String, buttons: List<List<AdminButton>> = emptyList()) {
+        require(text.length <= 3_900)
+        val body = JSONObject().put("chat_id", chatId).put("message_id", messageId).put("text", text)
+        val rows = JSONArray()
+        buttons.forEach { row ->
+            val cells = JSONArray()
+            row.forEach { button -> cells.put(JSONObject().put("text", button.title).put("callback_data", button.callbackData)) }
+            rows.put(cells)
+        }
+        body.put("reply_markup", JSONObject().put("inline_keyboard", rows))
+        request("POST", "/editMessageText", body)
     }
 
     fun answerCallbackQuery(callbackQueryId: String) {
