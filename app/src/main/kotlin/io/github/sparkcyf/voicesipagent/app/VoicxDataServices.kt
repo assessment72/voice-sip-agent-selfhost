@@ -657,8 +657,21 @@ internal class VoicxCustomerRepository(private val store: VoicxFirebaseStore) {
     fun updateScheduleStatus(id: String, status: String, error: String = "") { if (id.isNotBlank()) save("call_schedules", id, mapOf("status" to status, "error" to error.takeIf(String::isNotBlank))) }
     fun cancelCallSchedule(id: String, reason: String = "cancelled by administrator"): Boolean = db.transaction {
         val current = read("call_schedules", id) ?: return@transaction false
-        if (current.text("status") in setOf("completed", "cancelled", "needs_reconciliation")) return@transaction false
+        if (current.text("status") != "pending") return@transaction false
         save("call_schedules", id, mapOf("status" to "cancelled", "error" to reason.take(300)))
+        true
+    }
+    fun editCallSchedule(id: String, runAt: Long, note: String): Boolean = db.transaction {
+        require(runAt > System.currentTimeMillis()) { "وقت الاتصال يجب أن يكون في المستقبل" }
+        val current = read("call_schedules", id) ?: return@transaction false
+        if (current.text("status") != "pending") return@transaction false
+        save("call_schedules", id, mapOf(
+            "runAt" to runAt,
+            "note" to note.trim().take(1000),
+            "idempotencyKey" to "manual-call-edit:$id:$runAt:${note.trim()}",
+            "claimedAt" to null,
+            "error" to null,
+        ))
         true
     }
     fun renewCallScheduleLease(id: String, now: Long = System.currentTimeMillis()) {
@@ -698,8 +711,23 @@ internal class VoicxCustomerRepository(private val store: VoicxFirebaseStore) {
     fun updateSmsScheduleStatus(id: String, status: String, error: String = "") { if (id.isNotBlank()) save("sms_schedules", id, mapOf("status" to status, "error" to error.takeIf(String::isNotBlank))) }
     fun cancelSmsSchedule(id: String, reason: String = "cancelled by administrator"): Boolean = db.transaction {
         val current = read("sms_schedules", id) ?: return@transaction false
-        if (current.text("status") in setOf("sent", "cancelled", "needs_reconciliation")) return@transaction false
+        if (current.text("status") != "queued") return@transaction false
         save("sms_schedules", id, mapOf("status" to "cancelled", "error" to reason.take(300)))
+        true
+    }
+    fun editSmsSchedule(id: String, runAt: Long, message: String, note: String): Boolean = db.transaction {
+        require(runAt > System.currentTimeMillis()) { "وقت الرسالة يجب أن يكون في المستقبل" }
+        require(message.isNotBlank()) { "نص الرسالة مطلوب" }
+        val current = read("sms_schedules", id) ?: return@transaction false
+        if (current.text("status") != "queued") return@transaction false
+        save("sms_schedules", id, mapOf(
+            "runAt" to runAt,
+            "message" to message.trim().take(1000),
+            "note" to note.trim().take(1000),
+            "idempotencyKey" to "manual-sms-edit:$id:$runAt:${message.trim()}",
+            "claimedAt" to null,
+            "error" to null,
+        ))
         true
     }
 

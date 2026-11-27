@@ -1206,6 +1206,12 @@ class GatewayRuntime private constructor(context: Context) {
         }.getOrElse { "تعذر حفظ موعد الاتصال: ${it.message ?: it.javaClass.simpleName}" })
     }
     fun cancelCallSchedule(id: String, callback: (Boolean) -> Unit) = worker.execute { callback(runCatching { customers.cancelCallSchedule(id.trim()) }.getOrDefault(false)) }
+    fun editCallSchedule(id: String, runAt: Long, note: String, callback: (String) -> Unit) = worker.execute {
+        callback(runCatching { customers.editCallSchedule(id.trim(), runAt, note) }.fold(
+            onSuccess = { if (it) "تم تعديل موعد الاتصال $id إلى ${ScheduleCommandParser.displayTime(runAt)}." else "تعذر تعديل الموعد؛ تأكد من المعرف وأن حالته pending وليست قيد التنفيذ." },
+            onFailure = { "تعذر تعديل موعد الاتصال: ${it.message ?: it.javaClass.simpleName}" },
+        ))
+    }
     fun scheduleReconciliationItems(limit: Int = 8): List<ScheduleReconciliationItem> =
         runCatching { customers.listSchedulesNeedingReconciliation(limit.coerceIn(1, 20)) }.getOrDefault(emptyList())
 
@@ -1244,6 +1250,12 @@ class GatewayRuntime private constructor(context: Context) {
     }.getOrElse { "خطأ قراءة الجدولة: ${it.message ?: it.javaClass.simpleName}" }) }
     fun saveSmsSchedule(schedule: SmsSchedule, callback: (String) -> Unit) = worker.execute { callback(runCatching { customers.saveSmsSchedule(schedule) }.getOrElse { "خطأ جدولة SMS: ${it.javaClass.simpleName}" }) }
     fun cancelSmsSchedule(id: String, callback: (Boolean) -> Unit) = worker.execute { callback(runCatching { customers.cancelSmsSchedule(id.trim()) }.getOrDefault(false)) }
+    fun editSmsSchedule(id: String, runAt: Long, message: String, note: String, callback: (String) -> Unit) = worker.execute {
+        callback(runCatching { customers.editSmsSchedule(id.trim(), runAt, message, note) }.fold(
+            onSuccess = { if (it) "تم تعديل موعد SMS $id إلى ${ScheduleCommandParser.displayTime(runAt)}." else "تعذر تعديل SMS؛ تأكد من المعرف وأن حالته queued وليست قيد التنفيذ." },
+            onFailure = { "تعذر تعديل موعد SMS: ${it.message ?: it.javaClass.simpleName}" },
+        ))
+    }
     fun listSmsSchedules(callback: (String) -> Unit) = worker.execute { callback(runCatching { customers.listSmsSchedules().joinToString("\n") { "${it.id} | ${it.phone} | ${ScheduleCommandParser.displayTime(it.runAt)} | ${it.status} | ${it.note} | ${it.message.take(80)}" } }.getOrElse { "خطأ قراءة جدولة SMS: ${it.message ?: it.javaClass.simpleName}" }.ifBlank { "لا توجد رسائل مجدولة" }) }
     fun sendSms(phone: String, message: String, callback: (String) -> Unit) = worker.execute {
         callback(runCatching { PhoneNumberNormalizer.normalizeYemen(phone) }.fold({ normalized ->

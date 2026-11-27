@@ -349,7 +349,7 @@ class GatewayService : Service() {
                         val reply = try {
                             when (command) {
                                 "/start", "/help", "/commands" ->
-                                    "Voicx Control جاهز. افتح القائمة عبر /menu أو /panel.\n\nالحالة: /status أو /health\nقاعدة البيانات: /db أو /database\nالعملاء: /customers أو /find نص\nإضافة عميل: /add_customer رقم | اسم | وظيفة | شركة | تعليمات\nجدولة اتصال: /schedule أو /schedule_add customerId | رقم | Unix ms/seconds | ملاحظة\nجدولة SMS: /sms_schedule customerId | رقم | Unix ms/seconds | رسالة | ملاحظة\nعرض الكل: /schedules أو /list_schedules\nاتصالات مجدولة: /list_calls أو /schedule_list\nإلغاء اتصال: /cancel_schedule ID\nإلغاء SMS: /cancel_sms ID\nتسلسلات SMS: /sms_sequence رقم | YYYY-MM-DD HH:mm\nالحملات: /campaign_start اسم | YYYY-MM-DD HH:mm | المجموعة | call أو sms أو call_sms | قالب SMS\nالصيانة: /db_cleanup\nالمبيعات: /admin\nسجل المكالمات: /account\nتشغيل أو إيقاف البوابة: /enable أو /disable"
+                                    "Voicx Control جاهز. افتح القائمة عبر /menu أو /panel.\n\nالحالة: /status أو /health\nقاعدة البيانات: /db أو /database\nالعملاء: /customers أو /find نص\nإضافة عميل: /add_customer رقم | اسم | وظيفة | شركة | تعليمات\nجدولة اتصال: /schedule أو /schedule_add customerId | رقم | Unix ms/seconds | ملاحظة\nتعديل اتصال: /schedule_edit ID | Unix ms/seconds | ملاحظة\nجدولة SMS: /sms_schedule customerId | رقم | Unix ms/seconds | رسالة | ملاحظة\nتعديل SMS: /sms_schedule_edit ID | Unix ms/seconds | رسالة | ملاحظة\nعرض الكل: /schedules أو /list_schedules\nاتصالات مجدولة: /list_calls أو /schedule_list\nإلغاء اتصال: /cancel_schedule ID\nإلغاء SMS: /cancel_sms ID\nتسلسلات SMS: /sms_sequence رقم | YYYY-MM-DD HH:mm\nالحملات: /campaign_start اسم | YYYY-MM-DD HH:mm | المجموعة | call أو sms أو call_sms | قالب SMS\nالصيانة: /db_cleanup\nالمبيعات: /admin\nسجل المكالمات: /account\nتشغيل أو إيقاف البوابة: /enable أو /disable"
                                 "/status", "/health" -> {
                                     val h = GatewayRuntime.get(this@GatewayService).health.value
                                     "Gateway: ${if (h.takeover) "ON" else "OFF"}\nSIP: ${if (h.sip.ready) "ready" else "not ready"}\nActive call: ${h.session != null || h.calls.owned > 0}"
@@ -383,6 +383,12 @@ class GatewayService : Service() {
                                     else { runtime.saveManualCallSchedule(fields[0], fields[1], at, fields.getOrElse(3) { "" }) { result -> scope.launch(Dispatchers.IO) { runCatching { client.sendMessage(update.chatId, result) } } }; "جارٍ التحقق من العميل وحفظ موعد الاتصال." }
                                 }
                                 "/schedule_list", "/list_calls" -> { runtime.listCallSchedules { result -> scope.launch(Dispatchers.IO) { runCatching { client.sendMessage(update.chatId, result.take(3900)) } } }; "جارٍ تحميل مواعيد الاتصالات." }
+                                "/schedule_edit", "/edit_schedule", "/reschedule" -> {
+                                    val fields = parsedCommand.fields(); val at = ScheduleCommandParser.parseTime(fields.getOrNull(1))
+                                    if (fields.size < 2 || fields[0].isBlank() || at == null)
+                                        "الاستخدام: /schedule_edit ID | وقت Unix ms (أو ثوانٍ) | ملاحظة"
+                                    else { runtime.editCallSchedule(fields[0], at, fields.getOrElse(2) { "" }) { result -> scope.launch(Dispatchers.IO) { runCatching { client.sendMessage(update.chatId, result) } } }; "جارٍ تعديل موعد الاتصال." }
+                                }
                                 "/schedule_cancel", "/cancel_schedule" -> {
                                     if (argument.isBlank()) "الاستخدام: /cancel_schedule ID\nاعرض المواعيد أولاً عبر /list_schedules."
                                     else {
@@ -396,6 +402,12 @@ class GatewayService : Service() {
                                     else { runtime.saveSmsSchedule(SmsSchedule(customerId = fields[0], phone = fields[1], runAt = at ?: 0L, message = fields[3], note = fields.getOrElse(4) { "" })) { result -> scope.launch(Dispatchers.IO) { runCatching { client.sendMessage(update.chatId, "نتيجة جدولة SMS: $result") } } }; "تم استلام موعد SMS." }
                                 }
                                 "/sms_schedule_list", "/list_sms" -> { runtime.listSmsSchedules { result -> scope.launch(Dispatchers.IO) { runCatching { client.sendMessage(update.chatId, result.take(3900)) } } }; "جارٍ تحميل رسائل SMS المجدولة." }
+                                "/sms_schedule_edit", "/edit_sms_schedule" -> {
+                                    val fields = parsedCommand.fields(); val at = ScheduleCommandParser.parseTime(fields.getOrNull(1))
+                                    if (fields.size < 3 || fields[0].isBlank() || at == null || fields[2].isBlank())
+                                        "الاستخدام: /sms_schedule_edit ID | وقت Unix ms (أو ثوانٍ) | الرسالة | ملاحظة"
+                                    else { runtime.editSmsSchedule(fields[0], at, fields[2], fields.getOrElse(3) { "" }) { result -> scope.launch(Dispatchers.IO) { runCatching { client.sendMessage(update.chatId, result) } } }; "جارٍ تعديل موعد SMS." }
+                                }
                                 "/sms_schedule_cancel", "/cancel_sms" -> {
                                     if (argument.isBlank()) "الاستخدام: /cancel_sms ID\nاعرض المواعيد عبر /list_schedules."
                                     else {
