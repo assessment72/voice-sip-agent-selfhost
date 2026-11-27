@@ -742,6 +742,16 @@ internal class VoicxCustomerRepository(private val store: VoicxFirebaseStore) {
         true
     }
 
+    fun deferSmsSchedule(id: String, runAt: Long, reason: String) {
+        if (id.isBlank()) return
+        save("sms_schedules", id, mapOf(
+            "status" to "queued",
+            "runAt" to runAt,
+            "claimedAt" to null,
+            "error" to reason.take(300),
+        ))
+    }
+
     private fun enqueueNextCallInTransaction(current: LocalDocument) {
         val recurrence = current.text("recurrence")
         val nextAt = ScheduleCommandParser.nextOccurrence(current.long("runAt"), recurrence) ?: return

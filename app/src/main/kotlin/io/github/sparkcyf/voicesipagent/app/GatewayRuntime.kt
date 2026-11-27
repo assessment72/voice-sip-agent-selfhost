@@ -226,6 +226,7 @@ class GatewayRuntime private constructor(context: Context) {
     private var dialerRetry: ScheduledFuture<*>? = null
     private var healthCheck: ScheduledFuture<*>? = null
     private var scheduleCheck: ScheduledFuture<*>? = null
+    @Volatile private var lastScheduleCheckAt: Long = 0L
     @Volatile private var networkCallback: ConnectivityManager.NetworkCallback? = null
     private val dialerHandoffStore = DialerHandoffStore(app)
     private val dialerHandoff = DialerHandoff(app.packageName, dialerHandoffStore, object : DialerHandoff.Backend {
@@ -914,6 +915,7 @@ class GatewayRuntime private constructor(context: Context) {
     }
 
     private fun runDueSchedules() {
+        lastScheduleCheckAt = System.currentTimeMillis()
         if (!gatewayEnabled) return
         runDueSmsSchedules()
         repeat(3) {
@@ -931,9 +933,12 @@ class GatewayRuntime private constructor(context: Context) {
                 AppLog.w("scheduled call ${schedule.id} deferred because gateway is busy")
                 return@repeat
             }
+            if (settings.geminiApiKey.isBlank() || !cellular.status.ready || !cellular.hasReadySim() || cellular.hasCalls || _health.value.session != null) {
+                customers.deferSchedule(schedule.id.orEmpty(), System.currentTimeMillis() + 60_000L, "call prerequisites are temporarily unavailable")
+                AppLog.w("scheduled call ${schedule.id} deferred until call prerequisites are ready")
+                return@repeat
+            }
             try {
-                require(settings.geminiApiKey.isNotBlank()) { "Gemini API key is not configured" }
-                check(cellular.status.ready && cellular.hasReadySim() && !cellular.hasCalls && _health.value.session == null) { "SIM or cellular call resource is not ready" }
                 check(!hasActiveWork()) { "gateway busy" }
                 val normalizedPhone = PhoneNumberNormalizer.normalizeYemen(schedule.phone)
                 val customer = customers.findById(schedule.customerId) ?: customers.findByPhone(normalizedPhone)
@@ -1000,6 +1005,11 @@ class GatewayRuntime private constructor(context: Context) {
                 customers.updateSmsScheduleStatus(schedule.id.orEmpty(), "cancelled", "contact is opted out or campaign customer is blocked")
                 return@repeat
             }
+            if (settings.smsApiKey.isBlank()) {
+                customers.deferSmsSchedule(schedule.id.orEmpty(), System.currentTimeMillis() + 5 * 60_000L, "SMS provider key is not configured yet")
+                AppLog.w("scheduled SMS ${schedule.id} deferred until SMS provider configuration is ready")
+                return@repeat
+            }
             try {
                 val normalizedPhone = PhoneNumberNormalizer.normalizeYemen(schedule.phone)
                 val stage = customers.sequenceStage(schedule)
@@ -1064,6 +1074,22 @@ class GatewayRuntime private constructor(context: Context) {
         listOf("customers", "customer_memories", "customer_messages", "customer_sms_sequences", "call_summaries", "call_schedules", "sms_schedules", "campaigns", "campaign_customers", "sales_admin_leads", "schedule_reconciliation_audit")
             .joinToString("\n") { "$it: ${db.count(it)}" }
     }.getOrElse { "تعذر قراءة قاعدة البيانات المحلية: ${it.javaClass.simpleName}" }
+    fun automaticSchedulingReport(): String = runCatching {
+        val calls = customers.listSchedules(100)
+        val sms = customers.listSmsSchedules(100)
+        val now = System.currentTimeMillis()
+        val pending = calls.count { it.status == "pending" } + sms.count { it.status == "queued" }
+        val running = calls.count { it.status == "running" } + sms.count { it.status == "running" }
+        val review = calls.count { it.status == ScheduleLeasePolicy.RECONCILIATION_STATUS } + sms.count { it.status == ScheduleLeasePolicy.RECONCILIATION_STATUS }
+        val next = (calls.filter { it.status == "pending" && it.runAt >= now }.map { it.runAt } +
+            sms.filter { it.status == "queued" && it.runAt >= now }.map { it.runAt }).minOrNull()
+        val last = lastScheduleCheckAt.takeIf { it > 0L }?.let(ScheduleCommandParser::displayTime) ?: "لم تبدأ بعد"
+        "محرك التشغيل التلقائي: ${if (gatewayEnabled) "مفعل" else "متوقف"}\n" +
+            "آخر فحص: $last\n" +
+            "قيد الانتظار: $pending | قيد التنفيذ: $running | تحتاج مراجعة: $review\n" +
+            "الموعد القادم: ${next?.let(ScheduleCommandParser::displayTime) ?: "لا يوجد"}\n" +
+            "المهام تُنفذ تلقائياً كل 30 ثانية عند تشغيل خدمة Gateway."
+    }.getOrElse { "تعذر قراءة حالة التشغيل التلقائي: ${it.message ?: it.javaClass.simpleName}" }
     fun maintainLocalDatabase(callback: (String) -> Unit = {}) = worker.execute {
         callback(runCatching {
             val removed = customers.purgeOldOperationalData()
