@@ -63,9 +63,16 @@ internal object LocalDocumentPatch {
 
 internal object ScheduleLeasePolicy {
     const val CLAIM_LEASE_MS = 30 * 60 * 1000L
+    const val RECONCILIATION_STATUS = "needs_reconciliation"
+    const val EXPIRED_CLAIM_ERROR =
+        "Execution lease expired; external outcome is unknown. Verify call/SMS history before retrying."
 
     fun isExpired(status: String, claimedAt: Long, now: Long): Boolean =
         status == "running" && claimedAt > 0L && claimedAt <= now - CLAIM_LEASE_MS
+
+    // Calls and SMS are external side effects. An expired worker may have completed
+    // the action before dying, so automatic retry could contact a customer twice.
+    fun recoveryStatus(): String = RECONCILIATION_STATUS
 }
 
 internal object CustomerSuppressionPolicy {
@@ -267,7 +274,13 @@ internal class VoicxCustomerRepository(private val store: VoicxFirebaseStore) {
             // Recover abandoned claims, then select and mark one due item while holding
             // the same SQLite write transaction. Competing workers cannot claim it twice.
             query(name) { ScheduleLeasePolicy.isExpired(it.text("status"), it.long("claimedAt"), now) }
-                .forEach { save(name, it.id, mapOf("status" to status, "claimedAt" to null)) }
+                .forEach {
+                    save(name, it.id, mapOf(
+                        "status" to ScheduleLeasePolicy.recoveryStatus(),
+                        "claimedAt" to null,
+                        "error" to ScheduleLeasePolicy.EXPIRED_CLAIM_ERROR,
+                    ))
+                }
             val candidate = query(name) { it.text("status") == status && it.long("runAt") <= now }
                 .minByOrNull { it.long("runAt") } ?: return@transaction null
             save(name, candidate.id, mapOf(
