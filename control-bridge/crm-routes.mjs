@@ -14,6 +14,14 @@ function ok(res, status, value) {
 }
 function id() { return crypto.randomUUID(); }
 function cleanString(value, max = 500) { return typeof value === "string" ? value.trim().slice(0, max) : ""; }
+function phoneKey(value) {
+  let digits = cleanString(value, 40).replace(/\\D/g, "");
+  if (digits.startsWith("00")) digits = digits.slice(2);
+  if (digits.startsWith("967")) return digits;
+  if (digits.length === 9 && digits.startsWith("7")) return "967" + digits;
+  if (digits.length === 10 && digits.startsWith("07")) return "967" + digits.slice(1);
+  return digits;
+}
 
 export async function handleCrmRoute(req, res, url, ctx) {
   const p = url.pathname;
@@ -50,7 +58,7 @@ export async function handleCrmRoute(req, res, url, ctx) {
   }
 
   const specs = {
-    contacts: ["contacts", ["name","phone","email","jobTitle","company","professionalEmail","previousMessages","previousCallSummary","nextSendAt","tags","notes"]],
+    contacts: ["contacts", ["name","phone","email","jobTitle","company","professionalEmail","previousMessages","previousCallSummary","nextSendAt","tags","notes","optedOut","doNotContact"]],
     filters: ["filters", ["name","description","rules","enabled"]],
     tasks: ["tasks", ["title","description","dueAt","status","priority","contactId","channel"]],
     automations: ["automations", ["name","channel","trigger","enabled","config","replyPolicy"]],
@@ -124,13 +132,26 @@ export async function handleCrmRoute(req, res, url, ctx) {
     if (!to && !contactId) return fail(res, 400, "recipient_required"), true;
     const contact = contactId ? crm.contacts.find(x => x.id === contactId) : null;
     if (contactId && !contact) return fail(res, 404, "contact_not_found"), true;
+    const recipient = to || contact?.phone || "";
+    const recipientContact = contact || crm.contacts.find(x => phoneKey(x.phone) === phoneKey(recipient));
     const scheduledAt = b.scheduledAt || new Date().toISOString();
     if (Number.isNaN(Date.parse(scheduledAt))) return fail(res, 400, "invalid_scheduled_at"), true;
-    if (contact?.doNotContact === true || contact?.optedOut === true)
+    if (recipientContact?.doNotContact === true || recipientContact?.optedOut === true)
       return fail(res, 409, "contact_opted_out"), true;
-    const job = { id: id(), channel, to: to || contact.phone, contactId: contact?.id || null,
+    const idempotencyKey = cleanString(req.headers["idempotency-key"] || b.idempotencyKey, 128);
+    if (idempotencyKey) {
+      const existing = crm.outbox.find(x => x.idempotencyKey === idempotencyKey);
+      if (existing) {
+        if (existing.channel !== channel || phoneKey(existing.to) !== phoneKey(recipient))
+          return fail(res, 409, "idempotency_key_conflict"), true;
+        return ok(res, 200, { job: existing, deduplicated: true,
+          delivery: "queued_only_provider_not_configured" }), true;
+      }
+    }
+    const job = { id: id(), channel, to: recipient, contactId: recipientContact?.id || null,
       content: cleanString(b.message || b.prompt, 4000), scheduledAt,
-      status: "queued", provider: "not_configured", createdAt: new Date().toISOString() };
+      status: "queued", provider: "not_configured", createdAt: new Date().toISOString(),
+      ...(idempotencyKey ? { idempotencyKey } : {}) };
     if (channel !== "call" && !job.content) return fail(res, 400, "message_required"), true;
     crm.outbox.push(job);
     if (channel === "call") crm.calls.push(job);
