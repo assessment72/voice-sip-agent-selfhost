@@ -952,6 +952,10 @@ class GatewayRuntime private constructor(context: Context) {
                         smsWriter.createFollowUp(customer, stage, latestReplies, latestHistory, salesAdminStore.assistantContext())
                     } else draft
                 } else schedule.message
+                if (customers.isPhoneOptedOut(normalizedPhone)) {
+                    customers.updateSmsScheduleStatus(schedule.id.orEmpty(), "cancelled", "customer opted out before SMS submission")
+                    return@repeat
+                }
                 SmsApiClient(settings.smsApiKey).send(normalizedPhone, finalMessage).getOrThrow()
                 if (stage != null) customers.completeCustomerSmsStage(schedule, finalMessage)
                 else customers.updateSmsScheduleStatus(schedule.id.orEmpty(), "sent")
