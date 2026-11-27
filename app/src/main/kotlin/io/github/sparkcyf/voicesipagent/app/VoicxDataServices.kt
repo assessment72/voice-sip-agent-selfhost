@@ -319,6 +319,7 @@ internal class VoicxCustomerRepository(private val store: VoicxFirebaseStore) {
         val stage = match.groupValues[2].toInt()
         val sequence = read("customer_sms_sequences", sequenceId) ?: return@transaction
         val customer = findById(sequence.text("customerId")) ?: return@transaction
+        schedule.id?.takeIf(String::isNotBlank)?.let { save("sms_schedules", it, mapOf("status" to "sent", "sentAt" to sentAt, "message" to sentMessage.take(1000), "claimedAt" to null)) }
         val messageId = "outbound-" + java.security.MessageDigest.getInstance("SHA-256")
             .digest("${schedule.id.orEmpty()}|${sentMessage}".toByteArray(Charsets.UTF_8))
             .joinToString("") { "%02x".format(it) }
