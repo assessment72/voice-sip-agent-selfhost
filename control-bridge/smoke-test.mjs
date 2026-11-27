@@ -193,6 +193,21 @@ try {
   assert.equal(concurrentSnapshot.contacts.length, 17,
     "the original contact and every concurrent contact must remain in the persisted snapshot");
 
+  // Concurrent writes must not collide on a shared .tmp file or lose CRM records.
+  const concurrentContacts = await Promise.all(Array.from({ length: 16 }, (_, index) =>
+    request("/api/v1/crm/contacts", admin, {
+      method: "POST",
+      body: JSON.stringify({ name: "Concurrent " + index, phone: "+9677000001" + String(index).padStart(2, "0") })
+    })
+  ));
+  assert.ok(concurrentContacts.every(response => response.status === 201),
+    "all concurrent CRM writes should complete successfully");
+  r = await request("/api/v1/crm/contacts?limit=200", admin);
+  assert.equal(r.status, 200);
+  const concurrentSnapshot = await r.json();
+  assert.equal(concurrentSnapshot.contacts.length, 17,
+    "the original contact and every concurrent contact must remain in the persisted snapshot");
+
   console.log("Voicx bridge smoke test passed");
 } finally {
   child.kill("SIGTERM");
