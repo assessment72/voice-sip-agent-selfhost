@@ -53,6 +53,18 @@ class ScheduleReconciliationPolicyTest {
         assertEquals("schedule.reconciliation.retry_authorized", confirmed.auditAction)
     }
 
+    @Test fun retryUsesTheQueueStateRequiredByEachScheduleType() {
+        val decision = ScheduleReconciliationPolicy.Decision(
+            ScheduleReconciliationPolicy.Action.RETRY, "manager-1", "Verified no outbound attempt occurred",
+            retryConfirmed = true
+        )
+        assertEquals("pending", ScheduleReconciliationPolicy.resolve("needs_reconciliation", decision, "pending").status)
+        assertEquals("queued", ScheduleReconciliationPolicy.resolve("needs_reconciliation", decision, "queued").status)
+        assertTrue(runCatching {
+            ScheduleReconciliationPolicy.resolve("needs_reconciliation", decision, "running")
+        }.isFailure)
+    }
+
     @Test fun cannotResolveOtherStatesOrWithoutAuditContext() {
         assertTrue(runCatching {
             ScheduleReconciliationPolicy.resolve(
