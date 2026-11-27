@@ -940,8 +940,10 @@ class GatewayRuntime private constructor(context: Context) {
                     val since = sequence.long("firstSentAt")
                     val historyDocs = customers.customerSmsHistorySince(customer.id.orEmpty(), since)
                     val replies = historyDocs.filter { it.text("direction") == "inbound" }.map { it.text("body") }
-                    val history = historyDocs.map { "${it.text("direction")}: ${it.text("body")}" }
-                    smsWriter.createFollowUp(customer, stage, replies, history, salesAdminStore.assistantContext())
+                    if (replies.isEmpty()) schedule.message else {
+                        val history = historyDocs.map { "${it.text("direction")}: ${it.text("body")}" }
+                        smsWriter.createFollowUp(customer, stage, replies, history, salesAdminStore.assistantContext())
+                    }
                 } else schedule.message
                 SmsApiClient(settings.smsApiKey).send(normalizedPhone, finalMessage).getOrThrow()
                 if (stage != null) customers.completeCustomerSmsStage(schedule, finalMessage)
