@@ -402,10 +402,23 @@ internal class GeminiAiEndpoint(
         private val hangupScheduler = Executors.newSingleThreadScheduledExecutor { task ->
             Thread(task, "GeminiSpokenHangup").apply { isDaemon = true }
         }
+        private fun usableContextValue(value: String): String? = value.trim().takeIf {
+            it.isNotBlank() && it.length <= 160 &&
+                it !in setOf("عميل جديد", "غير محدد", "غير محددة", "غير معروف", "غير معروفة")
+        }
+        private val knownName = usableContextValue(context.name)
+        private val knownRole = usableContextValue(context.role)
+        private val knownCompany = usableContextValue(context.company)
+        private val openingCustomerContext = buildString {
+            if (knownName != null) append(" الاسم المعروف للعميل هو: $knownName.")
+            if (knownRole != null) append(" الوظيفة المسجلة: $knownRole؛ تحقق منها بلطف ولا تفترض صحتها.")
+            if (knownCompany != null) append(" الشركة المسجلة: $knownCompany؛ اذكرها فقط إذا أكدها العميل أو كان استخدامها مناسباً.")
+        }
         @Volatile private var callerSpeechVersion = 0L
         @Volatile private var silenceFollowUpCount = 0
         @Volatile private var silenceCheck: ScheduledFuture<*>? = null
-		private val prompt = """أنت سكرتير أعمال ومساعد مبيعات متخصص في تسويق توريد الديزل والوقود للشركات والمشاريع ومحطات الوقود والمصانع والمقاولين.
+        private val prompt = """أنت مساعد مبيعات آلي تابع لفريق المبيعات، ولست موظفاً بشرياً. إذا سأل العميل عن هويتك فقل بوضوح إنك مساعد آلي يساعد فريق المبيعات، ولا تدّع أنك موظف أو أنك أجريت تحققاً بشرياً.
+        أنت متخصص في تسويق توريد الديزل والوقود للشركات والمشاريع ومحطات الوقود والمصانع والمقاولين.
 
         أسلوبك: تحدث بلغة العميل. عند التحدث بالعربية استخدم افتراضياً لهجة يمنية محكية طبيعية ومفهومة، وبدّل إلى لغة العميل ولهجته المناسبة فوراً إذا بدأ بلغة أخرى. حافظ على نبرة مهنية وودودة وجمل قصيرة، ولا تكن آلياً أو ضاغطاً.
         - في اليمن استخدم لهجة يمنية بيضاء طبيعية ومفهومة عبر الهاتف، بعبارات مهنية بسيطة، ولا تبالغ في المفردات المحلية أو تقلد منطقة بعينها. إذا استخدم العميل لهجة يمنية محلية واضحة فاقترب منها باعتدال، وإذا كان من بلد آخر فطابق لغته ولهجته.
@@ -472,7 +485,8 @@ internal class GeminiAiEndpoint(
 - إذا سأل العميل عن سعر أو توفر أو تغطية أو مواصفة غير مؤكدة، قل بوضوح إنك تحتاج إلى التحقق من الفريق قبل التأكيد، ثم اعرض تسجيل طلبه.
 - إذا لم يكن العميل مهتماً، اشكره وأنهِ المكالمة باحترام. وإذا كان غير مناسب أو كانت المعلومات ناقصة، لا تضغط عليه.
 
-سياق العميل المتاح من التطبيق: الاسم ${context.name.ifBlank { "غير معروف" }}، الوظيفة ${context.role.ifBlank { "غير معروفة" }}، الشركة ${context.company.ifBlank { "غير معروفة" }}. استخدمه فقط إذا كان ملائماً، ولا تفترض أن أي معلومة صحيحة إذا صححها العميل.
+        سياق العميل المتاح من التطبيق: الاسم ${knownName ?: "غير متوفر"}، الوظيفة ${knownRole ?: "غير متوفرة"}، الشركة ${knownCompany ?: "غير متوفرة"}.
+        استخدم الاسم المعروف في التحية مرة واحدة فقط إذا كان متوفراً، ولا تستخدم القيم الافتراضية مثل «عميل جديد». استخدم الوظيفة أو الشركة للتحقق باحترام، ولا تعرضهما كحقيقة إذا صححهما العميل. لا تخترع أي اسم أو شركة أو وظيفة.
 
 تعليمات العميل المحفوظة في قاعدة البيانات (مرجع داخلي فقط):
 ${context.instructions.take(3000)}
@@ -688,7 +702,7 @@ ${context.salesInfo}
             }
             @Synchronized override fun writeFrame(frame: ShortArray) {
                 if (openingTurnStarted.compareAndSet(false, true)) {
-                    val queued = client?.sendClientText("ابدأ بتحية قصيرة وطبيعية بلغة العميل المتوقعة؛ إن كانت المحادثة بالعربية فاستخدم اللهجة اليمنية المحكية. عرّف بنفسك كمساعد مبيعات للديزل دون اختراع اسم شركة، واسأل بلطف إن كان الوقت مناسباً لدقيقة واحدة. إذا قال الشخص إنه مشغول فلا تبدأ الأسئلة؛ اعرض وقتاً مناسباً للمتابعة أو أنهِ المكالمة باحترام، ثم توقف واستمع.") == true
+                    val queued = client?.sendClientText("ابدأ بتحية قصيرة وطبيعية بلغة العميل المتوقعة؛ عرّف بنفسك كمساعد مبيعات آلي لفريق المبيعات، ولا تقل إنك موظف بشري. إذا كان الاسم المعروف متاحاً فاستخدمه مرة واحدة باحترام، ولا تستخدم اسماً افتراضياً. $openingCustomerContext اسأل بلطف إن كان الوقت مناسباً لدقيقة واحدة. إذا قال الشخص إنه مشغول فلا تبدأ الأسئلة؛ اعرض وقتاً مناسباً للمتابعة أو أنهِ المكالمة باحترام، ثم توقف واستمع.") == true
                     AppLog.i("Gemini Live call opening turn started=$queued")
                 }
                 val now = SystemClock.elapsedRealtime()
