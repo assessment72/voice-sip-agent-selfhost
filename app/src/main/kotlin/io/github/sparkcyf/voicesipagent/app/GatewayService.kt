@@ -535,6 +535,41 @@ class GatewayService : Service() {
             panelSessions.remove(chatId)
             return AdminReply("تم الإلغاء. لم يُنفذ أي إجراء.", home)
         }
+        if (action.startsWith("voicx:pick_date:")) {
+            val session = panelSessions[chatId]
+                ?: return AdminReply("انتهت جلسة اختيار الموعد. ابدأ الجدولة من جديد.", home)
+            if (session.flow !in setOf("schedule_call", "sms_schedule", "campaign") || session.values.size != 1) {
+                return AdminReply("اختيار التاريخ لم يعد صالحاً. ابدأ الجدولة من جديد.", home)
+            }
+            val selectedDate = runCatching { java.time.LocalDate.parse(action.substringAfterLast(':')) }.getOrNull()
+                ?: return scheduleDatePickerReply(session.flow, "التاريخ المحدد غير صالح.")
+            val today = java.time.LocalDate.now(ZoneId.systemDefault())
+            if (selectedDate.isBefore(today) || selectedDate.isAfter(today.plusDays(30))) {
+                return scheduleDatePickerReply(session.flow, "اختر تاريخاً من اليوم وحتى الثلاثين يوماً القادمة.")
+            }
+            session.values += selectedDate.toString()
+            return scheduleTimePickerReply(selectedDate.toString())
+        }
+        if (action.startsWith("voicx:pick_time:")) {
+            val session = panelSessions[chatId]
+                ?: return AdminReply("انتهت جلسة اختيار الموعد. ابدأ الجدولة من جديد.", home)
+            if (session.flow !in setOf("schedule_call", "sms_schedule", "campaign") || session.values.size != 2) {
+                return AdminReply("اختيار الوقت لم يعد صالحاً. اختر التاريخ من جديد.", home)
+            }
+            val date = session.values[1]
+            val time = action.substringAfterLast(':')
+            val at = campaignTime("$date $time")
+            if (at == null || at <= System.currentTimeMillis()) {
+                return scheduleTimePickerReply(date, "هذا الوقت مضى بالفعل. اختر وقتاً لاحقاً.")
+            }
+            session.values[1] = "$date $time"
+            val nextPrompt = when (session.flow) {
+                "schedule_call" -> "تم اختيار الموعد $date الساعة $time. أرسل ملاحظة الاتصال أو اكتب تخطي."
+                "sms_schedule" -> "تم اختيار موعد الإرسال $date الساعة $time. أرسل نص الرسالة."
+                else -> "تم اختيار بداية الحملة $date الساعة $time. أرسل مجموعة العملاء (all للجميع)."
+            }
+            return AdminReply(nextPrompt, listOf(listOf(AdminButton("إلغاء", "voicx:cancel_flow"))))
+        }
         if (action.startsWith("voicx:rc:")) {
             val parts = action.split(":")
             if (parts.size != 5) return AdminReply("طلب مصالحة غير صالح.", home)
@@ -709,6 +744,9 @@ class GatewayService : Service() {
             else -> fields.size
         }
         if (fields.size < expected) {
+            if (fields.size == 1 && session.flow in setOf("schedule_call", "sms_schedule", "campaign")) {
+                return scheduleDatePickerReply(session.flow, "اختر التاريخ من الأزرار، أو أرسل التاريخ كتابةً بصيغة YYYY-MM-DD.")
+            }
             val prompt = when (session.flow) {
                 "add_customer" -> listOf("رقم الجوال", "اسم العميل", "الوظيفة أو تخطي", "الشركة أو تخطي", "تعليمات/ملاحظات أو تخطي")[fields.size]
                 "gemini" -> listOf("رقم الجوال", "الاسم أو تخطي", "الوظيفة أو تخطي", "الشركة أو تخطي")[fields.size]
@@ -760,6 +798,37 @@ class GatewayService : Service() {
         }
         session.flow.let { }
         return askConfirmation(chatId, summary, action)
+    }
+
+    private fun scheduleDatePickerReply(flow: String, message: String = ""): AdminReply {
+        val today = java.time.LocalDate.now(ZoneId.systemDefault())
+        val dateButtons = (0..13).map { offset ->
+            val date = today.plusDays(offset.toLong())
+            AdminButton(date.format(DateTimeFormatter.ofPattern("EEE dd/MM")), "voicx:pick_date:$date")
+        }.chunked(4).map { row -> row }
+        val title = when (flow) {
+            "schedule_call" -> "اختر تاريخ الاتصال"
+            "sms_schedule" -> "اختر تاريخ إرسال الرسالة"
+            else -> "اختر تاريخ بدء الحملة"
+        }
+        return AdminReply(
+            listOf(message, "$title (اليوم وحتى 14 يوماً). يمكنك أيضاً كتابة التاريخ YYYY-MM-DD.").filter { it.isNotBlank() }.joinToString("\n"),
+            dateButtons + listOf(listOf(AdminButton("إلغاء", "voicx:cancel_flow"))),
+        )
+    }
+
+    private fun scheduleTimePickerReply(date: String, message: String = ""): AdminReply {
+        val times = (8 * 2..20 * 2).map { halfHour ->
+            val hour = halfHour / 2
+            val minute = if (halfHour % 2 == 0) "00" else "30"
+            "%02d:%s".format(hour, minute)
+        }
+        val timeButtons = times.map { time -> AdminButton(time, "voicx:pick_time:$time") }
+            .chunked(4).map { row -> row }
+        return AdminReply(
+            listOf(message, "التاريخ: $date\nاختر الوقت (بتوقيت الهاتف المحلي).").filter { it.isNotBlank() }.joinToString("\n"),
+            timeButtons + listOf(listOf(AdminButton("رجوع للتاريخ", "voicx:cancel_flow"), AdminButton("إلغاء", "voicx:cancel_flow"))),
+        )
     }
 
     private fun retryPanelStep(session: PanelSession, message: String): AdminReply {
