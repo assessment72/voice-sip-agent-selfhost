@@ -41,6 +41,21 @@ try {
   assert.equal(r.status, 202);
   const { command } = await r.json();
 
+  r = await request("/api/v1/devices/command", admin, {
+    method: "POST", body: JSON.stringify({ deviceId: "test-01", type: "service.status" }),
+    headers: { "idempotency-key": "smoke-1" }
+  });
+  assert.equal(r.status, 200, "replayed command key must reuse the original command");
+  const replayedCommand = await r.json();
+  assert.equal(replayedCommand.reused, true);
+  assert.equal(replayedCommand.command.id, command.id);
+
+  r = await request("/api/v1/devices/command", admin, {
+    method: "POST", body: JSON.stringify({ deviceId: "test-01", type: "service.stop" }),
+    headers: { "idempotency-key": "smoke-1" }
+  });
+  assert.equal(r.status, 409, "an idempotency key cannot be reused for a different command type");
+
   r = await request("/api/v1/devices/test-01/heartbeat", deviceToken, {
     method: "POST", body: JSON.stringify({ battery: 88, charging: true, serviceState: "running" })
   });
