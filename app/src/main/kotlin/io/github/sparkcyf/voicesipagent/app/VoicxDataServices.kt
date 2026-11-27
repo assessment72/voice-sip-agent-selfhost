@@ -18,24 +18,29 @@ import okhttp3.RequestBody.Companion.toRequestBody
 /** Local, offline-first storage. Data is kept in the app's private SQLite database. */
 internal class VoicxFirebaseStore(context: Context) {
     private val db = LocalDatabase(context.applicationContext)
-    @Volatile var state: FirebaseState = FirebaseState.CONNECTED
+    @Volatile var state: FirebaseState = FirebaseState.DISCONNECTED
         private set
-    @Volatile var lastSuccessAt: Long? = System.currentTimeMillis()
+    @Volatile var lastSuccessAt: Long? = null
         private set
-    @Volatile var lastError: String = ""
+    @Volatile var lastError: String = "Firebase sync adapter is not configured; local SQLite remains available"
         private set
 
-    fun test(projectId: String = "", apiKey: String = "", applicationId: String = ""): Result<Long> =
-        Result.success(0L)
-
-    fun connect(projectId: String = "", apiKey: String = "", applicationId: String = ""): Result<Unit> {
-        state = FirebaseState.CONNECTED
-        lastError = ""
-        lastSuccessAt = System.currentTimeMillis()
-        return Result.success(Unit)
+    fun test(projectId: String = "", apiKey: String = "", applicationId: String = ""): Result<Long> {
+        state = FirebaseState.ERROR
+        lastError = "Firebase Firestore integration is not implemented in this build; data remains local in SQLite"
+        return Result.failure(IllegalStateException(lastError))
     }
 
-    fun disconnect() { state = FirebaseState.CONNECTED }
+    fun connect(projectId: String = "", apiKey: String = "", applicationId: String = ""): Result<Unit> {
+        state = FirebaseState.ERROR
+        lastError = "Firebase Firestore integration is not implemented in this build; local SQLite is still available"
+        return Result.failure(IllegalStateException(lastError))
+    }
+
+    fun disconnect() {
+        state = FirebaseState.DISCONNECTED
+        lastError = "Cloud sync is disabled; local SQLite remains available"
+    }
     fun requireDatabase(): LocalDatabase = db
     fun collection(name: String) = db.all(name)
 }
