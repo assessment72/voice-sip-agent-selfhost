@@ -496,6 +496,7 @@ class GatewayService : Service() {
                                     "تم حذف سجل المكالمة #$argument."
                                 } else "لم أعثر على سجل بالمعرّف المحدد."
                                 "/account" -> GatewayRuntime.get(this@GatewayService).telegramAccountReport()
+                                "/sales_leads" -> runtime.salesAdminLeadsReport().take(3800)
                                 "/ai_status" -> {
                                     val chatId = update.chatId
                                     runtime.checkAiConnection { result ->
