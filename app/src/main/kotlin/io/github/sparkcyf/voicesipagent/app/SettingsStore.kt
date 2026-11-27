@@ -70,6 +70,8 @@ data class GatewaySettings(
     val geminiApiKey: String = "",
     /** Gemini model used by the direct Live WebSocket client. */
     val geminiModel: String = "gemini-2.5-flash-native-audio-preview-12-2025",
+    /** Local telephony playback rate; values outside this range are rejected/clamped. */
+    val geminiSpeechRate: Float = 1.0f,
     /** Answer incoming cellular calls with Gemini instead of routing them to SIP. */
     val aiAutoAnswer: Boolean = false,
     /** Firebase project credentials, encrypted with Android Keystore where applicable. */
@@ -141,6 +143,7 @@ class SettingsStore(context: Context) {
         telegramAllowedUserId = prefs.getLong("telegram_allowed_user_id", 0L).takeIf { it > 0 } ?: 0L,
         geminiApiKey = prefs.getString("gemini_api_key_sealed", null)?.let(::unseal).orEmpty(),
         geminiModel = prefs.getString("gemini_model", "gemini-2.5-flash-native-audio-preview-12-2025")!!,
+        geminiSpeechRate = prefs.getFloat("gemini_speech_rate", 1.0f).takeIf { it in 0.80f..1.25f } ?: 1.0f,
         aiAutoAnswer = prefs.getBoolean("ai_auto_answer", false),
         firebaseProjectId = prefs.getString("firebase_project_id", "")!!,
         firebaseApiKey = prefs.getString("firebase_api_key_sealed", null)?.let(::unseal).orEmpty(),
@@ -184,6 +187,7 @@ class SettingsStore(context: Context) {
             .putLong("telegram_allowed_user_id", s.telegramAllowedUserId)
             .putString("gemini_api_key_sealed", seal(s.geminiApiKey))
             .putString("gemini_model", s.geminiModel.trim())
+            .putFloat("gemini_speech_rate", s.geminiSpeechRate.coerceIn(0.80f, 1.25f))
             .putBoolean("ai_auto_answer", s.aiAutoAnswer)
             .putString("firebase_project_id", s.firebaseProjectId.trim())
             .putString("firebase_api_key_sealed", seal(s.firebaseApiKey))
