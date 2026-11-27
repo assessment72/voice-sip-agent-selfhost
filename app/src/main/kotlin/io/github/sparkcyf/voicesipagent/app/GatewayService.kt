@@ -73,6 +73,7 @@ class GatewayService : Service() {
         data class CreateCampaign(val name: String, val at: Long, val group: String, val channel: String, val template: String) : PanelAction
         data class DeleteCall(val id: String) : PanelAction
         data class ToggleGateway(val enabled: Boolean) : PanelAction
+        data class ReconcileSchedule(val type: ScheduleType, val id: String, val action: ScheduleReconciliationPolicy.Action, val evidence: String) : PanelAction
     }
     // Held while the gateway runs in the foreground, so Doze on an aggressive OEM (ZTE/Nubia,
     // Xiaomi, Transsion…) cannot suspend the SIP reader thread.  Without it the socket backs up
@@ -534,6 +535,15 @@ class GatewayService : Service() {
             panelSessions.remove(chatId)
             return AdminReply("تم الإلغاء. لم يُنفذ أي إجراء.", home)
         }
+        if (action.startsWith("voicx:reconcile:")) {
+            val parts = action.split(":")
+            if (parts.size != 5) return AdminReply("طلب مصالحة غير صالح.", home)
+            val decision = when (parts[2]) { "completed" -> ScheduleReconciliationPolicy.Action.MARK_COMPLETED; "failed" -> ScheduleReconciliationPolicy.Action.MARK_FAILED; else -> return AdminReply("هذا الإجراء غير متاح من Telegram.", home) }
+            val type = runCatching { ScheduleType.valueOf(parts[3]) }.getOrNull() ?: return AdminReply("نوع المهمة غير صالح.", home)
+            val id = parts[4].takeIf { it.isNotBlank() } ?: return AdminReply("معرّف المهمة غير صالح.", home)
+            panelSessions[chatId] = PanelSession("reconcile_evidence", mutableListOf(type.name, id, decision.name))
+            return AdminReply("مراجعة المهمة $id (${if (type == ScheduleType.CALL) "اتصال" else "SMS"}). أرسل مرجع الدليل أو وصف التحقق (إيصال المزود، سجل المشغل أو سجل الهاتف). لن تُرسل أي رسالة أو تُجرى مكالمة.", listOf(listOf(AdminButton("إلغاء", "voicx:cancel_flow"))))
+        }
         if (action.startsWith("voicx:confirm:")) {
             val session = panelSessions[chatId]
             val token = action.substringAfterLast(':')
@@ -575,7 +585,18 @@ class GatewayService : Service() {
             "voicx:auto_on", "voicx:auto_off" -> { val enabled = action.endsWith("on"); runtime.setAiAutoAnswer(enabled) { asyncPanelReply(chatId, client, it) }; AdminReply(if (enabled) "جارٍ تشغيل الرد الآلي…" else "جارٍ إيقاف الرد الآلي…", back) }
             "voicx:cancel_sim" -> AdminReply(if (runtime.cancelTelegramSimCall()) "أُرسل طلب إنهاء مكالمة SIM." else "لا توجد مكالمة SIM نشطة.", back)
             "voicx:stop_ai" -> { runtime.stopAiCall(); AdminReply("تم إرسال طلب إيقاف Gemini.", back) }
-            "voicx:reconciliation" -> AdminReply(runtime.scheduleReconciliationReport(), listOf(listOf(AdminButton("🔄 تحديث القائمة", "voicx:reconciliation")), back.first()))
+            "voicx:reconciliation" -> {
+                val items = runtime.scheduleReconciliationItems(8)
+                val itemButtons = items.flatMap { item ->
+                    val kind = if (item.type == ScheduleType.CALL) "اتصال" else "SMS"
+                    val masked = TelegramSimCall.maskNumber(item.phone)
+                    listOf(listOf(
+                        AdminButton("✓ تمت · $kind $masked", "voicx:reconcile:completed:${item.type.name}:${item.id}"),
+                        AdminButton("✕ فشلت · $kind $masked", "voicx:reconcile:failed:${item.type.name}:${item.id}"),
+                    ))
+                }
+                AdminReply(runtime.scheduleReconciliationReport(), listOf(listOf(AdminButton("🔄 تحديث القائمة", "voicx:reconciliation"))) + itemButtons + back)
+            }
             "voicx:schedule_list" -> { runtime.listCallSchedules { asyncPanelReply(chatId, client, "📅 المواعيد:\n${it}") }; AdminReply("جارٍ تحميل المواعيد…", back) }
             "voicx:sms_list" -> { runtime.listSmsSchedules { asyncPanelReply(chatId, client, "💬 رسائل SMS المجدولة:\n${it}") }; AdminReply("جارٍ تحميل رسائل SMS…", back) }
             "voicx:flow:search" -> beginPanelFlow(chatId, "search")
@@ -649,6 +670,19 @@ class GatewayService : Service() {
         }
         if (text.startsWith("/")) return null
         if (text.isBlank()) return AdminReply("لم يصل نص. أرسل البيانات المطلوبة أو /cancel للإلغاء.")
+        if (session.flow == "reconcile_evidence") {
+            if (text.length < 4) return AdminReply("الدليل مطلوب (4 أحرف على الأقل). أرسل مرجعاً أو وصف تحقق، أو /cancel للإلغاء.")
+            val type = runCatching { ScheduleType.valueOf(session.values.getOrNull(0).orEmpty()) }.getOrNull()
+                ?: return AdminReply("انتهت جلسة المراجعة. افتح القائمة من جديد.")
+            val id = session.values.getOrNull(1).orEmpty()
+            val action = runCatching { ScheduleReconciliationPolicy.Action.valueOf(session.values.getOrNull(2).orEmpty()) }.getOrNull()
+                ?: return AdminReply("إجراء المراجعة غير صالح.")
+            if (action == ScheduleReconciliationPolicy.Action.RETRY) return AdminReply("إعادة المحاولة غير متاحة من هذه الواجهة.")
+            val evidence = text.take(2000)
+            val pending = PanelAction.ReconcileSchedule(type, id, action, evidence)
+            val outcome = if (action == ScheduleReconciliationPolicy.Action.MARK_COMPLETED) "اعتماد المهمة كمكتملة" else "اعتماد المهمة كفاشلة"
+            return askConfirmation(chatId, "$outcome\nالمعرّف: $id\nالدليل: $evidence\n\nلن يتم إرسال SMS أو إجراء مكالمة.", pending)
+        }
         if (session.flow == "search") {
             panelSessions.remove(chatId)
             runtime.searchCustomers(text) { asyncPanelReply(chatId, client, "نتائج البحث:\n${it.take(3400)}") }
@@ -722,6 +756,7 @@ class GatewayService : Service() {
             is PanelAction.CreateCampaign -> "إنشاء حملة ${action.name}؛ المجموعة=${action.group}؛ القناة=${action.channel}؛ البدء=${java.time.Instant.ofEpochMilli(action.at).atZone(ZoneId.systemDefault()).toLocalDateTime()}"
             is PanelAction.DeleteCall -> "حذف سجل المكالمة بالمعرّف ${action.id} نهائياً من سجل Telegram المحلي."
             is PanelAction.ToggleGateway -> if (action.enabled) "تشغيل البوابة" else "إيقاف التحويل"
+            is PanelAction.ReconcileSchedule -> "مصالحة ${action.type.name} ${action.id}: ${if (action.action == ScheduleReconciliationPolicy.Action.MARK_COMPLETED) "مكتملة" else "فاشلة"}"
         }
         session.flow.let { }
         return askConfirmation(chatId, summary, action)
@@ -749,6 +784,7 @@ class GatewayService : Service() {
             is PanelAction.CreateCampaign -> runtime.createCampaign(Campaign(name = action.name, startAt = action.at, targetGroup = action.group, channel = action.channel, smsTemplate = action.template)) { asyncPanelReply(chatId, client, "نتيجة إنشاء الحملة: $it") }
             is PanelAction.DeleteCall -> return AdminReply(if (runtime.deleteTelegramCallRecord(action.id)) "تم حذف السجل المحدد." else "لم يوجد سجل بهذا المعرّف؛ لم يُحذف شيء.", home)
             is PanelAction.ToggleGateway -> runtime.setTakeover(action.enabled)
+            is PanelAction.ReconcileSchedule -> runtime.resolveScheduleReconciliation(action.type, action.id, ScheduleReconciliationPolicy.Decision(action.action, "telegram:${runtime.settings.telegramAllowedUserId}", action.evidence)) { asyncPanelReply(chatId, client, it) }
         }
         return AdminReply("تم قبول الإجراء المؤكد. ستظهر النتيجة هنا عند اكتمال الحفظ أو الفحص.", home)
     }
