@@ -754,7 +754,11 @@ ${context.salesInfo}
                 lastSpeechAt = null
                 turnEndGate.reset()
             }
-            fun pendingOutputDurationMs(): Long = output.size * 20L
+            @Synchronized fun pendingOutputDurationMs(): Long {
+                val rate = speechRate().coerceIn(0.80f, 1.25f).toDouble()
+                val queuedFrames = output.size + (if (playbackFrame == null) 0 else 1) + (if (playbackNextFrame == null) 0 else 1)
+                return (queuedFrames * 20.0 / rate).toLong()
+            }
 
             @Synchronized fun responseStats(): Triple<Int, Long?, Long?> {
                 val values = turnResponseLatencies.toList()
