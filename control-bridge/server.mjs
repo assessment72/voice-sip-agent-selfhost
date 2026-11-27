@@ -3,6 +3,7 @@ import { randomUUID, createHash, timingSafeEqual } from "node:crypto";
 import { mkdir, readFile, writeFile, rename } from "node:fs/promises";
 import path from "node:path";
 import { handleCrmRoute } from "./crm-routes.mjs";
+import { parseTelegramAdminIds } from "./policies.mjs";
 
 const PORT = Number(process.env.PORT || 8787);
 const HOST = process.env.HOST || "127.0.0.1";
@@ -10,7 +11,7 @@ const STORE = path.resolve(process.env.VOICX_STORE || "./data/voicx-store.json")
 const ADMIN_TOKEN = process.env.VOICX_ADMIN_TOKEN || "";
 const DEVICE_CONFIG = JSON.parse(process.env.VOICX_DEVICES || "[]");
 const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN || "";
-const TELEGRAM_ADMIN_IDS = new Set((process.env.TELEGRAM_ADMIN_IDS || "").split(",").map(x => x.trim()).filter(x => /^\\d+$/.test(x)));
+const TELEGRAM_ADMIN_IDS = parseTelegramAdminIds(process.env.TELEGRAM_ADMIN_IDS);
 const MAX_BODY = 16 * 1024;
 const COMMAND_TTL_MS = 60_000;
 const DEVICE_ID = /^[a-zA-Z0-9_-]{1,64}$/;
