@@ -22,6 +22,7 @@ import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 import kotlin.math.sqrt
+import kotlin.math.roundToInt
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -160,6 +161,7 @@ internal data class AiCallReport(
 internal class GeminiAiEndpoint(
     private val apiKey: () -> String,
     private val model: () -> String,
+    private val speechRate: () -> Float = { 1.0f },
     private val salesContext: () -> String = { "لا توجد إعدادات تجارية محمّلة." },
     private val report: (AiCallReport) -> Unit,
 ) : CallEndpoint {
@@ -200,7 +202,7 @@ internal class GeminiAiEndpoint(
         check(active == null || active?.state == LegState.ENDED) { "Gemini call already active" }
         return AiLeg(
             callId, caller, target, context.copy(salesInfo = salesContext()),
-            apiKey, model, report, { if (active?.id == callId) active = null },
+            apiKey, model, speechRate, report, { if (active?.id == callId) active = null },
             { onHandoffRequested?.invoke() == true },
             { onHangupRequested?.invoke() },
         ).also { active = it }
@@ -611,6 +613,10 @@ ${context.salesInfo}
             // A short 2-second queue discarded speech; 20 seconds is still bounded and modest in memory.
             private val output = ArrayBlockingQueue<ShortArray>(1_000)
             private val outputBuffer = GeminiPcmOutputBuffer(PcmFormat.NARROWBAND.frameSamples)
+            private val frameSamples = PcmFormat.NARROWBAND.frameSamples
+            private var playbackFrame: ShortArray? = null
+            private var playbackNextFrame: ShortArray? = null
+            private var playbackPosition = 0.0
             @Volatile var inputFrames = 0L
             @Volatile var inputAttempts = 0L
             @Volatile var inputSendFailures = 0L
@@ -635,10 +641,32 @@ ${context.salesInfo}
             override val format = PcmFormat.NARROWBAND
             override val isClockSource = false
             override fun setClockListener(listener: FrameClockListener?) {}
-            override fun readFrame(): ShortArray = output.poll()?.also {
+            @Synchronized override fun readFrame(): ShortArray {
+                if (playbackFrame == null) playbackFrame = output.poll()
+                val current = playbackFrame ?: return format.silence()
+                if (playbackNextFrame == null) playbackNextFrame = output.poll()
+                val result = ShortArray(frameSamples)
+                val rate = speechRate().coerceIn(0.80f, 1.25f).toDouble()
+                for (i in result.indices) {
+                    val position = playbackPosition
+                    val index = position.toInt().coerceIn(0, frameSamples - 1)
+                    val fraction = (position - index).coerceIn(0.0, 1.0)
+                    val a = current[index].toInt()
+                    val b = if (index + 1 < frameSamples) current[index + 1].toInt()
+                        else playbackNextFrame?.get(0)?.toInt() ?: a
+                    result[i] = (a + (b - a) * fraction).roundToInt()
+                        .coerceIn(Short.MIN_VALUE.toInt(), Short.MAX_VALUE.toInt()).toShort()
+                    playbackPosition += rate
+                    while (playbackPosition >= frameSamples && playbackNextFrame != null) {
+                        playbackPosition -= frameSamples
+                        playbackFrame = playbackNextFrame
+                        playbackNextFrame = output.poll()
+                    }
+                }
                 outputFrames++
                 if (firstOutputPlayedAt == null) firstOutputPlayedAt = SystemClock.elapsedRealtime()
-            } ?: format.silence()
+                return result
+            }
             @Synchronized override fun writeFrame(frame: ShortArray) {
                 if (openingTurnStarted.compareAndSet(false, true)) {
                     val queued = client?.sendClientText("ابدأ بتحية قصيرة وطبيعية بلغة العميل المتوقعة؛ إن كانت المحادثة بالعربية فاستخدم اللهجة اليمنية المحكية. عرّف بنفسك كمساعد مبيعات للديزل دون اختراع اسم شركة، واسأل بلطف إن كان الوقت مناسباً لدقيقة واحدة. إذا قال الشخص إنه مشغول فلا تبدأ الأسئلة؛ اعرض وقتاً مناسباً للمتابعة أو أنهِ المكالمة باحترام، ثم توقف واستمع.") == true
@@ -687,6 +715,9 @@ ${context.salesInfo}
             }
             @Synchronized fun interruptOutput() {
                 output.clear()
+                playbackFrame = null
+                playbackNextFrame = null
+                playbackPosition = 0.0
                 outputBuffer.reset()
                 currentTurnFirstOutputAt = null
                 val now = SystemClock.elapsedRealtime()
