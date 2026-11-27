@@ -462,7 +462,7 @@ class GatewayService : Service() {
                                     val fields = argument.split('|', limit = 4).map { it.trim() }
                                     val stage = fields.getOrNull(1)?.toIntOrNull()
                                     val at = fields.getOrNull(2)?.let(::campaignTime)
-                                    if (fields.size < 4 || fields[0].isBlank() || stage !in 1..3 || at == null || at <= System.currentTimeMillis() || fields[3].isBlank()) {
+                                    if (fields.size < 4 || fields[0].isBlank() || stage == null || stage !in 1..3 || at == null || at <= System.currentTimeMillis() || fields[3].isBlank()) {
                                         "الاستخدام: /sms_sequence_edit ID | 1 أو 2 أو 3 | 2026-12-08 09:00 | نص الرسالة"
                                     } else {
                                         runtime.editCustomerSmsSequence(fields[0], stage!!, at, fields[3]) { result ->
