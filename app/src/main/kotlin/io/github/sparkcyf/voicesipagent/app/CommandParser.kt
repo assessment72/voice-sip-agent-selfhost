@@ -1,5 +1,8 @@
 package io.github.sparkcyf.voicesipagent.app
 
+import java.time.Instant
+import java.time.ZoneId
+import java.time.format.DateTimeFormatter
 import java.util.Locale
 
 data class ParsedCommand(val name: String, val argument: String) {
@@ -18,4 +21,22 @@ internal object CommandParser {
         val argument = if (separator < 0) "" else text.substring(separator).trim()
         return ParsedCommand(token.substringBefore('@').lowercase(Locale.ROOT), argument)
     }
+}
+
+internal object ScheduleCommandParser {
+    private val displayFormatter = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss")
+        .withZone(ZoneId.systemDefault())
+
+    fun parseTime(raw: String?, now: Long = System.currentTimeMillis()): Long? = raw
+        ?.trim()
+        ?.takeIf { it.matches(Regex("\\d{10,13}")) }
+        ?.toLongOrNull()
+        ?.let { if (it in 1_000_000_000L..9_999_999_999L) it * 1000 else it }
+        ?.takeIf { it > now }
+
+    fun displayTime(epochMs: Long): String = runCatching { displayFormatter.format(Instant.ofEpochMilli(epochMs)) }
+        .getOrElse { epochMs.toString() }
+
+    fun manualCallKey(customerId: String, phone: String, runAt: Long, note: String): String =
+        "manual-call:${customerId.trim()}:${phone.trim()}:$runAt:${note.trim()}"
 }

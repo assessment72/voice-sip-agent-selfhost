@@ -20,4 +20,18 @@ class CommandParserTest {
         assertEquals("", command.name)
         assertEquals(emptyList<String>(), command.fields())
     }
+
+    @Test fun scheduleTimeAcceptsUnixSecondsAndMillisecondsOnlyInTheFuture() {
+        assertEquals(1_700_000_000_000L, ScheduleCommandParser.parseTime("1700000000", 1_600_000_000_000L))
+        assertEquals(1_700_000_000_000L, ScheduleCommandParser.parseTime("1700000000000", 1_600_000_000_000L))
+        assertEquals(null, ScheduleCommandParser.parseTime("1600000000", 1_600_000_000_000L))
+        assertEquals(null, ScheduleCommandParser.parseTime("not-a-time", 1_600_000_000_000L))
+    }
+
+    @Test fun manualScheduleKeyIsStableForRetries() {
+        assertEquals(
+            ScheduleCommandParser.manualCallKey("c1", "+967700000000", 1_700_000_000_000L, " note "),
+            ScheduleCommandParser.manualCallKey("c1", "+967700000000", 1_700_000_000_000L, " note "),
+        )
+    }
 }

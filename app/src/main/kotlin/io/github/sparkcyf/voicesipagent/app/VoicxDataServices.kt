@@ -648,7 +648,7 @@ internal class VoicxCustomerRepository(private val store: VoicxFirebaseStore) {
             "customerId" to s.customerId, "phone" to s.phone, "runAt" to s.runAt,
             "status" to s.status, "note" to s.note, "campaignId" to s.campaignId,
             "campaignCustomerId" to s.campaignCustomerId, "idempotencyKey" to s.idempotencyKey,
-            "attempts" to s.attempts,
+            "attempts" to s.attempts, "createdAt" to System.currentTimeMillis(),
         ))
         id
     }
@@ -687,6 +687,7 @@ internal class VoicxCustomerRepository(private val store: VoicxFirebaseStore) {
             "message" to s.message, "status" to s.status, "campaignId" to s.campaignId,
             "note" to s.note, "campaignCustomerId" to s.campaignCustomerId,
             "idempotencyKey" to s.idempotencyKey, "attempts" to s.attempts,
+            "createdAt" to System.currentTimeMillis(),
         ))
         return id
     }
