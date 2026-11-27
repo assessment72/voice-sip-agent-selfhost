@@ -15,7 +15,7 @@ function ok(res, status, value) {
 function id() { return crypto.randomUUID(); }
 function cleanString(value, max = 500) { return typeof value === "string" ? value.trim().slice(0, max) : ""; }
 function phoneKey(value) {
-  let digits = cleanString(value, 40).replace(/\\D/g, "");
+  let digits = cleanString(value, 40).replace(/\D/g, "");
   if (digits.startsWith("00")) digits = digits.slice(2);
   if (digits.startsWith("967")) return digits;
   if (digits.length === 9 && digits.startsWith("7")) return "967" + digits;
