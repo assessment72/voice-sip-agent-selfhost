@@ -371,6 +371,7 @@ internal class GeminiAiEndpoint(
 
     private class AiLeg(
         id: String, remote: Party, target: String?, private val context: CallContext, private val key: () -> String, private val model: () -> String,
+        private val speechRate: () -> Float,
         private val report: (AiCallReport) -> Unit,
         private val onEnd: () -> Unit,
         private val requestHandoff: () -> Boolean,
