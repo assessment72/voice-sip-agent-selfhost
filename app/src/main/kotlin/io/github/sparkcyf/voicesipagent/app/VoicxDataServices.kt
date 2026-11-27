@@ -309,7 +309,13 @@ internal class VoicxCustomerRepository(private val store: VoicxFirebaseStore) {
         require(stage in 1..3 && runAt > System.currentTimeMillis()) { "مرحلة أو موعد غير صالح" }
         require(message.isNotBlank() && message.length <= 1000) { "نص الرسالة غير صالح" }
         val current = read("customer_sms_sequences", id) ?: return@transaction false
-        if (current.text("status") == "completed") return@transaction false
+        if (current.text("status") in listOf("completed", "opted_out")) return@transaction false
+        val alreadySent = when (stage) {
+            1 -> current.long("firstSentAt") > 0L
+            2 -> current.long("secondSentAt") > 0L
+            else -> current.long("thirdSentAt") > 0L
+        }
+        if (alreadySent) return@transaction false
         val fieldAt = listOf("firstAt", "secondAt", "thirdAt")[stage - 1]
         val fieldMessage = listOf("firstMessage", "secondMessage", "thirdMessage")[stage - 1]
         save("customer_sms_sequences", id, mapOf(fieldAt to runAt, fieldMessage to message.take(1000), "updatedAt" to System.currentTimeMillis()))
