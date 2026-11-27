@@ -21,6 +21,76 @@ import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 import kotlin.math.sqrt
+import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.OkHttpClient
+import okhttp3.Request
+import okhttp3.RequestBody.Companion.toRequestBody
+import org.json.JSONArray
+import org.json.JSONObject
+
+
+/** Text-only Gemini helper for customer marketing SMS. Separate from the configured Live audio model. */
+internal class GeminiSmsWriter(private val apiKey: () -> String) {
+    private val client = OkHttpClient.Builder()
+        .callTimeout(25, TimeUnit.SECONDS).connectTimeout(10, TimeUnit.SECONDS).readTimeout(20, TimeUnit.SECONDS).build()
+
+    fun createThreeMessages(customer: VoicxCustomer, businessContext: String): List<String> {
+        val prompt = """
+            اكتب ثلاث رسائل SMS تسويقية عربية قصيرة ومهنية ومخصصة لهذا العميل.
+            استخدم اسمه ووظيفته وشركته والسياق التجاري وملاحظاته عند توفرها.
+            الرسالة 1 افتتاحية لطيفة ومختصرة، الرسالة 2 متابعة بعد أسبوع دون ضغط،
+            الرسالة 3 متابعة أخيرة محترمة. لا تخترع أسعاراً أو وعوداً أو معلومات غير مذكورة.
+            لا تستخدم تحية طويلة أو رموزاً كثيرة. كل رسالة <= 300 حرف.
+            أعد JSON فقط بالشكل {"messages":["...","...","..."]}.
+            العميل: الاسم=${customer.name}; الوظيفة=${customer.role}; الشركة=${customer.company}
+            ملاحظات=${customer.notes}; تعليمات=${customer.instructions}
+            سياق النشاط: $businessContext
+        """.trimIndent()
+        val raw = generate(prompt)
+        val start = raw.indexOf('{').coerceAtLeast(0)
+        val end = raw.lastIndexOf('}').let { if (it >= start) it + 1 else raw.length }
+        val messages = JSONObject(raw.substring(start, end)).optJSONArray("messages") ?: error("Gemini لم يُرجع قائمة الرسائل")
+        require(messages.length() == 3) { "Gemini لم يُرجع ثلاث رسائل" }
+        return (0..2).map { messages.getString(it).trim().take(1000).also { message -> require(message.isNotBlank()) } }
+    }
+
+    fun createFollowUp(customer: VoicxCustomer, stage: Int, replies: List<String>, history: List<String>, businessContext: String): String {
+        val replyContext = if (replies.isEmpty()) "لم يصل أي رد من العميل بعد الرسالة السابقة. اكتب تذكيراً تسويقياً مهذباً."
+            else "وصلت ردود من العميل. أجب عن مضمونها مباشرة وباحترام، ولا ترسل تذكيراً عاماً. الردود: " + replies.joinToString("\n")
+        val prompt = """
+            أنت مساعد مبيعات. اكتب رسالة SMS واحدة قصيرة بالعربية، بحد أقصى 300 حرف.
+            هذه متابعة رقم $stage للعميل ${customer.name}، وظيفته ${customer.role} في ${customer.company}.
+            $replyContext
+            سياق الرسائل السابقة: ${history.joinToString("\n")}
+            ملاحظات العميل: ${customer.notes}
+            تعليمات العميل: ${customer.instructions}
+            سياق النشاط: $businessContext
+            لا تخترع حقائق أو أسعاراً أو عروضاً. لا تضغط على العميل. أعد نص الرسالة فقط دون علامات اقتباس.
+        """.trimIndent()
+        return generate(prompt).trim().trim('"', '،').take(1000).also { require(it.isNotBlank()) }
+    }
+
+    private fun generate(prompt: String): String {
+        val key = apiKey().trim()
+        require(key.isNotBlank()) { "مفتاح Gemini API غير مضبوط" }
+        val body = JSONObject()
+            .put("contents", JSONArray().put(JSONObject().put("parts", JSONArray().put(JSONObject().put("text", prompt)))))
+            .put("generationConfig", JSONObject().put("temperature", 0.65).put("maxOutputTokens", 700))
+            .toString().toRequestBody("application/json; charset=utf-8".toMediaType())
+        val url = okhttp3.HttpUrl.Builder().scheme("https").host("generativelanguage.googleapis.com")
+            .addPathSegments("v1beta/models/gemini-2.5-flash:generateContent").addQueryParameter("key", key).build()
+        val request = Request.Builder().url(url).post(body).build()
+        client.newCall(request).execute().use { response ->
+            val responseText = response.body?.string().orEmpty()
+            if (!response.isSuccessful) error("Gemini text API rejected request (${response.code})")
+            val root = JSONObject(responseText)
+            val parts = root.optJSONArray("candidates")?.optJSONObject(0)?.optJSONObject("content")?.optJSONArray("parts")
+                ?: error("Gemini لم يُرجع محتوى نصياً")
+            return (0 until parts.length()).mapNotNull { parts.optJSONObject(it)?.optString("text") }
+                .joinToString("\n").takeIf(String::isNotBlank) ?: error("Gemini أرجع نصاً فارغاً")
+        }
+    }
+}
 
 internal data class AiCallReport(
     val number: String?, val name: String?, val role: String?, val company: String?,
