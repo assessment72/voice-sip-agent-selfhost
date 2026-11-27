@@ -390,6 +390,9 @@ internal class GeminiAiEndpoint(
         private val hangupScheduler = Executors.newSingleThreadScheduledExecutor { task ->
             Thread(task, "GeminiSpokenHangup").apply { isDaemon = true }
         }
+        @Volatile private var callerSpeechVersion = 0L
+        @Volatile private var silenceFollowUpCount = 0
+        @Volatile private var silenceCheck: ScheduledFuture<*>? = null
 		private val prompt = """أنت سكرتير أعمال ومساعد مبيعات متخصص في تسويق توريد الديزل والوقود للشركات والمشاريع ومحطات الوقود والمصانع والمقاولين.
 
         أسلوبك: تحدث بلغة العميل. عند التحدث بالعربية استخدم افتراضياً لهجة يمنية محكية طبيعية ومفهومة، وبدّل إلى لغة العميل ولهجته المناسبة فوراً إذا بدأ بلغة أخرى. حافظ على نبرة مهنية وودودة وجمل قصيرة، ولا تكن آلياً أو ضاغطاً.
@@ -416,6 +419,12 @@ internal class GeminiAiEndpoint(
         - لا تعتبر ذكر الموظف أو المكالمة في سياق سؤال أو نفي أمراً للتحويل أو الإنهاء. لا تنهِ المكالمة بسبب صمت أو كلمة عابرة.
         - إذا قال الشخص إنه غير مهتم أو مشغول أو يريد إنهاء المكالمة، احترم قراره وأنهِ المكالمة فوراً وبأدب.
 
+        التعامل مع صمت العميل:
+        - لا تترك الخط صامتاً بعد أن تنهي سؤالك. انتظر أولاً مهلة طبيعية قصيرة حتى لا تقاطع العميل.
+        - إذا لم تسمع رداً بعد عدة ثوانٍ، أعد جذب انتباهه بعبارة بشرية قصيرة مثل «ألو أخي، تسمعني؟ هل الصوت واضح عندك؟» ثم استمع.
+        - إذا استمر الصمت، استخدم متابعة ثانية مختلفة وهادئة، ولا تكرر العبارة نفسها.
+        - لا تتكلم فوق العميل ولا تملأ كل وقفة بالكلام؛ إذا بدأ يتكلم فتوقف واستمع فوراً.
+        - إذا لم يرد بعد محاولتي متابعة، اختم المكالمة بأدب. لا تبقَ على الخط بلا نهاية.
         التعبير الصوتي:
         - تحدث بصوت دافئ وطبيعي ومهني، كموظف مبيعات حقيقي يتحدث عبر الهاتف، وليس كقارئ نص أو إعلان.
         - غيّر النبرة حسب الموقف: ودودة عند الترحيب، هادئة عند الاستماع، مطمئنة عند التوضيح، ومختصرة ومحترمة عند إنهاء المكالمة.
@@ -463,6 +472,49 @@ ${context.memories.take(5000)}
 ${context.salesInfo}
 """
 
+        private fun onCallerSpeechDetected() {
+            callerSpeechVersion++
+            silenceCheck?.cancel(false)
+            silenceCheck = null
+            silenceFollowUpCount = 0
+        }
+
+        /**
+         * A completed Gemini turn is not the end of the conversation. If the customer
+         * stays silent, actively re-engage twice, then close politely instead of leaving
+         * a dead line open. Caller speech cancels the pending check immediately.
+         */
+        private fun scheduleCallerSilenceRecovery() {
+            if (state != LegState.CONNECTED || silenceFollowUpCount >= 3) return
+            silenceCheck?.cancel(false)
+            val expectedSpeechVersion = callerSpeechVersion
+            val delayMs = when (silenceFollowUpCount) {
+                0 -> 4_500L
+                1 -> 6_500L
+                else -> 8_000L
+            }
+            silenceCheck = hangupScheduler.schedule({
+                if (state != LegState.CONNECTED || callerSpeechVersion != expectedSpeechVersion) return@schedule
+                when (silenceFollowUpCount) {
+                    0 -> {
+                        silenceFollowUpCount = 1
+                        client?.sendClientText("لم أسمع ردك بعد سؤالي. قل له بشكل طبيعي وودود: «ألو أخي، تسمعني؟ هل الصوت واضح عندك؟» ثم اسكت واستمع، ولا تكرر السؤال.")
+                    }
+                    1 -> {
+                        silenceFollowUpCount = 2
+                        client?.sendClientText("ما زال العميل صامتاً. قل بلهجة طبيعية مختلفة: «أنا معك يا أخي، خذ راحتك. هل تحب نكمل؟» ثم انتظر رده.")
+                    }
+                    else -> {
+                        silenceFollowUpCount = 3
+                        client?.sendClientText("لم يرد العميل رغم محاولتين. قل باختصار وباحترام: «يبدو أن الوقت غير مناسب أو أن الصوت انقطع. نشكرك، ونتمنى لك يوماً طيباً». لا تسأل سؤالاً آخر.")
+                        hangupScheduler.schedule({
+                            if (state != LegState.ENDED) requestHangup()
+                        }, 2_500L, TimeUnit.MILLISECONDS)
+                    }
+                }
+            }, delayMs, TimeUnit.MILLISECONDS)
+        }
+
         fun start() {
             transition(LegState.PROCEEDING)
             client = GeminiLiveClient(key(), model(), prompt, port::addOutput,
@@ -499,7 +551,12 @@ ${context.salesInfo}
                     AppLog.w("Gemini Live call failed: $detail")
                     if (state != LegState.ENDED) hangup(HangupCause.NETWORK_ERROR)
                 },
-                { completedTurns.incrementAndGet(); turnCompleteAt = SystemClock.elapsedRealtime(); port.completeTurn() },
+                {
+                    completedTurns.incrementAndGet()
+                    turnCompleteAt = SystemClock.elapsedRealtime()
+                    port.completeTurn()
+                    scheduleCallerSilenceRecovery()
+                },
                 { port.interruptOutput() })
             runCatching { client?.connect() }.onFailure {
                 failureDetail = "Gemini client setup failed (${it.javaClass.simpleName})"
@@ -585,6 +642,7 @@ ${context.salesInfo}
                 }
                 val now = SystemClock.elapsedRealtime()
                 if (isSpeechLike(frame)) {
+                    onCallerSpeechDetected()
                     if (turnSpeechStartedAt == null) turnSpeechStartedAt = now
                     lastSpeechAt = now
                 } else if (turnSpeechStartedAt != null && lastSpeechAt != null &&
