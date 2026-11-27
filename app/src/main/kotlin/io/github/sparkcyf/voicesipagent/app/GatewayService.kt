@@ -557,7 +557,9 @@ class GatewayService : Service() {
                 return AdminReply("اختيار الوقت لم يعد صالحاً. اختر التاريخ من جديد.", home)
             }
             val date = session.values[1]
-            val time = action.substringAfterLast(':')
+            val timeToken = action.substringAfterLast(':')
+            if (!timeToken.matches(Regex("\\d{4}"))) return scheduleTimePickerReply(date, "صيغة الوقت غير صالحة.")
+            val time = timeToken.substring(0, 2) + ":" + timeToken.substring(2, 4)
             val at = campaignTime("$date $time")
             if (at == null || at <= System.currentTimeMillis()) {
                 return scheduleTimePickerReply(date, "هذا الوقت مضى بالفعل. اختر وقتاً لاحقاً.")
@@ -823,11 +825,11 @@ class GatewayService : Service() {
             val minute = if (halfHour % 2 == 0) "00" else "30"
             "%02d:%s".format(hour, minute)
         }
-        val timeButtons = times.map { time -> AdminButton(time, "voicx:pick_time:$time") }
+        val timeButtons = times.map { time -> AdminButton(time, "voicx:pick_time:" + time.replace(":", "")) }
             .chunked(4).map { row -> row }
         return AdminReply(
             listOf(message, "التاريخ: $date\nاختر الوقت (بتوقيت الهاتف المحلي).").filter { it.isNotBlank() }.joinToString("\n"),
-            timeButtons + listOf(listOf(AdminButton("رجوع للتاريخ", "voicx:cancel_flow"), AdminButton("إلغاء", "voicx:cancel_flow"))),
+            timeButtons + listOf(listOf(AdminButton("إلغاء", "voicx:cancel_flow"), AdminButton("إلغاء", "voicx:cancel_flow"))),
         )
     }
 
