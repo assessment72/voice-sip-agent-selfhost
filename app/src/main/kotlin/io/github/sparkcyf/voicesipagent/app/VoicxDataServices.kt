@@ -8,6 +8,7 @@ import org.json.JSONObject
 import java.io.File
 import java.io.InputStream
 import java.io.OutputStream
+import java.util.Locale
 import java.util.UUID
 import java.util.concurrent.atomic.AtomicLong
 import okhttp3.MediaType.Companion.toMediaType
@@ -112,6 +113,47 @@ internal object CustomerContactPolicy {
             incoming.emailContactConsent,
             incoming.whatsappContactConsent,
         )
+    }
+}
+
+enum class CustomerFilterField { COMPANY, ROLE }
+
+internal data class CustomerGroupSummary(val name: String, val memberCount: Int)
+internal data class GroupScheduleBatch(val id: String, val targetCount: Int, val skippedOptOut: Int)
+
+internal object CustomerDirectoryPolicy {
+    private fun normalized(value: String): String = value.trim().lowercase(Locale.ROOT)
+
+    fun reference(customer: VoicxCustomer): String {
+        fun part(value: String, fallback: String): String = value.trim().lowercase(Locale.ROOT)
+            .replace(Regex("[^\\p{L}\\p{N}]+"), "-").trim('-').ifBlank { fallback }
+        val label = listOf(part(customer.company, "company"), part(customer.role, "role"), part(customer.name, "customer"))
+            .joinToString("-")
+        val suffix = customer.id.orEmpty().filter(Char::isLetterOrDigit).takeLast(8)
+        return if (suffix.isBlank()) label else "$label-$suffix"
+    }
+
+    fun matches(customer: VoicxCustomer, field: CustomerFilterField, query: String): Boolean {
+        val needle = normalized(query)
+        if (needle.isBlank()) return false
+        val value = when (field) {
+            CustomerFilterField.COMPANY -> customer.company
+            CustomerFilterField.ROLE -> customer.role
+        }
+        return normalized(value).contains(needle)
+    }
+
+    fun sort(customers: Iterable<VoicxCustomer>): List<VoicxCustomer> = customers.sortedWith(
+        compareBy<VoicxCustomer> { normalized(it.company) }
+            .thenBy { normalized(it.role) }
+            .thenBy { normalized(it.name) }
+            .thenBy { it.phone },
+    )
+
+    fun addGroup(existing: List<String>, group: String): List<String> {
+        val clean = group.trim()
+        return (existing.filter(String::isNotBlank) + clean)
+            .distinctBy { normalized(it) }
     }
 }
 
@@ -319,7 +361,10 @@ internal data class LocalDocument(val id: String, val data: JSONObject) {
     } ?: emptyList()
 }
 
-data class VoicxCustomer(val id: String? = null, val phone: String, val name: String, val role: String = "", val company: String = "", val instructions: String = "", val notes: String = "", val groups: List<String> = emptyList(), val createdAt: Long = System.currentTimeMillis(), val updatedAt: Long = System.currentTimeMillis(), val personalEmail: String = "", val workEmail: String = "", val phoneHasWhatsApp: Boolean = false, val emailContactConsent: Boolean = false, val whatsappContactConsent: Boolean = false, val contactFieldsProvided: Boolean = false)
+data class VoicxCustomer(val id: String? = null, val phone: String, val name: String, val role: String = "", val company: String = "", val instructions: String = "", val notes: String = "", val groups: List<String> = emptyList(), val createdAt: Long = System.currentTimeMillis(), val updatedAt: Long = System.currentTimeMillis(), val personalEmail: String = "", val workEmail: String = "", val phoneHasWhatsApp: Boolean = false, val emailContactConsent: Boolean = false, val whatsappContactConsent: Boolean = false, val contactFieldsProvided: Boolean = false) {
+    /** Human-readable command identifier; the UUID remains the internal SQLite key. */
+    val reference: String get() = CustomerDirectoryPolicy.reference(this)
+}
 data class Campaign(val id: String? = null, val name: String, val startAt: Long, val timezone: String = java.time.ZoneId.systemDefault().id, val targetGroup: String = "", val channel: String = "call_sms", val smsTemplate: String = "", val status: String = "queued", val createdAt: Long = System.currentTimeMillis(), val updatedAt: Long = System.currentTimeMillis())
 data class CampaignCustomer(val id: String? = null, val campaignId: String, val customerId: String, val phone: String, val sequence: Int, val status: String = "queued", val attempts: Int = 0, val lastCallAt: Long? = null, val lastSmsAt: Long? = null, val nextCallAt: Long? = null, val nextSmsAt: Long? = null, val lastOutcome: String = "", val followUpNote: String = "", val interestedAt: Long? = null, val adminAt: Long? = null, val pausedAt: Long? = null, val optedOutAt: Long? = null, val createdAt: Long = System.currentTimeMillis(), val updatedAt: Long = System.currentTimeMillis())
 data class CallSchedule(val id: String? = null, val customerId: String, val phone: String, val runAt: Long, val status: String = "pending", val note: String = "", val campaignId: String? = null, val campaignCustomerId: String? = null, val idempotencyKey: String? = null, val attempts: Int = 0, val recurrence: String = "none", val recurrenceUntil: Long? = null, val recurrenceSeriesId: String? = null)
@@ -382,6 +427,7 @@ internal object SalesCallDispositionPolicy {
 
 internal class VoicxCustomerRepository(private val store: VoicxFirebaseStore) {
     private val db get() = store.requireDatabase()
+    private companion object { const val GROUP_MEMBER_SPACING_MS = 60_000L }
     private fun save(name: String, id: String, data: Map<String, Any?>) = db.patch(name, id, data)
     private fun read(name: String, id: String) = db.read(name, id)
     private fun query(name: String, predicate: (LocalDocument) -> Boolean = { true }) = db.all(name).filter(predicate)
@@ -410,12 +456,130 @@ internal class VoicxCustomerRepository(private val store: VoicxFirebaseStore) {
         id
     }
 
-    fun findById(id: String): VoicxCustomer? = if (id.isBlank()) null else read("customers", id)?.let(::from)
+    fun findById(id: String): VoicxCustomer? {
+        if (id.isBlank()) return null
+        read("customers", id)?.let(::from)?.let { return it }
+        return query("customers").mapNotNull(::from)
+            .filter { it.reference.equals(id.trim(), ignoreCase = true) }
+            .singleOrNull()
+    }
     fun listCustomers(limit: Int = 20, offset: Int = 0): List<VoicxCustomer> =
         db.allPage("customers", limit, offset).mapNotNull(::from)
     fun customerCount(): Long = db.count("customers")
     fun findByPhone(phone: String): VoicxCustomer? = query("customers") { it.text("phone") == phone.trim() }.firstOrNull()?.let(::from)
     fun search(q: String, limit: Int = 20): List<VoicxCustomer> { val s = q.trim().lowercase(); return query("customers").mapNotNull(::from).filter { s.isBlank() || listOf(it.phone, it.name, it.company, it.personalEmail, it.workEmail).any { v -> v.lowercase().contains(s) } }.take(limit.coerceIn(1, 50)) }
+    fun filterCustomers(field: CustomerFilterField, value: String, limit: Int = 30): List<VoicxCustomer> {
+        require(value.isNotBlank()) { "نص الفلترة مطلوب" }
+        return CustomerDirectoryPolicy.sort(query("customers").mapNotNull(::from)
+            .filter { CustomerDirectoryPolicy.matches(it, field, value) }
+            .distinctBy { PhoneNumberNormalizer.normalizeYemen(it.phone) })
+            .take(limit.coerceIn(1, 100))
+    }
+    fun addGroupFromFilter(field: CustomerFilterField, value: String, groupName: String): List<VoicxCustomer> = db.transaction {
+        val cleanGroup = groupName.trim()
+        require(value.isNotBlank()) { "نص الفلترة مطلوب" }
+        require(cleanGroup.length in 1..80) { "اسم المجموعة يجب أن يكون من 1 إلى 80 حرفاً" }
+        val members = CustomerDirectoryPolicy.sort(query("customers").mapNotNull(::from)
+            .filter { CustomerDirectoryPolicy.matches(it, field, value) }
+            .distinctBy { PhoneNumberNormalizer.normalizeYemen(it.phone) })
+        val now = System.currentTimeMillis()
+        members.forEach { customer ->
+            val id = customer.id ?: return@forEach
+            save("customers", id, mapOf(
+                "groups" to CustomerDirectoryPolicy.addGroup(customer.groups, cleanGroup),
+                "updatedAt" to now,
+            ))
+        }
+        members
+    }
+    fun listCustomerGroups(): List<CustomerGroupSummary> {
+        val counts = linkedMapOf<String, Pair<String, MutableSet<String>>>()
+        query("customers").mapNotNull(::from).forEach { customer ->
+            val normalizedPhone = PhoneNumberNormalizer.normalizeYemen(customer.phone)
+            customer.groups.map(String::trim).filter(String::isNotBlank).forEach { group ->
+                val key = group.lowercase(Locale.ROOT)
+                val entry = counts.getOrPut(key) { group to mutableSetOf() }
+                entry.second += normalizedPhone
+            }
+        }
+        return counts.values.map { CustomerGroupSummary(it.first, it.second.size) }
+            .sortedBy { it.name.lowercase(Locale.ROOT) }
+    }
+    fun groupCustomers(groupName: String): List<VoicxCustomer> {
+        val group = groupName.trim().lowercase(Locale.ROOT)
+        if (group.isBlank()) return emptyList()
+        return CustomerDirectoryPolicy.sort(query("customers").mapNotNull(::from)
+            .filter { customer -> customer.groups.any { it.trim().lowercase(Locale.ROOT) == group } }
+            .distinctBy { PhoneNumberNormalizer.normalizeYemen(it.phone) })
+    }
+    fun scheduleGroupCalls(groupName: String, runAt: Long, note: String, recurrence: String, recurrenceUntil: Long?): GroupScheduleBatch = db.transaction {
+        val repeat = ScheduleCommandParser.recurrence(recurrence) ?: error("التكرار غير معروف")
+        require(runAt > System.currentTimeMillis()) { "وقت الاتصال يجب أن يكون في المستقبل" }
+        require(recurrenceUntil == null || repeat != "none") { "حدد تكراراً قبل إدخال تاريخ الانتهاء" }
+        require(recurrenceUntil == null || recurrenceUntil > runAt) { "تاريخ الانتهاء يجب أن يكون بعد أول موعد" }
+        val batchId = "group-call-${UUID.randomUUID()}"
+        val members = groupCustomers(groupName)
+        require(members.isNotEmpty()) { "المجموعة غير موجودة أو لا تضم عملاء" }
+        val eligible = members.filterNot { isPhoneOptedOut(it.phone) }
+        require(eligible.isNotEmpty()) { "كل أعضاء المجموعة ألغوا التواصل أو لا يمكن التواصل معهم" }
+        if (recurrenceUntil != null) require(recurrenceUntil >= runAt + GROUP_MEMBER_SPACING_MS * (eligible.size - 1)) {
+            "تاريخ الانتهاء يسبق موعد بعض أعضاء المجموعة بسبب الترتيب المتتابع"
+        }
+        eligible.forEachIndexed { index, customer ->
+            val at = runAt + GROUP_MEMBER_SPACING_MS * index
+            val sequenceNote = "group_batch:$batchId | ${index + 1}/${eligible.size}"
+            saveScheduleInTransaction(CallSchedule(
+                customerId = customer.id.orEmpty(), phone = customer.phone, runAt = at,
+                note = listOf(sequenceNote, note.trim()).filter(String::isNotBlank).joinToString("\n").take(1000),
+                campaignId = batchId, recurrence = repeat, recurrenceUntil = recurrenceUntil,
+                idempotencyKey = "group-call:$batchId:${customer.phone}:$at",
+            ))
+        }
+        GroupScheduleBatch(batchId, eligible.size, members.size - eligible.size)
+    }
+    fun scheduleGroupSms(groupName: String, runAt: Long, message: String, recurrence: String, recurrenceUntil: Long?): GroupScheduleBatch = db.transaction {
+        val repeat = ScheduleCommandParser.recurrence(recurrence) ?: error("التكرار غير معروف")
+        require(runAt > System.currentTimeMillis()) { "وقت الإرسال يجب أن يكون في المستقبل" }
+        require(message.isNotBlank() && message.length <= 1000) { "نص الرسالة مطلوب وبحد أقصى 1000 حرف" }
+        require(recurrenceUntil == null || repeat != "none") { "حدد تكراراً قبل إدخال تاريخ الانتهاء" }
+        require(recurrenceUntil == null || recurrenceUntil > runAt) { "تاريخ الانتهاء يجب أن يكون بعد أول موعد" }
+        val batchId = "group-sms-${UUID.randomUUID()}"
+        val members = groupCustomers(groupName)
+        require(members.isNotEmpty()) { "المجموعة غير موجودة أو لا تضم عملاء" }
+        val eligible = members.filterNot { isPhoneOptedOut(it.phone) }
+        require(eligible.isNotEmpty()) { "كل أعضاء المجموعة ألغوا التواصل أو لا يمكن التواصل معهم" }
+        if (recurrenceUntil != null) require(recurrenceUntil >= runAt + GROUP_MEMBER_SPACING_MS * (eligible.size - 1)) {
+            "تاريخ الانتهاء يسبق موعد بعض أعضاء المجموعة بسبب الترتيب المتتابع"
+        }
+        eligible.forEachIndexed { index, customer ->
+            val at = runAt + GROUP_MEMBER_SPACING_MS * index
+            val sequenceNote = "group_batch:$batchId | ${index + 1}/${eligible.size}"
+            saveSmsScheduleInTransaction(SmsSchedule(
+                customerId = customer.id.orEmpty(), phone = customer.phone, runAt = at,
+                message = message.trim(), note = sequenceNote, campaignId = batchId,
+                recurrence = repeat, recurrenceUntil = recurrenceUntil,
+                idempotencyKey = "group-sms:$batchId:${customer.phone}:$at",
+            ))
+        }
+        GroupScheduleBatch(batchId, eligible.size, members.size - eligible.size)
+    }
+    fun cancelGroupSchedules(batchId: String): Int = db.transaction {
+        require(batchId.startsWith("group-call-") || batchId.startsWith("group-sms-")) { "معرّف دفعة مجموعة غير صالح" }
+        var cancelled = 0
+        listOf("call_schedules" to "pending", "sms_schedules" to "queued").forEach { (collection, pendingStatus) ->
+            query(collection) { it.text("campaignId") == batchId && it.text("status") in setOf(pendingStatus, "running") }
+                .forEach { item ->
+                    val running = item.text("status") == "running"
+                    save(collection, item.id, mapOf(
+                        "status" to if (running) "running" else "cancelled",
+                        "recurrence" to "none",
+                        "error" to "group batch cancelled by administrator",
+                    ))
+                    if (!running) cancelled++
+                }
+        }
+        cancelled
+    }
     fun smsSequenceCustomers(targetGroup: String): List<VoicxCustomer> {
         val group = targetGroup.trim()
         return query("customers").mapNotNull(::from)
@@ -701,12 +865,12 @@ internal class VoicxCustomerRepository(private val store: VoicxFirebaseStore) {
         true
     }
 
-    fun saveSchedule(s: CallSchedule): String = db.transaction {
+    private fun saveScheduleInTransaction(s: CallSchedule): String {
         val existing = s.idempotencyKey?.takeIf(String::isNotBlank)?.let { key ->
             db.findByIdempotency("call_schedules", key)?.id
         }
         // Repeated enqueue requests must never reset completed/cancelled work to pending.
-        if (existing != null) return@transaction existing
+        if (existing != null) return existing
         val id = idOrNew(s.id)
         val seriesId = s.recurrenceSeriesId ?: id.takeIf { s.recurrence != "none" }
         save("call_schedules", id, mapOf(
@@ -719,6 +883,7 @@ internal class VoicxCustomerRepository(private val store: VoicxFirebaseStore) {
         ))
         id
     }
+    fun saveSchedule(s: CallSchedule): String = db.transaction { saveScheduleInTransaction(s) }
 
     fun claimDueSchedule(now: Long = System.currentTimeMillis()): CallSchedule? = claim("call_schedules", "pending", now) { scheduleFrom(it) }?.second
     fun updateScheduleStatus(id: String, status: String, error: String = "") = db.transaction {

@@ -1253,7 +1253,7 @@ class GatewayRuntime private constructor(context: Context) {
     }
     fun localDatabaseCustomers(): String = runCatching {
         customers.listCustomers(5).joinToString("\n") {
-            "${it.id} | ${it.name} | ${it.phone} | ${it.company} | شخصي: ${it.personalEmail.ifBlank { "—" }} | مهني: ${it.workEmail.ifBlank { "—" }} | WhatsApp: ${if (it.phoneHasWhatsApp) "مرتبط" else "غير مرتبط"} | موافقة البريد/WhatsApp: ${if (it.emailContactConsent) "نعم" else "لا"}/${if (it.whatsappContactConsent) "نعم" else "لا"}"
+            "${it.reference} | ${it.name} | ${it.role} | ${it.company} | ${it.phone} | شخصي: ${it.personalEmail.ifBlank { "—" }} | مهني: ${it.workEmail.ifBlank { "—" }} | WhatsApp: ${if (it.phoneHasWhatsApp) "مرتبط" else "غير مرتبط"} | موافقة البريد/WhatsApp: ${if (it.emailContactConsent) "نعم" else "لا"}/${if (it.whatsappContactConsent) "نعم" else "لا"}"
         }
             .ifBlank { "لا يوجد عملاء" }
     }.getOrElse { "تعذر قراءة العملاء: ${it.javaClass.simpleName}" }
@@ -1296,7 +1296,12 @@ class GatewayRuntime private constructor(context: Context) {
         FirebaseState.ERROR -> "مزامنة Firebase غير متاحة: ${firebaseStore.lastError}. البيانات المحلية SQLite ما زالت تعمل."
         FirebaseState.DISCONNECTED -> "مزامنة Firebase متوقفة؛ البيانات محفوظة محلياً في SQLite."
     }
-    fun saveCustomer(customer: VoicxCustomer, callback: (String) -> Unit = {}) = worker.execute { callback(runCatching { customers.upsert(customer) }.getOrElse { "خطأ حفظ العميل: ${it.javaClass.simpleName}" }) }
+    fun saveCustomer(customer: VoicxCustomer, callback: (String) -> Unit = {}) = worker.execute {
+        callback(runCatching {
+            val id = customers.upsert(customer)
+            customers.findById(id)?.reference ?: id
+        }.getOrElse { "خطأ حفظ العميل: ${it.javaClass.simpleName}" })
+    }
 
     /** Generate three personalized messages, persist them, and automatically queue the first at the chosen time. */
     fun prepareCustomerSmsSequence(phone: String, firstAt: Long, callback: (String) -> Unit) = worker.execute {
@@ -1384,9 +1389,46 @@ class GatewayRuntime private constructor(context: Context) {
     fun searchCustomers(query: String, callback: (String) -> Unit) = worker.execute {
         callback(runCatching {
             customers.search(query, 5).joinToString("\n") {
-                "${it.id} | ${it.name} | ${it.phone} | ${it.company} | شخصي: ${it.personalEmail.ifBlank { "—" }} | مهني: ${it.workEmail.ifBlank { "—" }} | WhatsApp: ${if (it.phoneHasWhatsApp) "مرتبط" else "غير مرتبط"} | موافقات البريد/WA: ${if (it.emailContactConsent) "نعم" else "لا"}/${if (it.whatsappContactConsent) "نعم" else "لا"}"
+                "${it.reference} | ${it.name} | ${it.role} | ${it.company} | ${it.phone} | شخصي: ${it.personalEmail.ifBlank { "—" }} | مهني: ${it.workEmail.ifBlank { "—" }} | WhatsApp: ${if (it.phoneHasWhatsApp) "مرتبط" else "غير مرتبط"} | موافقات البريد/WA: ${if (it.emailContactConsent) "نعم" else "لا"}/${if (it.whatsappContactConsent) "نعم" else "لا"}"
             }
         }.getOrElse { "خطأ البحث: ${it.javaClass.simpleName}" }.ifBlank { "لا توجد نتائج" })
+    }
+    fun filterCustomers(field: CustomerFilterField, value: String, callback: (String) -> Unit) = worker.execute {
+        callback(runCatching {
+            val matches = customers.filterCustomers(field, value, 100)
+            val rows = matches.take(30).joinToString("\n") { "${it.reference} | ${it.company} | ${it.role} | ${it.name} | ${it.phone}" }
+            "الفلتر: ${if (field == CustomerFilterField.COMPANY) "الشركة" else "الوظيفة"} تحتوي «${value.trim()}»\nالنتائج: ${matches.size}${if (matches.size > 30) " (أول 30)" else ""}\n$rows".take(3900)
+        }.getOrElse { "تعذر فلترة العملاء: ${it.message ?: it.javaClass.simpleName}" })
+    }
+    fun createGroupFromFilter(field: CustomerFilterField, value: String, groupName: String, callback: (String) -> Unit) = worker.execute {
+        callback(runCatching {
+            val members = customers.addGroupFromFilter(field, value, groupName)
+            if (members.isEmpty()) "لم يُنشأ أي تغيير؛ لا توجد نتائج مطابقة للفلتر."
+            else {
+                val rows = members.take(12).joinToString("\n") { "${it.reference} | ${it.name} | ${it.company} | ${it.role}" }
+                "أُضيف ${members.size} عميلاً إلى المجموعة «${groupName.trim()}» دون حذف مجموعاتهم السابقة.\nالترتيب: الشركة ثم الوظيفة ثم الاسم.\n$rows${if (members.size > 12) "\n… و${members.size - 12} آخرون" else ""}"
+            }
+        }.getOrElse { "تعذر إنشاء المجموعة: ${it.message ?: it.javaClass.simpleName}" })
+    }
+    fun listCustomerGroups(callback: (String) -> Unit) = worker.execute {
+        callback(runCatching { customers.listCustomerGroups().joinToString("\n") { "${it.name} | ${it.memberCount} عميل" } }
+            .getOrElse { "تعذر قراءة المجموعات: ${it.message ?: it.javaClass.simpleName}" }.ifBlank { "لا توجد مجموعات للعملاء." })
+    }
+    fun scheduleGroupCalls(group: String, runAt: Long, note: String, recurrence: String, recurrenceUntil: Long?, callback: (String) -> Unit) = worker.execute {
+        callback(runCatching { customers.scheduleGroupCalls(group, runAt, note, recurrence, recurrenceUntil) }
+            .fold({ batch -> "جُدول ${batch.targetCount} اتصالاً للمجموعة «$group» بالترتيب، وبين كل عميل دقيقة. تخطّي ${batch.skippedOptOut} لإلغاء التواصل.\nدفعة الإلغاء: ${batch.id}\nالتكرار: ${ScheduleCommandParser.recurrenceDescription(recurrence, recurrenceUntil)}" },
+                { "تعذر جدولة اتصالات المجموعة: ${it.message ?: it.javaClass.simpleName}" }))
+    }
+    fun scheduleGroupSms(group: String, runAt: Long, message: String, recurrence: String, recurrenceUntil: Long?, callback: (String) -> Unit) = worker.execute {
+        callback(runCatching { customers.scheduleGroupSms(group, runAt, message, recurrence, recurrenceUntil) }
+            .fold({ batch -> "جُدول ${batch.targetCount} رسالة SMS للمجموعة «$group» بالترتيب، وبين كل عميل دقيقة. تخطّي ${batch.skippedOptOut} لإلغاء التواصل.\nدفعة الإلغاء: ${batch.id}\nالتكرار: ${ScheduleCommandParser.recurrenceDescription(recurrence, recurrenceUntil)}" },
+                { "تعذر جدولة رسائل المجموعة: ${it.message ?: it.javaClass.simpleName}" }))
+    }
+    fun cancelGroupSchedules(batchId: String, callback: (String) -> Unit) = worker.execute {
+        callback(runCatching { customers.cancelGroupSchedules(batchId.trim()) }.fold(
+            { "تم إلغاء $it موعداً معلّقاً في الدفعة ${batchId.trim()}؛ وأُوقف تكرار المهام الجاري تنفيذها." },
+            { "تعذر إلغاء دفعة المجموعة: ${it.message ?: it.javaClass.simpleName}" },
+        ))
     }
     fun saveCallSchedule(schedule: CallSchedule, callback: (String) -> Unit) = worker.execute { callback(runCatching { customers.saveSchedule(schedule) }.getOrElse { "خطأ جدولة الاتصال: ${it.javaClass.simpleName}" }) }
     fun saveManualCallSchedule(

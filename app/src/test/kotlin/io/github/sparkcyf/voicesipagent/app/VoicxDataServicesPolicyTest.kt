@@ -97,4 +97,33 @@ class VoicxDataServicesPolicyTest {
             SalesCallDispositionPolicy.classify("شكراً، نحن غير مهتمين حالياً", io.github.sparkcyf.voicesipagent.voice.HangupCause.NORMAL))
     }
 
+    @Test fun customerReferenceCombinesCompanyRoleNameAndShortDiscriminator() {
+        val customer = VoicxCustomer(
+            id = "12345678-1234-1234-1234-abcdef12",
+            phone = "+967730501035",
+            name = "Ali Saleh",
+            role = "Sales Manager",
+            company = "Acme Ltd",
+        )
+
+        assertEquals("acme-ltd-sales-manager-ali-saleh-abcdef12", customer.reference)
+    }
+
+    @Test fun customerFiltersAreCaseInsensitiveAndMatchTheSelectedFieldOnly() {
+        val customer = VoicxCustomer(id = "a1", phone = "+967730501035", name = "Ali", role = "Purchasing", company = "Acme Trading")
+
+        assertTrue(CustomerDirectoryPolicy.matches(customer, CustomerFilterField.COMPANY, "ACME"))
+        assertTrue(CustomerDirectoryPolicy.matches(customer, CustomerFilterField.ROLE, "purch"))
+        assertFalse(CustomerDirectoryPolicy.matches(customer, CustomerFilterField.ROLE, "acme"))
+    }
+
+    @Test fun customersSortByCompanyThenRoleThenNameAndGroupAdditionPreservesExistingGroups() {
+        val later = VoicxCustomer(id = "b", phone = "+967730000002", name = "Zaid", company = "Beta", role = "Sales", groups = listOf("Current"))
+        val earlier = VoicxCustomer(id = "a", phone = "+967730000001", name = "Amal", company = "Acme", role = "Sales", groups = listOf("Current"))
+
+        assertEquals(listOf(earlier, later), CustomerDirectoryPolicy.sort(listOf(later, earlier)))
+        assertEquals(listOf("Current", "New Leads"), CustomerDirectoryPolicy.addGroup(earlier.groups, "New Leads"))
+        assertEquals(listOf("Current"), CustomerDirectoryPolicy.addGroup(earlier.groups, " current "))
+    }
+
 }

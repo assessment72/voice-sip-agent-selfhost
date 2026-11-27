@@ -360,7 +360,7 @@ class GatewayService : Service() {
                         val reply = try {
                             when (command) {
                                 "/start", "/help", "/commands" ->
-                                    "Voicx Control جاهز. افتح القائمة عبر /menu أو /panel.\n\nالحالة: /status أو /health\nالتشغيل التلقائي: /automation_status؛ يعرض آخر فحص والموعد القادم وحالات الانتظار والمراجعة\nقاعدة البيانات: /db أو /database\nالعملاء: /customers [صفحة] أو /find نص؛ لكل عميل زرا اتصال وSMS، والتنقل بالصفحات\nإضافة عميل: /add_customer رقم | اسم | وظيفة | شركة | تعليمات | personalEmail اختياري | workEmail اختياري | WhatsApp مرتبط yes/no | موافقة البريد yes/no | موافقة تسويق WhatsApp yes/no\nالتواصل الصريح فقط: /outreach_start customerId | Unix ms/seconds | minDays 3..7 | maxDays 3..7؛ إيقاف: /outreach_stop sequenceId؛ عرض: /outreach_sequences\nجدولة اتصال: /schedule أو /schedule_add customerId | رقم | Unix ms/seconds | ملاحظة | تكرار اختياري | انتهاء Unix اختياري\nمثال متكرر: /schedule_add id | +967730000000 | 1800000000000 | متابعة | أسبوعي | 1805000000000\nتعديل اتصال: /schedule_edit ID | Unix ms/seconds | ملاحظة\nجدولة SMS: /sms_schedule customerId | رقم | Unix ms/seconds | رسالة | ملاحظة\nتعديل SMS: /sms_schedule_edit ID | Unix ms/seconds | رسالة | ملاحظة\nالتكرار: مرة واحدة أو يومي أو أسبوعي أو شهري؛ إذا لم تحدد الانتهاء يستمر حتى الإلغاء، والموعد التالي يُنشأ بعد نجاح المهمة\nعرض كل الجداول: /schedules أو /list_schedules (اتصالات وSMS)\nالاتصالات المجدولة فقط: /list_calls أو /schedule_list\nإلغاء اتصال: /cancel_schedule ID (يلغي السلسلة المستقبلية)\nإلغاء SMS: /cancel_sms ID (يلغي السلسلة المستقبلية)\nتسلسلات SMS: /sms_sequence رقم | YYYY-MM-DD HH:mm\nالحملات: /campaign_start اسم | YYYY-MM-DD HH:mm | المجموعة | call أو sms أو call_sms | قالب SMS\nالصيانة: /db_cleanup\nالمبيعات: /admin\nسجل المكالمات: /account\nتشغيل أو إيقاف البوابة: /enable أو /disable"
+                                    "Voicx Control جاهز. افتح القائمة عبر /menu أو /panel.\n\nالحالة: /status أو /health\nالتشغيل التلقائي: /automation_status؛ يعرض آخر فحص والموعد القادم وحالات الانتظار والمراجعة\nقاعدة البيانات: /db أو /database\nالعملاء: /customers [صفحة] أو /find نص؛ المعرف الظاهر مرجع من الشركة-الوظيفة-الاسم مع لاحقة قصيرة؛ UUID يبقى داخلياً\nفلترة: /filter_company نص أو /filter_role نص\nإنشاء مجموعة: /group_from_company الشركة | المجموعة أو /group_from_role الوظيفة | المجموعة؛ عرض المجموعات: /groups\nاتصالات المجموعة: /group_call المجموعة | Unix ms/ثوانٍ | ملاحظة | تكرار اختياري | انتهاء اختياري\nرسائل المجموعة: /group_sms المجموعة | Unix ms/ثوانٍ | الرسالة | تكرار اختياري | انتهاء اختياري؛ إلغاء الدفعة: /group_cancel batchId\nإضافة عميل: /add_customer رقم | اسم | وظيفة | شركة | تعليمات | personalEmail اختياري | workEmail اختياري | WhatsApp مرتبط yes/no | موافقة البريد yes/no | موافقة تسويق WhatsApp yes/no\nالتواصل الصريح فقط: /outreach_start customerId | Unix ms/seconds | minDays 3..7 | maxDays 3..7؛ إيقاف: /outreach_stop sequenceId؛ عرض: /outreach_sequences\nجدولة اتصال: /schedule أو /schedule_add customerId | رقم | Unix ms/seconds | ملاحظة | تكرار اختياري | انتهاء Unix اختياري\nمثال متكرر: /schedule_add id | +967730000000 | 1800000000000 | متابعة | أسبوعي | 1805000000000\nتعديل اتصال: /schedule_edit ID | Unix ms/seconds | ملاحظة\nجدولة SMS: /sms_schedule customerId | رقم | Unix ms/seconds | رسالة | ملاحظة\nتعديل SMS: /sms_schedule_edit ID | Unix ms/seconds | رسالة | ملاحظة\nالتكرار: مرة واحدة أو يومي أو أسبوعي أو شهري؛ إذا لم تحدد الانتهاء يستمر حتى الإلغاء، والموعد التالي يُنشأ بعد نجاح المهمة\nعرض كل الجداول: /schedules أو /list_schedules (اتصالات وSMS)\nالاتصالات المجدولة فقط: /list_calls أو /schedule_list\nإلغاء اتصال: /cancel_schedule ID (يلغي السلسلة المستقبلية)\nإلغاء SMS: /cancel_sms ID (يلغي السلسلة المستقبلية)\nتسلسلات SMS: /sms_sequence رقم | YYYY-MM-DD HH:mm\nالحملات: /campaign_start اسم | YYYY-MM-DD HH:mm | المجموعة | call أو sms أو call_sms | قالب SMS\nالصيانة: /db_cleanup\nالمبيعات: /admin\nسجل المكالمات: /account\nتشغيل أو إيقاف البوابة: /enable أو /disable"
                                 "/automation_status", "/auto_status", "/scheduler_status" -> runtime.automaticSchedulingReport()
                                 "/status", "/health" -> {
                                     val h = GatewayRuntime.get(this@GatewayService).health.value
@@ -390,6 +390,47 @@ class GatewayService : Service() {
                                 "/customer_search", "/find" -> {
                                     if (argument.isBlank()) "الاستخدام: /customer_search <نص>"
                                     else { runtime.searchCustomers(argument) { result -> scope.launch(Dispatchers.IO) { runCatching { client.sendMessage(update.chatId, result.take(3900)) } } }; "جارٍ البحث عن العملاء وإرسال النتائج." }
+                                }
+                                "/filter_company", "/filter_role" -> {
+                                    val field = if (command == "/filter_company") CustomerFilterField.COMPANY else CustomerFilterField.ROLE
+                                    if (argument.isBlank()) "الاستخدام: $command نص الشركة أو الوظيفة"
+                                    else { runtime.filterCustomers(field, argument) { result -> scope.launch(Dispatchers.IO) { runCatching { client.sendMessage(update.chatId, result) } } }; "جارٍ تطبيق الفلتر على العملاء." }
+                                }
+                                "/group_from_company", "/group_from_role" -> {
+                                    val fields = parsedCommand.fields()
+                                    val field = if (command == "/group_from_company") CustomerFilterField.COMPANY else CustomerFilterField.ROLE
+                                    if (fields.size != 2 || fields[0].isBlank() || fields[1].isBlank()) "الاستخدام: $command نص الشركة أو الوظيفة | اسم المجموعة"
+                                    else { runtime.createGroupFromFilter(field, fields[0], fields[1]) { result -> scope.launch(Dispatchers.IO) { runCatching { client.sendMessage(update.chatId, result.take(3900)) } } }; "جارٍ إنشاء المجموعة وإضافة كل العملاء المطابقين." }
+                                }
+                                "/groups", "/customer_groups" -> {
+                                    runtime.listCustomerGroups { result -> scope.launch(Dispatchers.IO) { runCatching { client.sendMessage(update.chatId, result.take(3900)) } } }
+                                    "جارٍ تحميل أسماء المجموعات وأعداد أعضائها."
+                                }
+                                "/group_call" -> {
+                                    val fields = parsedCommand.fields(limit = 5)
+                                    val at = ScheduleCommandParser.parseTime(fields.getOrNull(1))
+                                    val recurrenceText = fields.getOrNull(3).orEmpty()
+                                    val recurrence = if (recurrenceText.isBlank()) "none" else ScheduleCommandParser.recurrence(recurrenceText)
+                                    val untilText = fields.getOrNull(4).orEmpty()
+                                    val until = if (untilText.isBlank()) null else ScheduleCommandParser.parseTime(untilText)
+                                    if (fields.size < 2 || fields[0].isBlank() || at == null || recurrence == null || (untilText.isNotBlank() && until == null))
+                                        "الاستخدام: /group_call اسم المجموعة | Unix ms/ثوانٍ | ملاحظة | تكرار اختياري | انتهاء Unix اختياري"
+                                    else { runtime.scheduleGroupCalls(fields[0], at, fields.getOrElse(2) { "" }, recurrence, until) { result -> scope.launch(Dispatchers.IO) { runCatching { client.sendMessage(update.chatId, result.take(3900)) } } }; "تم استلام طلب جدولة اتصالات المجموعة بالترتيب. لا يبدأ الاتصال قبل الموعد المحدد." }
+                                }
+                                "/group_sms" -> {
+                                    val fields = parsedCommand.fields(limit = 5)
+                                    val at = ScheduleCommandParser.parseTime(fields.getOrNull(1))
+                                    val recurrenceText = fields.getOrNull(3).orEmpty()
+                                    val recurrence = if (recurrenceText.isBlank()) "none" else ScheduleCommandParser.recurrence(recurrenceText)
+                                    val untilText = fields.getOrNull(4).orEmpty()
+                                    val until = if (untilText.isBlank()) null else ScheduleCommandParser.parseTime(untilText)
+                                    if (fields.size < 3 || fields[0].isBlank() || at == null || fields[2].isBlank() || recurrence == null || (untilText.isNotBlank() && until == null))
+                                        "الاستخدام: /group_sms اسم المجموعة | Unix ms/ثوانٍ | نص الرسالة | تكرار اختياري | انتهاء Unix اختياري"
+                                    else { runtime.scheduleGroupSms(fields[0], at, fields[2], recurrence, until) { result -> scope.launch(Dispatchers.IO) { runCatching { client.sendMessage(update.chatId, result.take(3900)) } } }; "تم استلام طلب جدولة رسائل المجموعة بالترتيب. لا يبدأ الإرسال قبل الموعد المحدد." }
+                                }
+                                "/group_cancel" -> {
+                                    if (argument.isBlank()) "الاستخدام: /group_cancel group-call-… أو group-sms-…"
+                                    else { runtime.cancelGroupSchedules(argument.trim()) { result -> scope.launch(Dispatchers.IO) { runCatching { client.sendMessage(update.chatId, result) } } }; "جارٍ إلغاء المواعيد المستقبلية في دفعة المجموعة." }
                                 }
                                 "/customer_add", "/add_customer" -> {
                                     val fields = parsedCommand.fields()
@@ -693,7 +734,7 @@ class GatewayService : Service() {
         val page = requestedPage.coerceIn(1, pageCount)
         val customers = runtime.localDatabaseCustomerOptions(pageSize, (page - 1) * pageSize)
         val entries = customers.joinToString("\n") {
-            "${it.id} | ${it.name} | ${it.phone} | ${it.company} | شخصي: ${it.personalEmail.ifBlank { "—" }} | مهني: ${it.workEmail.ifBlank { "—" }} | WhatsApp: ${if (it.phoneHasWhatsApp) "مرتبط" else "غير مرتبط"} | موافقة البريد: ${if (it.emailContactConsent) "نعم" else "لا"} | موافقة WhatsApp: ${if (it.whatsappContactConsent) "نعم" else "لا"}"
+            "${it.reference} | ${it.name} | ${it.role} | ${it.company} | ${it.phone} | شخصي: ${it.personalEmail.ifBlank { "—" }} | مهني: ${it.workEmail.ifBlank { "—" }} | WhatsApp: ${if (it.phoneHasWhatsApp) "مرتبط" else "غير مرتبط"} | موافقة البريد: ${if (it.emailContactConsent) "نعم" else "لا"} | موافقة WhatsApp: ${if (it.whatsappContactConsent) "نعم" else "لا"}"
         }
             .ifBlank { "لا يوجد عملاء" }
         val buttons = customerButtons(customers).toMutableList()
