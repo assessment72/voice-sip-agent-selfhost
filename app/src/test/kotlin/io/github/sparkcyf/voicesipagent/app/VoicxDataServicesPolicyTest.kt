@@ -39,4 +39,20 @@ class VoicxDataServicesPolicyTest {
         assertFalse(ScheduleLeasePolicy.isExpired("completed", now - ScheduleLeasePolicy.CLAIM_LEASE_MS - 1L, now))
         assertFalse(ScheduleLeasePolicy.isExpired("running", 0L, now))
     }
+
+    @Test fun globalOptOutBlocksEveryCampaignButInterestedAndPausedAreScoped() {
+        assertTrue(CustomerSuppressionPolicy.isBlocked("queued", true))
+        assertTrue(CustomerSuppressionPolicy.isBlocked("opted_out", false))
+        assertTrue(CustomerSuppressionPolicy.isBlocked("admin", false))
+        assertTrue(CustomerSuppressionPolicy.isBlocked("paused", false))
+        assertFalse(CustomerSuppressionPolicy.isBlocked("queued", false))
+        assertFalse(CustomerSuppressionPolicy.isBlocked("follow_up", false))
+    }
+
+    @Test fun yemeniArabicAndInternationalMobileNumbersNormalizeToSameE164() {
+        assertEquals("+967730501035", PhoneNumberNormalizer.normalizeYemen("730501035"))
+        assertEquals("+967730501035", PhoneNumberNormalizer.normalizeYemen("٠٧٣٠٥٠١٠٣٥"))
+        assertEquals("+967730501035", PhoneNumberNormalizer.normalizeYemen("00967730501035"))
+        assertEquals("+967730501035", PhoneNumberNormalizer.normalizeYemen("+967 730 501 035"))
+    }
 }
