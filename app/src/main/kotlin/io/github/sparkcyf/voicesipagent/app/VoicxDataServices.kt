@@ -80,7 +80,7 @@ internal object CustomerSuppressionPolicy {
         globallyOptedOut || memberStatus in listOf("admin", "opted_out", "paused")
 }
 
-internal class LocalDatabase(context: Context) : SQLiteOpenHelper(context, "voicx_local.db", null, 2) {
+internal class LocalDatabase(context: Context) : SQLiteOpenHelper(context, "voicx_local.db", null, 3) {
     private val databaseFile = context.getDatabasePath("voicx_local.db")
     override fun onConfigure(db: SQLiteDatabase) {
         super.onConfigure(db)
@@ -88,9 +88,10 @@ internal class LocalDatabase(context: Context) : SQLiteOpenHelper(context, "voic
         db.enableWriteAheadLogging()
     }
     override fun onCreate(db: SQLiteDatabase) {
-        db.execSQL("CREATE TABLE documents (collection TEXT NOT NULL, id TEXT NOT NULL, payload TEXT NOT NULL, updated_at INTEGER NOT NULL, PRIMARY KEY(collection, id))")
+        db.execSQL("CREATE TABLE documents (collection TEXT NOT NULL, id TEXT NOT NULL, payload TEXT NOT NULL, updated_at INTEGER NOT NULL, status TEXT, customer_id TEXT, phone TEXT, run_at INTEGER, idempotency_key TEXT, created_at INTEGER, PRIMARY KEY(collection, id))")
         db.execSQL("CREATE INDEX documents_collection_idx ON documents(collection)")
         db.execSQL("CREATE INDEX documents_updated_at_idx ON documents(updated_at)")
+        createOperationalIndexes(db)
     }
     override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
         if (oldVersion < 2) {
@@ -98,7 +99,49 @@ internal class LocalDatabase(context: Context) : SQLiteOpenHelper(context, "voic
             db.execSQL("UPDATE documents SET updated_at = ? WHERE updated_at = 0", arrayOf<Any>(System.currentTimeMillis()))
             db.execSQL("CREATE INDEX IF NOT EXISTS documents_updated_at_idx ON documents(updated_at)")
         }
+        if (oldVersion < 3) {
+            db.execSQL("ALTER TABLE documents ADD COLUMN status TEXT")
+            db.execSQL("ALTER TABLE documents ADD COLUMN customer_id TEXT")
+            db.execSQL("ALTER TABLE documents ADD COLUMN phone TEXT")
+            db.execSQL("ALTER TABLE documents ADD COLUMN run_at INTEGER")
+            db.execSQL("ALTER TABLE documents ADD COLUMN idempotency_key TEXT")
+            db.execSQL("ALTER TABLE documents ADD COLUMN created_at INTEGER")
+            backfillOperationalColumns(db)
+            createOperationalIndexes(db)
+        }
     }
+
+    private fun createOperationalIndexes(db: SQLiteDatabase) {
+        db.execSQL("CREATE INDEX IF NOT EXISTS documents_status_run_idx ON documents(collection, status, run_at)")
+        db.execSQL("CREATE INDEX IF NOT EXISTS documents_customer_idx ON documents(collection, customer_id, created_at)")
+        db.execSQL("CREATE INDEX IF NOT EXISTS documents_phone_idx ON documents(collection, phone, created_at)")
+        db.execSQL("DELETE FROM documents WHERE idempotency_key IS NOT NULL AND idempotency_key <> '' AND rowid NOT IN (SELECT MIN(rowid) FROM documents WHERE idempotency_key IS NOT NULL AND idempotency_key <> '' GROUP BY collection, idempotency_key)")
+        db.execSQL("CREATE UNIQUE INDEX IF NOT EXISTS documents_idempotency_idx ON documents(collection, idempotency_key) WHERE idempotency_key IS NOT NULL AND idempotency_key <> ''")
+    }
+
+    private fun backfillOperationalColumns(db: SQLiteDatabase) {
+        db.query("documents", arrayOf("collection", "id", "payload"), null, null, null, null, null).use { cursor ->
+            val updates = mutableListOf<Triple<String, String, JSONObject>>()
+            while (cursor.moveToNext()) updates += Triple(cursor.getString(0), cursor.getString(1), JSONObject(cursor.getString(2)))
+            updates.forEach { (collection, id, payload) ->
+                db.update("documents", operationalValues(collection, id, payload, payload.optLong("updatedAt", 0L)), "collection=? AND id=?", arrayOf(collection, id))
+            }
+        }
+    }
+
+    private fun operationalValues(collection: String, id: String, payload: JSONObject, updatedAt: Long): android.content.ContentValues =
+        android.content.ContentValues().apply {
+            put("collection", collection)
+            put("id", id)
+            put("payload", payload.toString())
+            put("updated_at", updatedAt.takeIf { it > 0L } ?: System.currentTimeMillis())
+            put("status", payload.optString("status").takeIf { it.isNotBlank() })
+            put("customer_id", payload.optString("customerId").takeIf { it.isNotBlank() })
+            put("phone", payload.optString("phone").takeIf { it.isNotBlank() })
+            put("run_at", payload.optLong("runAt").takeIf { it > 0L })
+            put("idempotency_key", payload.optString("idempotencyKey").takeIf { it.isNotBlank() })
+            put("created_at", payload.optLong("createdAt").takeIf { it > 0L })
+        }
 
     @Synchronized fun exportTo(output: OutputStream) {
         writableDatabase.execSQL("PRAGMA wal_checkpoint(FULL)")
@@ -139,9 +182,7 @@ internal class LocalDatabase(context: Context) : SQLiteOpenHelper(context, "voic
             is List<*> -> JSONArray(value)
             else -> value
         }) }
-        writableDatabase.insertWithOnConflict("documents", null, android.content.ContentValues().apply {
-            put("collection", collection); put("id", id); put("payload", json.toString()); put("updated_at", System.currentTimeMillis())
-        }, SQLiteDatabase.CONFLICT_REPLACE)
+        writableDatabase.insertWithOnConflict("documents", null, operationalValues(collection, id, json, System.currentTimeMillis()), SQLiteDatabase.CONFLICT_REPLACE)
     }
 
     /** Run a group of repository operations under one SQLite write transaction. */
@@ -163,9 +204,39 @@ internal class LocalDatabase(context: Context) : SQLiteOpenHelper(context, "voic
      */
     @Synchronized fun patch(collection: String, id: String, values: Map<String, Any?>) {
         val merged = LocalDocumentPatch.merge(read(collection, id)?.data, values)
-        writableDatabase.insertWithOnConflict("documents", null, android.content.ContentValues().apply {
-            put("collection", collection); put("id", id); put("payload", merged.toString()); put("updated_at", System.currentTimeMillis())
-        }, SQLiteDatabase.CONFLICT_REPLACE)
+        writableDatabase.insertWithOnConflict("documents", null, operationalValues(collection, id, merged, System.currentTimeMillis()), SQLiteDatabase.CONFLICT_REPLACE)
+    }
+
+    @Synchronized fun findByIdempotency(collection: String, key: String): LocalDocument? {
+        if (key.isBlank()) return null
+        readableDatabase.query("documents", arrayOf("id", "payload"), "collection=? AND idempotency_key=?", arrayOf(collection, key), null, null, null, "1").use {
+            return if (it.moveToFirst()) LocalDocument(it.getString(0), JSONObject(it.getString(1))) else null
+        }
+    }
+
+    @Synchronized fun due(collection: String, status: String, now: Long): LocalDocument? {
+        readableDatabase.query("documents", arrayOf("id", "payload"), "collection=? AND status=? AND run_at<=?", arrayOf(collection, status, now.toString()), null, null, "run_at ASC", "1").use {
+            return if (it.moveToFirst()) LocalDocument(it.getString(0), JSONObject(it.getString(1))) else null
+        }
+    }
+
+    @Synchronized fun purgeBefore(collection: String, field: String, cutoff: Long): Int {
+        require(field in setOf("created_at", "updated_at", "run_at")) { "حقل التنظيف غير مسموح" }
+        return writableDatabase.delete("documents", "collection=? AND $field > 0 AND $field < ?", arrayOf(collection, cutoff.toString()))
+    }
+
+    @Synchronized fun count(collection: String): Long = readableDatabase.query(
+        "documents", arrayOf("COUNT(*)"), "collection=?", arrayOf(collection), null, null, null
+    ).use { if (it.moveToFirst()) it.getLong(0) else 0L }
+
+    @Synchronized fun purgeCompletedBefore(collection: String, cutoff: Long, statuses: Set<String>): Int {
+        require(statuses.isNotEmpty())
+        val placeholders = statuses.joinToString(",") { "?" }
+        return writableDatabase.delete(
+            "documents",
+            "collection=? AND updated_at > 0 AND updated_at < ? AND status IN ($placeholders)",
+            arrayOf(collection, cutoff.toString(), *statuses.toTypedArray())
+        )
     }
 
     @Synchronized fun read(collection: String, id: String): LocalDocument? {
@@ -568,7 +639,7 @@ internal class VoicxCustomerRepository(private val store: VoicxFirebaseStore) {
 
     fun saveSchedule(s: CallSchedule): String = db.transaction {
         val existing = s.idempotencyKey?.takeIf(String::isNotBlank)?.let { key ->
-            query("call_schedules") { it.text("idempotencyKey") == key }.firstOrNull()?.id
+            db.findByIdempotency("call_schedules", key)?.id
         }
         // Repeated enqueue requests must never reset completed/cancelled work to pending.
         if (existing != null) return@transaction existing
@@ -601,7 +672,7 @@ internal class VoicxCustomerRepository(private val store: VoicxFirebaseStore) {
     }
     private fun saveSmsScheduleInTransaction(s: SmsSchedule): String {
         val existing = s.idempotencyKey?.takeIf(String::isNotBlank)?.let { key ->
-            query("sms_schedules") { it.text("idempotencyKey") == key }.firstOrNull()?.id
+            db.findByIdempotency("sms_schedules", key)?.id
         }
         if (existing != null) return existing
         val id = idOrNew(s.id)
@@ -631,8 +702,7 @@ internal class VoicxCustomerRepository(private val store: VoicxFirebaseStore) {
                         "error" to ScheduleLeasePolicy.EXPIRED_CLAIM_ERROR,
                     ))
                 }
-            val candidate = query(name) { it.text("status") == status && it.long("runAt") <= now }
-                .minByOrNull { it.long("runAt") } ?: return@transaction null
+            val candidate = db.due(name, status, now) ?: return@transaction null
             save(name, candidate.id, mapOf(
                 "status" to "running",
                 "claimedAt" to now,
@@ -687,6 +757,18 @@ internal class VoicxCustomerRepository(private val store: VoicxFirebaseStore) {
     }
     fun listSchedules(limit: Int = 20) = query("call_schedules").sortedBy { it.long("runAt") }.take(limit).map(::scheduleFrom)
     fun listSmsSchedules(limit: Int = 20) = query("sms_schedules").sortedBy { it.long("runAt") }.take(limit).map(::smsScheduleFrom)
+
+    /** Removes only completed operational history; customer data and reconciliation records remain intact. */
+    fun purgeOldOperationalData(now: Long = System.currentTimeMillis()): Int = db.transaction {
+        val scheduleCutoff = now - 90L * 24 * 60 * 60 * 1000
+        val messageCutoff = now - 365L * 24 * 60 * 60 * 1000
+        val callCutoff = now - 730L * 24 * 60 * 60 * 1000
+        db.purgeCompletedBefore("call_schedules", scheduleCutoff, setOf("completed", "cancelled")) +
+            db.purgeCompletedBefore("sms_schedules", scheduleCutoff, setOf("sent", "cancelled")) +
+            db.purgeBefore("customer_messages", "created_at", messageCutoff) +
+            db.purgeBefore("call_summaries", "created_at", callCutoff) +
+            db.purgeBefore("customer_memories", "created_at", callCutoff)
+    }
 
     /**
      * Lists quarantined external side effects for human review. Returning online does not

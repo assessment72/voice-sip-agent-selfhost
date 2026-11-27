@@ -1055,9 +1055,15 @@ class GatewayRuntime private constructor(context: Context) {
     fun localDatabaseStatus(): String = "SQLite محلية متصلة؛ البيانات محفوظة داخل الهاتف"
     fun localDatabaseSummary(): String = runCatching {
         val db = firebaseStore.requireDatabase()
-        listOf("customers", "customer_memories", "customer_messages", "customer_sms_sequences", "call_summaries", "call_schedules", "sms_schedules", "campaigns", "campaign_customers")
-            .joinToString("\n") { "$it: ${db.all(it).size}" }
+        listOf("customers", "customer_memories", "customer_messages", "customer_sms_sequences", "call_summaries", "call_schedules", "sms_schedules", "campaigns", "campaign_customers", "sales_admin_leads", "schedule_reconciliation_audit")
+            .joinToString("\n") { "$it: ${db.count(it)}" }
     }.getOrElse { "تعذر قراءة قاعدة البيانات المحلية: ${it.javaClass.simpleName}" }
+    fun maintainLocalDatabase(callback: (String) -> Unit = {}) = worker.execute {
+        callback(runCatching {
+            val removed = customers.purgeOldOperationalData()
+            "اكتملت صيانة SQLite. تم حذف $removed سجلًا تشغيليًا منتهيًا؛ لم تُحذف بيانات العملاء أو سجلات المراجعة."
+        }.getOrElse { "فشلت صيانة قاعدة البيانات: ${it.message ?: it.javaClass.simpleName}" })
+    }
     fun localDatabaseCustomers(): String = runCatching {
         customers.search("", 20).joinToString("\n") { "${it.id} | ${it.name} | ${it.phone} | ${it.company}" }
             .ifBlank { "لا يوجد عملاء" }
