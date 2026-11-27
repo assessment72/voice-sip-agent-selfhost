@@ -534,10 +534,14 @@ ${context.salesInfo}
             transition(LegState.PROCEEDING)
             client = GeminiLiveClient(key(), model(), prompt, port::addOutput,
                 { text ->
-                    inputText = (inputText + " " + text).trim().takeLast(12_000)
-                    appendTranscript("العميل", text)
-                    intentTranscriptBuffer = (intentTranscriptBuffer + " " + text).trim().takeLast(240)
-                    if (state != LegState.ENDED && callerIntentHandled.compareAndSet(false, true)) {
+                    // Gemini can emit punctuation-only partials for noise or an empty turn;
+                    // they are not evidence that the caller said something meaningful.
+                    if (text.any { it.isLetterOrDigit() }) {
+                        inputText = (inputText + " " + text).trim().takeLast(12_000)
+                        appendTranscript("العميل", text)
+                        intentTranscriptBuffer = (intentTranscriptBuffer + " " + text).trim().takeLast(240)
+                    }
+                    if (text.any { it.isLetterOrDigit() } && state != LegState.ENDED && callerIntentHandled.compareAndSet(false, true)) {
                         when (VoiceCallIntentDetector.detect(intentTranscriptBuffer)) {
                             VoiceCallIntent.HANDOFF_TO_EMPLOYEE -> {
                                 if (requestHandoff()) {
@@ -688,6 +692,7 @@ ${context.salesInfo}
                     AppLog.i("Gemini Live call opening turn started=$queued")
                 }
                 val now = SystemClock.elapsedRealtime()
+                var endCallerTurn = false
                 if (isSpeechLike(frame)) {
                     onCallerSpeechDetected()
                     if (turnSpeechStartedAt == null) turnSpeechStartedAt = now
@@ -698,8 +703,7 @@ ${context.salesInfo}
                     // waiting for a server-side VAD edge that is unreliable on narrowband
                     // cellular audio, leaving the caller unheard after the opening greeting.
                     lastSpeechEndAt = lastSpeechAt
-                    val ended = client?.sendAudioStreamEnd() == true
-                    AppLog.i("Gemini caller audio turn ended locally: queued=$ended")
+                    endCallerTurn = true
                 }
                 inputAttempts++
                 if (client?.sendPcm8(frame) == true) {
@@ -708,6 +712,10 @@ ${context.salesInfo}
                     lastInputSentAt = sentAt
                     if (firstInputSentAt == null) firstInputSentAt = sentAt
                 } else inputSendFailures++
+                if (endCallerTurn) {
+                    val ended = client?.sendAudioStreamEnd() == true
+                    AppLog.i("Gemini caller audio turn ended locally after final frame: queued=$ended")
+                }
             }
             @Synchronized fun addOutput(bytes24k: ByteArray) {
                 val now = SystemClock.elapsedRealtime()
