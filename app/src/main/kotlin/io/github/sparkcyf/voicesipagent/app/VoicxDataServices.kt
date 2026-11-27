@@ -183,6 +183,7 @@ data class Campaign(val id: String? = null, val name: String, val startAt: Long,
 data class CampaignCustomer(val id: String? = null, val campaignId: String, val customerId: String, val phone: String, val sequence: Int, val status: String = "queued", val attempts: Int = 0, val lastCallAt: Long? = null, val lastSmsAt: Long? = null, val nextCallAt: Long? = null, val nextSmsAt: Long? = null, val lastOutcome: String = "", val followUpNote: String = "", val interestedAt: Long? = null, val adminAt: Long? = null, val pausedAt: Long? = null, val optedOutAt: Long? = null, val createdAt: Long = System.currentTimeMillis(), val updatedAt: Long = System.currentTimeMillis())
 data class CallSchedule(val id: String? = null, val customerId: String, val phone: String, val runAt: Long, val status: String = "pending", val note: String = "", val campaignId: String? = null, val campaignCustomerId: String? = null, val idempotencyKey: String? = null, val attempts: Int = 0)
 data class SmsSchedule(val id: String? = null, val customerId: String = "", val phone: String, val runAt: Long, val message: String, val status: String = "queued", val campaignId: String? = null, val note: String = "", val campaignCustomerId: String? = null, val idempotencyKey: String? = null, val attempts: Int = 0)
+data class CustomerSmsSequence(val id: String, val customerId: String, val phone: String, val firstAt: Long, val secondAt: Long, val thirdAt: Long, val firstMessage: String, val secondMessage: String, val thirdMessage: String, val status: String, val firstSentAt: Long = 0L, val secondSentAt: Long = 0L, val thirdSentAt: Long = 0L)
 enum class ScheduleType { CALL, SMS }
 data class ScheduleReconciliationItem(
     val type: ScheduleType,
@@ -255,6 +256,94 @@ internal class VoicxCustomerRepository(private val store: VoicxFirebaseStore) {
             it.text("customerId") == customerId && it.text("direction") == "inbound" &&
                 it.text("channel") == "sms" && it.long("receivedAt") >= since
         }.sortedBy { it.long("receivedAt") }
+
+    /** Creates a three-step customer-specific SMS sequence. Only the first stage is queued. */
+    fun createCustomerSmsSequence(customerId: String, firstAt: Long, first: String, second: String, third: String): String = db.transaction {
+        val customer = findById(customerId) ?: error("العميل غير موجود")
+        require(!isPhoneOptedOut(customer.phone)) { "العميل ألغى الاشتراك في الرسائل" }
+        require(firstAt > System.currentTimeMillis()) { "موعد الرسالة الأولى يجب أن يكون في المستقبل" }
+        require(listOf(first, second, third).all { it.isNotBlank() && it.length <= 1000 }) { "كل رسالة يجب أن تكون بين حرف واحد و1000 حرف" }
+        val id = UUID.randomUUID().toString()
+        val secondAt = firstAt + 7L * 24 * 60 * 60 * 1000
+        val thirdAt = firstAt + 14L * 24 * 60 * 60 * 1000
+        save("customer_sms_sequences", id, mapOf(
+            "customerId" to customerId, "phone" to customer.phone, "firstAt" to firstAt,
+            "secondAt" to secondAt, "thirdAt" to thirdAt,
+            "firstMessage" to first.take(1000), "secondMessage" to second.take(1000),
+            "thirdMessage" to third.take(1000), "status" to "scheduled",
+            "firstSentAt" to 0L, "secondSentAt" to 0L, "thirdSentAt" to 0L,
+            "createdAt" to System.currentTimeMillis(), "updatedAt" to System.currentTimeMillis(),
+        ))
+        saveSmsSchedule(SmsSchedule(
+            customerId = customerId, phone = customer.phone, runAt = firstAt, message = first,
+            note = "customer_sequence:$id:1", idempotencyKey = "customer-sequence:$id:1",
+        ))
+        id
+    }
+
+    fun updateCustomerSmsSequence(id: String, stage: Int, runAt: Long, message: String): Boolean = db.transaction {
+        require(stage in 1..3 && runAt > System.currentTimeMillis()) { "مرحلة أو موعد غير صالح" }
+        require(message.isNotBlank() && message.length <= 1000) { "نص الرسالة غير صالح" }
+        val current = read("customer_sms_sequences", id) ?: return@transaction false
+        if (current.text("status") == "completed") return@transaction false
+        val fieldAt = listOf("firstAt", "secondAt", "thirdAt")[stage - 1]
+        val fieldMessage = listOf("firstMessage", "secondMessage", "thirdMessage")[stage - 1]
+        save("customer_sms_sequences", id, mapOf(fieldAt to runAt, fieldMessage to message.take(1000), "updatedAt" to System.currentTimeMillis()))
+        if (stage == 1) {
+            query("sms_schedules") { it.text("note") == "customer_sequence:$id:1" && it.text("status") in listOf("queued", "pending") }
+                .firstOrNull()?.let { save("sms_schedules", it.id, mapOf("runAt" to runAt, "message" to message.take(1000))) }
+        } else if (stage == 2 && current.long("firstSentAt") > 0L) {
+            query("sms_schedules") { it.text("note") == "customer_sequence:$id:2" && it.text("status") in listOf("queued", "pending") }
+                .firstOrNull()?.let { save("sms_schedules", it.id, mapOf("runAt" to runAt, "message" to message.take(1000))) }
+        } else if (stage == 3 && current.long("secondSentAt") > 0L) {
+            query("sms_schedules") { it.text("note") == "customer_sequence:$id:3" && it.text("status") in listOf("queued", "pending") }
+                .firstOrNull()?.let { save("sms_schedules", it.id, mapOf("runAt" to runAt, "message" to message.take(1000))) }
+        }
+        true
+    }
+
+    fun customerSmsSequence(id: String): LocalDocument? = read("customer_sms_sequences", id)
+
+    fun completeCustomerSmsStage(schedule: SmsSchedule, sentMessage: String, sentAt: Long = System.currentTimeMillis()) = db.transaction {
+        val match = Regex("^customer_sequence:([^:]+):([123])$").matchEntire(schedule.note) ?: return@transaction
+        val sequenceId = match.groupValues[1]
+        val stage = match.groupValues[2].toInt()
+        val sequence = read("customer_sms_sequences", sequenceId) ?: return@transaction
+        val customer = findById(sequence.text("customerId")) ?: return@transaction
+        val messageId = "outbound-" + java.security.MessageDigest.getInstance("SHA-256")
+            .digest("${schedule.id.orEmpty()}|${sentMessage}".toByteArray(Charsets.UTF_8))
+            .joinToString("") { "%02x".format(it) }
+        save("customer_messages", messageId, mapOf(
+            "customerId" to customer.id.orEmpty(), "phone" to customer.phone,
+            "direction" to "outbound", "channel" to "sms", "body" to sentMessage.take(4000),
+            "scheduleId" to schedule.id.orEmpty(), "sentAt" to sentAt, "createdAt" to sentAt,
+        ))
+        when (stage) {
+            1 -> {
+                save("customer_sms_sequences", sequenceId, mapOf("firstSentAt" to sentAt, "status" to "stage1_sent", "updatedAt" to sentAt))
+                val due = maxOf(sequence.long("secondAt"), sentAt + 7L * 24 * 60 * 60 * 1000)
+                saveSmsSchedule(SmsSchedule(
+                    customerId = customer.id.orEmpty(), phone = customer.phone, runAt = due,
+                    message = sequence.text("secondMessage"), note = "customer_sequence:$sequenceId:2",
+                    idempotencyKey = "customer-sequence:$sequenceId:2",
+                ))
+            }
+            2 -> {
+                save("customer_sms_sequences", sequenceId, mapOf("secondSentAt" to sentAt, "status" to "stage2_sent", "updatedAt" to sentAt))
+                val due = maxOf(sequence.long("thirdAt"), sentAt + 7L * 24 * 60 * 60 * 1000)
+                saveSmsSchedule(SmsSchedule(
+                    customerId = customer.id.orEmpty(), phone = customer.phone, runAt = due,
+                    message = sequence.text("thirdMessage"), note = "customer_sequence:$sequenceId:3",
+                    idempotencyKey = "customer-sequence:$sequenceId:3",
+                ))
+            }
+            3 -> save("customer_sms_sequences", sequenceId, mapOf("thirdSentAt" to sentAt, "status" to "completed", "updatedAt" to sentAt))
+        }
+    }
+
+    fun sequenceStage(schedule: SmsSchedule): Int? =
+        Regex("^customer_sequence:[^:]+:([123])$").matchEntire(schedule.note)?.groupValues?.get(1)?.toIntOrNull()
+
 
     fun instructionFor(phone: String) = findByPhone(phone)?.instructions.orEmpty()
     fun memoriesFor(phone: String, limit: Int = 10): String { val id = findByPhone(phone)?.id ?: return ""; return query("customer_memories") { it.text("customerId") == id }.sortedByDescending { it.long("createdAt") }.take(limit.coerceIn(1, 20)).map { it.text("text") }.filter(String::isNotBlank).asReversed().joinToString("\n") { "- $it" } }
