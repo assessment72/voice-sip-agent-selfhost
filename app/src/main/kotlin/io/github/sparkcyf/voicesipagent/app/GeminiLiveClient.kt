@@ -54,11 +54,16 @@ internal class GeminiLiveClient(
                         .put("model", "models/$model")
                         .put("generationConfig", JSONObject()
                             .put("responseModalities", org.json.JSONArray().put("AUDIO")))
-                        // Narrowband cellular input is finalized by the app's local VAD and
-                        // sendAudioStreamEnd(). Do not let a second server-side VAD race that
-                        // signal or leave Gemini waiting after the caller has stopped speaking.
+                        // Hybrid VAD: Gemini detects speech start and barge-in, while the app's
+                        // local VAD sends audioStreamEnd for low-latency turn finalization.
+                        // audioStreamEnd is valid with automatic activity detection enabled.
                         .put("realtimeInputConfig", JSONObject()
-                            .put("automaticActivityDetection", JSONObject().put("disabled", true)))
+                            .put("automaticActivityDetection", JSONObject()
+                                .put("disabled", false)
+                                .put("startOfSpeechSensitivity", "START_SENSITIVITY_LOW")
+                                .put("endOfSpeechSensitivity", "END_SENSITIVITY_LOW")
+                                .put("prefixPaddingMs", 80)
+                                .put("silenceDurationMs", 700)))
                         .put("systemInstruction", JSONObject().put("parts", org.json.JSONArray()
                             .put(JSONObject().put("text", instructions))))
                         .put("inputAudioTranscription", JSONObject())
