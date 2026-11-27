@@ -323,9 +323,10 @@ class GatewayService : Service() {
                             withContext(Dispatchers.IO) { renderPanel(update.chatId, client, response, update.messageId) }
                             continue
                         }
-                        if (update.text.trim().equals("/start", true) || update.text.trim().equals("/panel", true) || update.text.trim().equals("/db", true)) {
+                        val initialCommand = CommandParser.parse(update.text).name
+                        if (initialCommand in setOf("/start", "/panel", "/db")) {
                             panelSessions.remove(update.chatId)
-                            val response = when (update.text.trim().lowercase()) {
+                            val response = when (initialCommand) {
                                 "/db" -> handleVoicxPanel("voicx:db", runtime, update.chatId, client)
                                 else -> handleVoicxPanel("voicx:home", runtime, update.chatId, client)
                             }
@@ -347,9 +348,9 @@ class GatewayService : Service() {
                         val argument = parsedCommand.argument
                         val reply = try {
                             when (command) {
-                                "/start", "/help" ->
+                                "/start", "/help", "/commands" ->
                                     "Voicx Control جاهز. افتح اللوحة التفاعلية عبر /panel.\n\nأوامر سريعة:\n/status - حالة البوابة\n/sip - حالة SIP\n/calls - حالة المكالمات\n/db أو /db_status - ملخص SQLite المحلية\n/db_customers - قراءة العملاء\n/db_schedules - قراءة الجدولة\n/db_export - يذكّرك بالتصدير من التطبيق (لا تُرسل نسخة قاعدة البيانات تلقائياً)\n/customer_search <نص> - البحث عن عميل\n/customer_add رقم | اسم | وظيفة | شركة | تعليمات - إضافة عميل\n/schedule_add customerId | رقم | وقت Unix ms | ملاحظة - جدولة اتصال\n/schedule_list - عرض مواعيد الاتصالات\n/sms_schedule_list - عرض رسائل SMS المجدولة\n/sms_sequence رقم | YYYY-MM-DD HH:mm - إنشاء وحفظ 3 رسائل Gemini وجدولة الأولى تلقائياً\n/sms_sequence_all المجموعة أو all | YYYY-MM-DD HH:mm - إنشاء تسلسلات مخصصة للمجموعة وجدولة الأولى تلقائياً\n/sms_sequence_list - عرض تسلسلات العملاء\n/sms_sequence_confirm ID - تفعيل مسودة قديمة\n/sms_sequence_edit ID | المرحلة | YYYY-MM-DD HH:mm | النص - تعديل رسالة وموعد\n/campaign_add ... - إنشاء حملة\n/admin - إعدادات المبيعات\n/account - سجل المكالمات\n/service_on أو /service_off - تشغيل أو إيقاف البوابة"
-                                "/status" -> {
+                                "/status", "/health" -> {
                                     val h = GatewayRuntime.get(this@GatewayService).health.value
                                     "Gateway: ${if (h.takeover) "ON" else "OFF"}\nSIP: ${if (h.sip.ready) "ready" else "not ready"}\nActive call: ${h.session != null || h.calls.owned > 0}"
                                 }
@@ -358,9 +359,9 @@ class GatewayService : Service() {
                                     "SIP: ${if (h.sip.ready) "ready" else "not ready"}\n${h.sip.detail.take(500)}"
                                 }
                                 "/calls" -> GatewayRuntime.get(this@GatewayService).health.value.calls.summary.take(1000)
-                                "/db_status", "/db" -> runtime.localDatabaseSummary()
-                                "/db_customers" -> runtime.searchCustomers("") { result -> scope.launch(Dispatchers.IO) { runCatching { client.sendMessage(update.chatId, "العملاء:\n${result.take(3800)}") } } }.let { "جارٍ قراءة العملاء من SQLite المحلية." }
-                                "/db_schedules" -> { runtime.listCallSchedules { result -> scope.launch(Dispatchers.IO) { runCatching { client.sendMessage(update.chatId, "جدولة الاتصالات:\n${result.take(1800)}") } } }; runtime.listSmsSchedules { result -> scope.launch(Dispatchers.IO) { runCatching { client.sendMessage(update.chatId, "جدولة SMS:\n${result.take(1800)}") } } }; "جارٍ قراءة الجداول من SQLite المحلية." }
+                                "/db_status", "/db", "/database" -> runtime.localDatabaseSummary()
+                                "/db_customers", "/customers" -> runtime.searchCustomers("") { result -> scope.launch(Dispatchers.IO) { runCatching { client.sendMessage(update.chatId, "العملاء:\n${result.take(3800)}") } } }.let { "جارٍ قراءة العملاء من SQLite المحلية." }
+                                "/db_schedules", "/schedules" -> { runtime.listCallSchedules { result -> scope.launch(Dispatchers.IO) { runCatching { client.sendMessage(update.chatId, "جدولة الاتصالات:\n${result.take(1800)}") } } }; runtime.listSmsSchedules { result -> scope.launch(Dispatchers.IO) { runCatching { client.sendMessage(update.chatId, "جدولة SMS:\n${result.take(1800)}") } } }; "جارٍ قراءة الجداول من SQLite المحلية." }
                                 "/db_export" -> "التصدير متاح من التطبيق عبر قسم قاعدة البيانات المحلية. لا أرسل ملف SQLite تلقائياً عبر Telegram لحماية بيانات العملاء؛ استخدم زر التصدير ثم شارك الملف يدوياً عند الحاجة."
                                 "/customer_search" -> {
                                     if (argument.isBlank()) "الاستخدام: /customer_search <نص>"
@@ -546,15 +547,15 @@ class GatewayService : Service() {
                                         "تم قبول طلب الاتصال. سيرد Gemini على المكالمة وسيُرسل التقرير بعد انتهائها."
                                     }
                                 }
-                                "/service_on" -> {
+                                "/service_on", "/enable" -> {
                                     GatewayRuntime.get(this@GatewayService).setTakeover(true)
                                     "Enable request accepted. Check /status in a moment."
                                 }
-                                "/service_off" -> {
+                                "/service_off", "/disable" -> {
                                     GatewayRuntime.get(this@GatewayService).setTakeover(false)
                                     "Disable request accepted. An active call will finish first."
                                 }
-                                else -> "Unknown command. Send /help."
+                                else -> "أمر غير معروف: $command\nأرسل /help أو /commands لعرض الأوامر المتاحة."
                             }
                         } catch (e: Exception) {
                             "Command failed: ${e.javaClass.simpleName}"
