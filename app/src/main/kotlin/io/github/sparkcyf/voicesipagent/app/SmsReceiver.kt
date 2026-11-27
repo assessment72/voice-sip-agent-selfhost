@@ -15,10 +15,12 @@ class SmsReceiver : BroadcastReceiver() {
         if (intent.action != Telephony.Sms.Intents.SMS_RECEIVED_ACTION) return
         val parts = Telephony.Sms.Intents.getMessagesFromIntent(intent) ?: return
         if (parts.isEmpty()) return
-        val from = parts.firstOrNull()?.displayOriginatingAddress
+        val first = parts.firstOrNull()
+        val from = first?.displayOriginatingAddress
+        val receivedAt = first?.timestampMillis ?: System.currentTimeMillis()
         val body = parts.joinToString("") { it.messageBody ?: "" }
         if (body.isEmpty()) return
         AppLog.i("SMS received; relaying to the registered phone")
-        GatewayRuntime.get(context).forwardSms(from, body)
+        GatewayRuntime.get(context).receiveSms(from, body, receivedAt)
     }
 }
