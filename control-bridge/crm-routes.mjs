@@ -103,6 +103,19 @@ export async function handleCrmRoute(req, res, url, ctx) {
     else {
       for (const field of fields) if (b[field] !== undefined) crm[key][index][field] = b[field];
       crm[key][index].updatedAt = new Date().toISOString();
+      if (resource === "contacts" &&
+          (crm.contacts[index].optedOut === true || crm.contacts[index].doNotContact === true)) {
+        const blocked = crm.contacts[index];
+        for (const job of crm.outbox) {
+          const sameContact = job.contactId === blocked.id ||
+            (!job.contactId && phoneKey(job.to) === phoneKey(blocked.phone));
+          if (sameContact && job.status === "queued") {
+            job.status = "cancelled";
+            job.updatedAt = new Date().toISOString();
+            job.error = "contact_opted_out";
+          }
+        }
+      }
     }
     ctx.audit("crm." + resource + (req.method === "DELETE" ? ".deleted" : ".updated"), "api-client", { recordId: itemId });
     await ctx.save();
