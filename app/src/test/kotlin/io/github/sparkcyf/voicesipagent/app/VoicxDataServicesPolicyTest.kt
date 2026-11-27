@@ -76,6 +76,8 @@ class VoicxDataServicesPolicyTest {
             SalesCallDispositionPolicy.classify("", io.github.sparkcyf.voicesipagent.voice.HangupCause.NO_ANSWER))
         assertEquals(SalesCallDisposition.BUSY_OR_UNAVAILABLE,
             SalesCallDispositionPolicy.classify("الهاتف مغلق", io.github.sparkcyf.voicesipagent.voice.HangupCause.NORMAL))
+        assertEquals(SalesCallDisposition.BUSY_OR_UNAVAILABLE,
+            SalesCallDispositionPolicy.classify("", io.github.sparkcyf.voicesipagent.voice.HangupCause.NORMAL))
     }
 
     @Test fun optOutAlwaysTakesPriorityOverFollowUp() {
