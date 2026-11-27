@@ -274,7 +274,7 @@ internal class VoicxCustomerRepository(private val store: VoicxFirebaseStore) {
             "firstSentAt" to 0L, "secondSentAt" to 0L, "thirdSentAt" to 0L,
             "createdAt" to System.currentTimeMillis(), "updatedAt" to System.currentTimeMillis(),
         ))
-        saveSmsSchedule(SmsSchedule(
+        saveSmsScheduleInTransaction(SmsSchedule(
             customerId = customerId, phone = customer.phone, runAt = firstAt, message = first,
             note = "customer_sequence:$id:1", idempotencyKey = "customer-sequence:$id:1",
         ))
@@ -322,7 +322,7 @@ internal class VoicxCustomerRepository(private val store: VoicxFirebaseStore) {
             1 -> {
                 save("customer_sms_sequences", sequenceId, mapOf("firstSentAt" to sentAt, "status" to "stage1_sent", "updatedAt" to sentAt))
                 val due = maxOf(sequence.long("secondAt"), sentAt + 7L * 24 * 60 * 60 * 1000)
-                saveSmsSchedule(SmsSchedule(
+                saveSmsScheduleInTransaction(SmsSchedule(
                     customerId = customer.id.orEmpty(), phone = customer.phone, runAt = due,
                     message = sequence.text("secondMessage"), note = "customer_sequence:$sequenceId:2",
                     idempotencyKey = "customer-sequence:$sequenceId:2",
@@ -331,7 +331,7 @@ internal class VoicxCustomerRepository(private val store: VoicxFirebaseStore) {
             2 -> {
                 save("customer_sms_sequences", sequenceId, mapOf("secondSentAt" to sentAt, "status" to "stage2_sent", "updatedAt" to sentAt))
                 val due = maxOf(sequence.long("thirdAt"), sentAt + 7L * 24 * 60 * 60 * 1000)
-                saveSmsSchedule(SmsSchedule(
+                saveSmsScheduleInTransaction(SmsSchedule(
                     customerId = customer.id.orEmpty(), phone = customer.phone, runAt = due,
                     message = sequence.text("thirdMessage"), note = "customer_sequence:$sequenceId:3",
                     idempotencyKey = "customer-sequence:$sequenceId:3",
@@ -381,12 +381,11 @@ internal class VoicxCustomerRepository(private val store: VoicxFirebaseStore) {
             "error" to reason.take(300),
         ))
     }
-    fun saveSmsSchedule(s: SmsSchedule): String = db.transaction {
+    private fun saveSmsScheduleInTransaction(s: SmsSchedule): String {
         val existing = s.idempotencyKey?.takeIf(String::isNotBlank)?.let { key ->
             query("sms_schedules") { it.text("idempotencyKey") == key }.firstOrNull()?.id
         }
-        // Do not resurrect a sent or cancelled SMS when the enqueue operation is replayed.
-        if (existing != null) return@transaction existing
+        if (existing != null) return existing
         val id = idOrNew(s.id)
         save("sms_schedules", id, mapOf(
             "customerId" to s.customerId, "phone" to s.phone, "runAt" to s.runAt,
@@ -394,8 +393,10 @@ internal class VoicxCustomerRepository(private val store: VoicxFirebaseStore) {
             "note" to s.note, "campaignCustomerId" to s.campaignCustomerId,
             "idempotencyKey" to s.idempotencyKey, "attempts" to s.attempts,
         ))
-        id
+        return id
     }
+
+    fun saveSmsSchedule(s: SmsSchedule): String = db.transaction { saveSmsScheduleInTransaction(s) }
 
         fun claimDueSmsSchedule(now: Long = System.currentTimeMillis()): SmsSchedule? = claim("sms_schedules", "queued", now) { smsScheduleFrom(it) }?.second
     fun updateSmsScheduleStatus(id: String, status: String, error: String = "") { if (id.isNotBlank()) save("sms_schedules", id, mapOf("status" to status, "error" to error.takeIf(String::isNotBlank))) }
