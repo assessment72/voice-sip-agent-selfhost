@@ -535,10 +535,10 @@ class GatewayService : Service() {
             panelSessions.remove(chatId)
             return AdminReply("تم الإلغاء. لم يُنفذ أي إجراء.", home)
         }
-        if (action.startsWith("voicx:reconcile:")) {
+        if (action.startsWith("voicx:rc:")) {
             val parts = action.split(":")
             if (parts.size != 5) return AdminReply("طلب مصالحة غير صالح.", home)
-            val decision = when (parts[2]) { "completed" -> ScheduleReconciliationPolicy.Action.MARK_COMPLETED; "failed" -> ScheduleReconciliationPolicy.Action.MARK_FAILED; else -> return AdminReply("هذا الإجراء غير متاح من Telegram.", home) }
+            val decision = when (parts[2]) { "done" -> ScheduleReconciliationPolicy.Action.MARK_COMPLETED; "fail" -> ScheduleReconciliationPolicy.Action.MARK_FAILED; else -> return AdminReply("هذا الإجراء غير متاح من Telegram.", home) }
             val type = runCatching { ScheduleType.valueOf(parts[3]) }.getOrNull() ?: return AdminReply("نوع المهمة غير صالح.", home)
             val id = parts[4].takeIf { it.isNotBlank() } ?: return AdminReply("معرّف المهمة غير صالح.", home)
             panelSessions[chatId] = PanelSession("reconcile_evidence", mutableListOf(type.name, id, decision.name))
@@ -591,8 +591,8 @@ class GatewayService : Service() {
                     val kind = if (item.type == ScheduleType.CALL) "اتصال" else "SMS"
                     val masked = TelegramSimCall.maskNumber(item.phone)
                     listOf(listOf(
-                        AdminButton("✓ تمت · $kind $masked", "voicx:reconcile:completed:${item.type.name}:${item.id}"),
-                        AdminButton("✕ فشلت · $kind $masked", "voicx:reconcile:failed:${item.type.name}:${item.id}"),
+                        AdminButton("✓ تمت · $kind $masked", "voicx:rc:done:${item.type.name}:${item.id}"),
+                        AdminButton("✕ فشلت · $kind $masked", "voicx:rc:fail:${item.type.name}:${item.id}"),
                     ))
                 }
                 AdminReply(runtime.scheduleReconciliationReport(), listOf(listOf(AdminButton("🔄 تحديث القائمة", "voicx:reconciliation"))) + itemButtons + back)
