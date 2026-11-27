@@ -1001,16 +1001,19 @@ class GatewayRuntime private constructor(context: Context) {
                     val sequenceId = schedule.note.split(':').getOrNull(1).orEmpty()
                     val sequence = customers.customerSmsSequence(sequenceId) ?: error("سجل تسلسل الرسائل غير موجود")
                     val customer = customers.findById(sequence.text("customerId")) ?: error("بيانات العميل غير موجودة")
-                    val since = sequence.long("firstSentAt")
-                    val historyDocs = customers.customerSmsHistorySince(customer.id.orEmpty(), since)
-                    val replies = historyDocs.filter { it.text("direction") == "inbound" }.map { it.text("body") }
+                    val conversationStart = sequence.long("firstSentAt")
+                    val replyWindowStart = CustomerSmsSequencePolicy.replyWindowStart(
+                        stage, sequence.long("firstSentAt"), sequence.long("secondSentAt"),
+                    )
+                    val historyDocs = customers.customerSmsHistorySince(customer.id.orEmpty(), conversationStart)
+                    val replies = customers.customerSmsRepliesSince(customer.id.orEmpty(), replyWindowStart).map { it.text("body") }
                     val draft = if (replies.isEmpty()) schedule.message else {
                         val history = historyDocs.map { "${it.text("direction")}: ${it.text("body")}" }
                         smsWriter.createFollowUp(customer, stage, replies, history, salesAdminStore.assistantContext())
                     }
-                    val latestReplies = customers.customerSmsRepliesSince(customer.id.orEmpty(), since).map { it.text("body") }
+                    val latestReplies = customers.customerSmsRepliesSince(customer.id.orEmpty(), replyWindowStart).map { it.text("body") }
                     if (latestReplies.size > replies.size) {
-                        val latestHistory = customers.customerSmsHistorySince(customer.id.orEmpty(), since)
+                        val latestHistory = customers.customerSmsHistorySince(customer.id.orEmpty(), conversationStart)
                             .map { "${it.text("direction")}: ${it.text("body")}" }
                         smsWriter.createFollowUp(customer, stage, latestReplies, latestHistory, salesAdminStore.assistantContext())
                     } else draft
@@ -1096,7 +1099,7 @@ class GatewayRuntime private constructor(context: Context) {
     }
     fun saveCustomer(customer: VoicxCustomer, callback: (String) -> Unit = {}) = worker.execute { callback(runCatching { customers.upsert(customer) }.getOrElse { "خطأ حفظ العميل: ${it.javaClass.simpleName}" }) }
 
-    /** Generate and persist three editable SMS drafts. Sending is impossible until confirmCustomerSmsSequence. */
+    /** Generate three personalized messages, persist them, and automatically queue the first at the chosen time. */
     fun prepareCustomerSmsSequence(phone: String, firstAt: Long, callback: (String) -> Unit) = worker.execute {
         callback(runCatching {
             require(settings.geminiApiKey.isNotBlank()) { "مفتاح Gemini API غير مضبوط" }
@@ -1105,8 +1108,41 @@ class GatewayRuntime private constructor(context: Context) {
             val customer = customers.findByPhone(normalized) ?: error("الرقم غير مسجل كعميل؛ أضف العميل أولاً")
             val drafts = smsWriter.createThreeMessages(customer, salesAdminStore.assistantContext())
             val id = customers.createCustomerSmsSequence(customer.id.orEmpty(), firstAt, drafts[0], drafts[1], drafts[2])
-            "تم إنشاء مسودات الرسائل الثلاث للعميل ${customer.name}. لم يتم جدولة الإرسال بعد.\nالمعرّف: $id\n1) ${drafts[0]}\n2) ${drafts[1]}\n3) ${drafts[2]}\nللتفعيل بعد المراجعة: /sms_sequence_confirm $id"
+            check(customers.activateCustomerSmsSequence(id)) { "تعذر تفعيل موعد الرسالة الأولى" }
+            "تم إنشاء الرسائل الثلاث وحفظها للعميل ${customer.name}، وجدولة الأولى تلقائياً.\nالمعرّف: $id\n1) ${drafts[0]}\n2) ${drafts[1]}\n3) ${drafts[2]}\nيمكن تعديل أي رسالة/موعد قبل إرسالها عبر: /sms_sequence_edit $id | المرحلة 1 أو 2 أو 3 | YYYY-MM-DD HH:mm | النص"
         }.getOrElse { "تعذر إعداد رسائل العميل: ${it.message ?: it.javaClass.simpleName}" })
+    }
+
+    /** Generate and schedule individualized three-message sequences for every customer in a group. */
+    fun prepareCustomerSmsSequences(targetGroup: String, firstAt: Long, callback: (String) -> Unit) = worker.execute {
+        callback(runCatching {
+            require(settings.geminiApiKey.isNotBlank()) { "مفتاح Gemini API غير مضبوط" }
+            require(firstAt > System.currentTimeMillis()) { "موعد الرسالة الأولى يجب أن يكون في المستقبل" }
+            val targets = customers.smsSequenceCustomers(targetGroup)
+            require(targets.isNotEmpty()) { "لا يوجد عملاء في المجموعة المحددة" }
+            var scheduled = 0
+            var skipped = 0
+            val failures = mutableListOf<String>()
+            targets.forEach { customer ->
+                try {
+                    if (customers.isPhoneOptedOut(customer.phone)) {
+                        skipped++
+                    } else {
+                        val drafts = smsWriter.createThreeMessages(customer, salesAdminStore.assistantContext())
+                        val id = customers.createCustomerSmsSequence(customer.id.orEmpty(), firstAt, drafts[0], drafts[1], drafts[2])
+                        if (customers.activateCustomerSmsSequence(id)) scheduled++
+                        else failures += "${customer.name.ifBlank { customer.phone }}: تعذر تفعيل الجدولة"
+                    }
+                } catch (e: Exception) {
+                    failures += "${customer.name.ifBlank { customer.phone }}: ${e.message ?: e.javaClass.simpleName}"
+                }
+            }
+            buildString {
+                append("اكتمل إعداد تسلسلات الرسائل: جُدولت الأولى لـ$scheduled عميل، وتُرك $skipped بسبب إلغاء الاشتراك.")
+                if (failures.isNotEmpty()) append("\nتعذر إعداد ${failures.size}: ${failures.take(8).joinToString("؛ ")}")
+                append("\nالاستهداف: ${targetGroup.ifBlank { "all" }}. الثانية والثالثة تُجدولان تلقائياً بعد إرسال المرحلة السابقة.")
+            }
+        }.getOrElse { "تعذر إعداد رسائل المجموعة: ${it.message ?: it.javaClass.simpleName}" })
     }
     fun confirmCustomerSmsSequence(id: String, callback: (String) -> Unit = {}) = worker.execute {
         callback(runCatching { customers.activateCustomerSmsSequence(id) }

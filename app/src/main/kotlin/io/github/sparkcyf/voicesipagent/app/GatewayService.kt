@@ -348,7 +348,7 @@ class GatewayService : Service() {
                         val reply = try {
                             when (command) {
                                 "/start", "/help" ->
-                                    "Voicx Control جاهز. افتح اللوحة التفاعلية عبر /panel.\n\nأوامر سريعة:\n/status - حالة البوابة\n/sip - حالة SIP\n/calls - حالة المكالمات\n/db أو /db_status - ملخص SQLite المحلية\n/db_customers - قراءة العملاء\n/db_schedules - قراءة الجدولة\n/db_export - يذكّرك بالتصدير من التطبيق (لا تُرسل نسخة قاعدة البيانات تلقائياً)\n/customer_search <نص> - البحث عن عميل\n/customer_add رقم | اسم | وظيفة | شركة | تعليمات - إضافة عميل\n/schedule_add customerId | رقم | وقت Unix ms | ملاحظة - جدولة اتصال\n/schedule_list - عرض مواعيد الاتصالات\n/sms_schedule_list - عرض رسائل SMS المجدولة\n/sms_sequence رقم | YYYY-MM-DD HH:mm - إنشاء 3 مسودات Gemini مخصصة\n/sms_sequence_list - عرض تسلسلات العملاء\n/sms_sequence_confirm ID - تفعيل التسلسل بعد المراجعة\n/sms_sequence_edit ID | المرحلة | YYYY-MM-DD HH:mm | النص - تعديل رسالة وموعد\n/campaign_add ... - إنشاء حملة\n/admin - إعدادات المبيعات\n/account - سجل المكالمات\n/service_on أو /service_off - تشغيل أو إيقاف البوابة"
+                                    "Voicx Control جاهز. افتح اللوحة التفاعلية عبر /panel.\n\nأوامر سريعة:\n/status - حالة البوابة\n/sip - حالة SIP\n/calls - حالة المكالمات\n/db أو /db_status - ملخص SQLite المحلية\n/db_customers - قراءة العملاء\n/db_schedules - قراءة الجدولة\n/db_export - يذكّرك بالتصدير من التطبيق (لا تُرسل نسخة قاعدة البيانات تلقائياً)\n/customer_search <نص> - البحث عن عميل\n/customer_add رقم | اسم | وظيفة | شركة | تعليمات - إضافة عميل\n/schedule_add customerId | رقم | وقت Unix ms | ملاحظة - جدولة اتصال\n/schedule_list - عرض مواعيد الاتصالات\n/sms_schedule_list - عرض رسائل SMS المجدولة\n/sms_sequence رقم | YYYY-MM-DD HH:mm - إنشاء وحفظ 3 رسائل Gemini وجدولة الأولى تلقائياً\n/sms_sequence_all المجموعة أو all | YYYY-MM-DD HH:mm - إنشاء تسلسلات مخصصة للمجموعة وجدولة الأولى تلقائياً\n/sms_sequence_list - عرض تسلسلات العملاء\n/sms_sequence_confirm ID - تفعيل مسودة قديمة\n/sms_sequence_edit ID | المرحلة | YYYY-MM-DD HH:mm | النص - تعديل رسالة وموعد\n/campaign_add ... - إنشاء حملة\n/admin - إعدادات المبيعات\n/account - سجل المكالمات\n/service_on أو /service_off - تشغيل أو إيقاف البوابة"
                                 "/status" -> {
                                     val h = GatewayRuntime.get(this@GatewayService).health.value
                                     "Gateway: ${if (h.takeover) "ON" else "OFF"}\nSIP: ${if (h.sip.ready) "ready" else "not ready"}\nActive call: ${h.session != null || h.calls.owned > 0}"
@@ -441,12 +441,24 @@ class GatewayService : Service() {
                                     val fields = argument.split('|').map { it.trim() }
                                     val firstAt = fields.getOrNull(1)?.let(::campaignTime)
                                     if (fields.size < 2 || fields[0].isBlank() || firstAt == null || firstAt <= System.currentTimeMillis()) {
-                                        "الاستخدام: /sms_sequence رقم | 2026-12-01 09:00\nينشئ Gemini ثلاث مسودات مخصصة. لن تُجدول قبل تأكيدك."
+                                        "الاستخدام: /sms_sequence رقم | 2026-12-01 09:00\nينشئ Gemini ثلاث رسائل مخصصة ويحفظها، ثم يجدول الرسالة الأولى تلقائياً."
                                     } else {
                                         runtime.prepareCustomerSmsSequence(fields[0], firstAt) { result ->
                                             scope.launch(Dispatchers.IO) { runCatching { client.sendMessage(update.chatId, result) } }
                                         }
-                                        "جارٍ إنشاء مسودات الرسائل الثلاث بواسطة Gemini. لن تُرسل أي رسالة قبل أمر التأكيد."
+                                        "جارٍ إنشاء رسائل Gemini الثلاث وحفظها؛ ستُجدول الأولى تلقائياً للموعد المحدد."
+                                    }
+                                }
+                                "/sms_sequence_all" -> {
+                                    val fields = argument.split('|').map { it.trim() }
+                                    val firstAt = fields.getOrNull(1)?.let(::campaignTime)
+                                    if (fields.size < 2 || fields[0].isBlank() || firstAt == null || firstAt <= System.currentTimeMillis()) {
+                                        "الاستخدام: /sms_sequence_all المجموعة أو all | 2026-12-01 09:00\nينشئ ثلاث رسائل مخصصة لكل عميل في المجموعة، ويحفظها ويجدول الأولى تلقائياً. تُستثنى أرقام إلغاء الاشتراك."
+                                    } else {
+                                        runtime.prepareCustomerSmsSequences(fields[0], firstAt) { result ->
+                                            scope.launch(Dispatchers.IO) { runCatching { client.sendMessage(update.chatId, result) } }
+                                        }
+                                        "جارٍ تجهيز رسائل مخصصة لكل عميل في المجموعة وجدولة الرسالة الأولى؛ قد يستغرق ذلك وقتاً حسب عدد العملاء."
                                     }
                                 }
                                 "/sms_sequence_list" -> {

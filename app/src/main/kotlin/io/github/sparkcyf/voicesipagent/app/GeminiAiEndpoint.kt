@@ -53,7 +53,11 @@ internal class GeminiSmsWriter(private val apiKey: () -> String) {
         val end = raw.lastIndexOf('}').let { if (it >= start) it + 1 else raw.length }
         val messages = JSONObject(raw.substring(start, end)).optJSONArray("messages") ?: error("Gemini لم يُرجع قائمة الرسائل")
         require(messages.length() == 3) { "Gemini لم يُرجع ثلاث رسائل" }
-        return (0..2).map { messages.getString(it).trim().take(1000).also { message -> require(message.isNotBlank()) } }
+        return (0..2).map { messages.getString(it).trim().also { message ->
+            require(message.isNotBlank() && message.length <= CustomerSmsSequencePolicy.MAX_MESSAGE_LENGTH) {
+                "يجب أن تكون كل رسالة بين حرف واحد و${CustomerSmsSequencePolicy.MAX_MESSAGE_LENGTH} حرفاً"
+            }
+        } }
     }
 
     fun createFollowUp(customer: VoicxCustomer, stage: Int, replies: List<String>, history: List<String>, businessContext: String): String {
@@ -69,7 +73,11 @@ internal class GeminiSmsWriter(private val apiKey: () -> String) {
             سياق النشاط: $businessContext
             لا تخترع حقائق أو أسعاراً أو عروضاً. لا تضغط على العميل. أعد نص الرسالة فقط دون علامات اقتباس.
         """.trimIndent()
-        return generate(prompt).trim().trim('"', '،').take(1000).also { require(it.isNotBlank()) }
+        return generate(prompt).trim().trim('"', '،').also {
+            require(it.isNotBlank() && it.length <= CustomerSmsSequencePolicy.MAX_MESSAGE_LENGTH) {
+                "رسالة المتابعة تجاوزت ${CustomerSmsSequencePolicy.MAX_MESSAGE_LENGTH} حرفاً"
+            }
+        }
     }
 
     private fun generate(prompt: String): String {

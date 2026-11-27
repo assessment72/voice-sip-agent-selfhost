@@ -184,6 +184,21 @@ data class CampaignCustomer(val id: String? = null, val campaignId: String, val 
 data class CallSchedule(val id: String? = null, val customerId: String, val phone: String, val runAt: Long, val status: String = "pending", val note: String = "", val campaignId: String? = null, val campaignCustomerId: String? = null, val idempotencyKey: String? = null, val attempts: Int = 0)
 data class SmsSchedule(val id: String? = null, val customerId: String = "", val phone: String, val runAt: Long, val message: String, val status: String = "queued", val campaignId: String? = null, val note: String = "", val campaignCustomerId: String? = null, val idempotencyKey: String? = null, val attempts: Int = 0)
 data class CustomerSmsSequence(val id: String, val customerId: String, val phone: String, val firstAt: Long, val secondAt: Long, val thirdAt: Long, val firstMessage: String, val secondMessage: String, val thirdMessage: String, val status: String, val firstSentAt: Long = 0L, val secondSentAt: Long = 0L, val thirdSentAt: Long = 0L)
+internal object CustomerSmsSequencePolicy {
+    const val FOLLOW_UP_DELAY_MS = 7L * 24 * 60 * 60 * 1000
+    const val MAX_MESSAGE_LENGTH = 300
+
+    fun replyWindowStart(stage: Int, firstSentAt: Long, secondSentAt: Long): Long = when (stage) {
+        2 -> firstSentAt
+        3 -> secondSentAt
+        else -> error("مرحلة متابعة SMS غير صالحة")
+    }
+
+    fun nextStageAt(stage: Int, configuredAt: Long, previousSentAt: Long): Long {
+        require(stage in 2..3) { "مرحلة متابعة SMS غير صالحة" }
+        return maxOf(configuredAt, previousSentAt + FOLLOW_UP_DELAY_MS)
+    }
+}
 enum class ScheduleType { CALL, SMS }
 data class ScheduleReconciliationItem(
     val type: ScheduleType,
@@ -251,6 +266,13 @@ internal class VoicxCustomerRepository(private val store: VoicxFirebaseStore) {
     fun findById(id: String): VoicxCustomer? = if (id.isBlank()) null else read("customers", id)?.let(::from)
     fun findByPhone(phone: String): VoicxCustomer? = query("customers") { it.text("phone") == phone.trim() }.firstOrNull()?.let(::from)
     fun search(q: String, limit: Int = 20): List<VoicxCustomer> { val s = q.trim().lowercase(); return query("customers").mapNotNull(::from).filter { s.isBlank() || listOf(it.phone, it.name, it.company).any { v -> v.lowercase().contains(s) } }.take(limit.coerceIn(1, 50)) }
+    fun smsSequenceCustomers(targetGroup: String): List<VoicxCustomer> {
+        val group = targetGroup.trim()
+        return query("customers").mapNotNull(::from)
+            .filter { group.isBlank() || group.equals("all", ignoreCase = true) || it.groups.any { member -> member.equals(group, ignoreCase = true) } }
+            .distinctBy { it.phone }
+            .sortedBy { it.createdAt }
+    }
     fun addMemory(customerId: String, text: String, source: String) = save("customer_memories", UUID.randomUUID().toString(), mapOf("customerId" to customerId, "text" to text.take(4000), "source" to source, "createdAt" to System.currentTimeMillis()))
 
     /** Persist inbound SMS only when the sender matches a known customer. Message IDs are
@@ -322,15 +344,20 @@ internal class VoicxCustomerRepository(private val store: VoicxFirebaseStore) {
         val customer = findById(customerId) ?: error("العميل غير موجود")
         require(!isPhoneOptedOut(customer.phone)) { "العميل ألغى الاشتراك في الرسائل" }
         require(firstAt > System.currentTimeMillis()) { "موعد الرسالة الأولى يجب أن يكون في المستقبل" }
-        require(listOf(first, second, third).all { it.isNotBlank() && it.length <= 1000 }) { "كل رسالة يجب أن تكون بين حرف واحد و1000 حرف" }
+        require(listOf(first, second, third).all { it.isNotBlank() && it.length <= CustomerSmsSequencePolicy.MAX_MESSAGE_LENGTH }) {
+            "كل رسالة يجب أن تكون بين حرف واحد و${CustomerSmsSequencePolicy.MAX_MESSAGE_LENGTH} حرفاً"
+        }
+        require(query("customer_sms_sequences") {
+            it.text("customerId") == customerId && it.text("status") !in listOf("completed", "opted_out")
+        }.isEmpty()) { "يوجد تسلسل رسائل نشط لهذا العميل بالفعل" }
         val id = UUID.randomUUID().toString()
-        val secondAt = firstAt + 7L * 24 * 60 * 60 * 1000
-        val thirdAt = firstAt + 14L * 24 * 60 * 60 * 1000
+        val secondAt = firstAt + CustomerSmsSequencePolicy.FOLLOW_UP_DELAY_MS
+        val thirdAt = firstAt + 2 * CustomerSmsSequencePolicy.FOLLOW_UP_DELAY_MS
         save("customer_sms_sequences", id, mapOf(
             "customerId" to customerId, "phone" to customer.phone, "firstAt" to firstAt,
             "secondAt" to secondAt, "thirdAt" to thirdAt,
-            "firstMessage" to first.take(1000), "secondMessage" to second.take(1000),
-            "thirdMessage" to third.take(1000), "status" to "draft",
+            "firstMessage" to first, "secondMessage" to second,
+            "thirdMessage" to third, "status" to "draft",
             "firstSentAt" to 0L, "secondSentAt" to 0L, "thirdSentAt" to 0L,
             "createdAt" to System.currentTimeMillis(), "updatedAt" to System.currentTimeMillis(),
         ))
@@ -352,7 +379,9 @@ internal class VoicxCustomerRepository(private val store: VoicxFirebaseStore) {
 
     fun updateCustomerSmsSequence(id: String, stage: Int, runAt: Long, message: String): Boolean = db.transaction {
         require(stage in 1..3 && runAt > System.currentTimeMillis()) { "مرحلة أو موعد غير صالح" }
-        require(message.isNotBlank() && message.length <= 1000) { "نص الرسالة غير صالح" }
+        require(message.isNotBlank() && message.length <= CustomerSmsSequencePolicy.MAX_MESSAGE_LENGTH) {
+            "يجب ألا يتجاوز نص الرسالة ${CustomerSmsSequencePolicy.MAX_MESSAGE_LENGTH} حرفاً"
+        }
         val current = read("customer_sms_sequences", id) ?: return@transaction false
         if (current.text("status") in listOf("completed", "opted_out")) return@transaction false
         val alreadySent = when (stage) {
@@ -367,16 +396,16 @@ internal class VoicxCustomerRepository(private val store: VoicxFirebaseStore) {
         if (activeSchedule != null) return@transaction false
         val fieldAt = listOf("firstAt", "secondAt", "thirdAt")[stage - 1]
         val fieldMessage = listOf("firstMessage", "secondMessage", "thirdMessage")[stage - 1]
-        save("customer_sms_sequences", id, mapOf(fieldAt to runAt, fieldMessage to message.take(1000), "updatedAt" to System.currentTimeMillis()))
+        save("customer_sms_sequences", id, mapOf(fieldAt to runAt, fieldMessage to message, "updatedAt" to System.currentTimeMillis()))
         if (stage == 1) {
             query("sms_schedules") { it.text("note") == "customer_sequence:$id:1" && it.text("status") in listOf("queued", "pending") }
-                .firstOrNull()?.let { save("sms_schedules", it.id, mapOf("runAt" to runAt, "message" to message.take(1000))) }
+                .firstOrNull()?.let { save("sms_schedules", it.id, mapOf("runAt" to runAt, "message" to message)) }
         } else if (stage == 2 && current.long("firstSentAt") > 0L) {
             query("sms_schedules") { it.text("note") == "customer_sequence:$id:2" && it.text("status") in listOf("queued", "pending") }
-                .firstOrNull()?.let { save("sms_schedules", it.id, mapOf("runAt" to runAt, "message" to message.take(1000))) }
+                .firstOrNull()?.let { save("sms_schedules", it.id, mapOf("runAt" to runAt, "message" to message)) }
         } else if (stage == 3 && current.long("secondSentAt") > 0L) {
             query("sms_schedules") { it.text("note") == "customer_sequence:$id:3" && it.text("status") in listOf("queued", "pending") }
-                .firstOrNull()?.let { save("sms_schedules", it.id, mapOf("runAt" to runAt, "message" to message.take(1000))) }
+                .firstOrNull()?.let { save("sms_schedules", it.id, mapOf("runAt" to runAt, "message" to message)) }
         }
         true
     }
@@ -402,7 +431,7 @@ internal class VoicxCustomerRepository(private val store: VoicxFirebaseStore) {
         when (stage) {
             1 -> {
                 save("customer_sms_sequences", sequenceId, mapOf("firstSentAt" to sentAt, "status" to "stage1_sent", "updatedAt" to sentAt))
-                val due = maxOf(sequence.long("secondAt"), sentAt + 7L * 24 * 60 * 60 * 1000)
+                val due = CustomerSmsSequencePolicy.nextStageAt(2, sequence.long("secondAt"), sentAt)
                 saveSmsScheduleInTransaction(SmsSchedule(
                     customerId = customer.id.orEmpty(), phone = customer.phone, runAt = due,
                     message = sequence.text("secondMessage"), note = "customer_sequence:$sequenceId:2",
@@ -411,7 +440,7 @@ internal class VoicxCustomerRepository(private val store: VoicxFirebaseStore) {
             }
             2 -> {
                 save("customer_sms_sequences", sequenceId, mapOf("secondSentAt" to sentAt, "status" to "stage2_sent", "updatedAt" to sentAt))
-                val due = maxOf(sequence.long("thirdAt"), sentAt + 7L * 24 * 60 * 60 * 1000)
+                val due = CustomerSmsSequencePolicy.nextStageAt(3, sequence.long("thirdAt"), sentAt)
                 saveSmsScheduleInTransaction(SmsSchedule(
                     customerId = customer.id.orEmpty(), phone = customer.phone, runAt = due,
                     message = sequence.text("thirdMessage"), note = "customer_sequence:$sequenceId:3",
