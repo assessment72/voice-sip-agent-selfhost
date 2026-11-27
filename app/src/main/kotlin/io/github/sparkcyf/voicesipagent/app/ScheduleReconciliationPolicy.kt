@@ -20,7 +20,8 @@ internal object ScheduleReconciliationPolicy {
 
     fun requiresReview(status: String): Boolean = status == STATUS
 
-    fun resolve(currentStatus: String, decision: Decision): Result {
+    fun resolve(currentStatus: String, decision: Decision, retryStatus: String = "pending"): Result {
+        require(retryStatus in listOf("pending", "queued")) { "Unsupported retry status" }
         require(currentStatus == STATUS) { "Only needs_reconciliation items can be resolved" }
         require(decision.actor.isNotBlank()) { "A manager identity is required" }
         require(decision.evidence.isNotBlank()) { "A verification note or evidence reference is required" }
@@ -29,7 +30,7 @@ internal object ScheduleReconciliationPolicy {
             Action.MARK_FAILED -> Result("failed", "schedule.reconciliation.failed")
             Action.RETRY -> {
                 require(decision.retryConfirmed) { "Retry requires explicit manager confirmation" }
-                Result("pending", "schedule.reconciliation.retry_authorized")
+                Result(retryStatus, "schedule.reconciliation.retry_authorized")
             }
         }
     }
