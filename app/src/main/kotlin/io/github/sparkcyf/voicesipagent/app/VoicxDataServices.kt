@@ -80,7 +80,7 @@ internal object CustomerSuppressionPolicy {
         globallyOptedOut || memberStatus in listOf("admin", "opted_out", "paused")
 }
 
-internal class LocalDatabase(context: Context) : SQLiteOpenHelper(context, "voicx_local.db", null, 3) {
+internal class LocalDatabase(context: Context) : SQLiteOpenHelper(context, "voicx_local.db", null, 4) {
     private val databaseFile = context.getDatabasePath("voicx_local.db")
     override fun onConfigure(db: SQLiteDatabase) {
         super.onConfigure(db)
@@ -109,6 +109,7 @@ internal class LocalDatabase(context: Context) : SQLiteOpenHelper(context, "voic
             backfillOperationalColumns(db)
             createOperationalIndexes(db)
         }
+        if (oldVersion < 4) createCustomerPageIndex(db)
     }
 
     private fun createOperationalIndexes(db: SQLiteDatabase) {
@@ -117,6 +118,11 @@ internal class LocalDatabase(context: Context) : SQLiteOpenHelper(context, "voic
         db.execSQL("CREATE INDEX IF NOT EXISTS documents_phone_idx ON documents(collection, phone, created_at)")
         db.execSQL("DELETE FROM documents WHERE idempotency_key IS NOT NULL AND idempotency_key <> '' AND rowid NOT IN (SELECT MIN(rowid) FROM documents WHERE idempotency_key IS NOT NULL AND idempotency_key <> '' GROUP BY collection, idempotency_key)")
         db.execSQL("CREATE UNIQUE INDEX IF NOT EXISTS documents_idempotency_idx ON documents(collection, idempotency_key) WHERE idempotency_key IS NOT NULL AND idempotency_key <> ''")
+        createCustomerPageIndex(db)
+    }
+
+    private fun createCustomerPageIndex(db: SQLiteDatabase) {
+        db.execSQL("CREATE INDEX IF NOT EXISTS documents_customer_page_idx ON documents(collection, created_at DESC, id ASC)")
     }
 
     private fun backfillOperationalColumns(db: SQLiteDatabase) {
@@ -252,6 +258,19 @@ internal class LocalDatabase(context: Context) : SQLiteOpenHelper(context, "voic
         }
         return out
     }
+
+    @Synchronized fun allPage(collection: String, limit: Int, offset: Int): List<LocalDocument> {
+        val safeLimit = limit.coerceIn(1, 100)
+        val safeOffset = offset.coerceAtLeast(0)
+        val out = mutableListOf<LocalDocument>()
+        readableDatabase.query(
+            "documents", arrayOf("id", "payload"), "collection=?", arrayOf(collection),
+            null, null, "created_at DESC, id ASC", "$safeLimit OFFSET $safeOffset"
+        ).use { cursor ->
+            while (cursor.moveToNext()) out += LocalDocument(cursor.getString(0), JSONObject(cursor.getString(1)))
+        }
+        return out
+    }
 }
 
 internal data class LocalDocument(val id: String, val data: JSONObject) {
@@ -350,6 +369,9 @@ internal class VoicxCustomerRepository(private val store: VoicxFirebaseStore) {
     }
 
     fun findById(id: String): VoicxCustomer? = if (id.isBlank()) null else read("customers", id)?.let(::from)
+    fun listCustomers(limit: Int = 20, offset: Int = 0): List<VoicxCustomer> =
+        db.allPage("customers", limit, offset).mapNotNull(::from)
+    fun customerCount(): Long = db.count("customers")
     fun findByPhone(phone: String): VoicxCustomer? = query("customers") { it.text("phone") == phone.trim() }.firstOrNull()?.let(::from)
     fun search(q: String, limit: Int = 20): List<VoicxCustomer> { val s = q.trim().lowercase(); return query("customers").mapNotNull(::from).filter { s.isBlank() || listOf(it.phone, it.name, it.company).any { v -> v.lowercase().contains(s) } }.take(limit.coerceIn(1, 50)) }
     fun smsSequenceCustomers(targetGroup: String): List<VoicxCustomer> {
@@ -754,7 +776,7 @@ internal class VoicxCustomerRepository(private val store: VoicxFirebaseStore) {
 
     private fun enqueueNextCallInTransaction(current: LocalDocument) {
         val recurrence = current.text("recurrence")
-        val nextAt = ScheduleCommandParser.nextOccurrence(current.long("runAt"), recurrence) ?: return
+        val nextAt = ScheduleCommandParser.nextOccurrenceAfter(current.long("runAt"), recurrence, System.currentTimeMillis()) ?: return
         val until = current.long("recurrenceUntil")
         if (until > 0L && nextAt > until) return
         val series = current.text("recurrenceSeriesId").ifBlank { current.id }
@@ -771,7 +793,7 @@ internal class VoicxCustomerRepository(private val store: VoicxFirebaseStore) {
 
     private fun enqueueNextSmsInTransaction(current: LocalDocument) {
         val recurrence = current.text("recurrence")
-        val nextAt = ScheduleCommandParser.nextOccurrence(current.long("runAt"), recurrence) ?: return
+        val nextAt = ScheduleCommandParser.nextOccurrenceAfter(current.long("runAt"), recurrence, System.currentTimeMillis()) ?: return
         val until = current.long("recurrenceUntil")
         if (until > 0L && nextAt > until) return
         val series = current.text("recurrenceSeriesId").ifBlank { current.id }

@@ -35,6 +35,20 @@ class CommandParserTest {
         )
     }
 
+    @Test fun recurringScheduleKeysIncludeTheRepeatAndEndTime() {
+        val oneTime = ScheduleCommandParser.manualCallKey("c1", "+967700000000", 1_700_000_000_000L, "note")
+        val weekly = ScheduleCommandParser.manualCallKey("c1", "+967700000000", 1_700_000_000_000L, "note", "weekly")
+        val boundedWeekly = ScheduleCommandParser.manualCallKey("c1", "+967700000000", 1_700_000_000_000L, "note", "weekly", 1_800_000_000_000L)
+        assertEquals(false, oneTime == weekly)
+        assertEquals(false, weekly == boundedWeekly)
+    }
+
+    @Test fun epochParserConvertsSecondsWithoutRequiringFutureTime() {
+        assertEquals(1_700_000_000_000L, ScheduleCommandParser.parseEpochMillis("1700000000"))
+        assertEquals(1_700_000_000_000L, ScheduleCommandParser.parseEpochMillis("1700000000000"))
+        assertEquals(null, ScheduleCommandParser.parseEpochMillis("tomorrow"))
+    }
+
     @Test fun recurrenceAcceptsOnceDailyWeeklyAndMonthly() {
         assertEquals("none", ScheduleCommandParser.recurrence("مرة واحدة"))
         assertEquals("daily", ScheduleCommandParser.recurrence("يومي"))
@@ -46,10 +60,23 @@ class CommandParserTest {
         assertEquals(null, ScheduleCommandParser.recurrence("every two weeks"))
     }
 
+    @Test fun recurrenceDescriptionShowsWhetherTheSeriesHasAnEnd() {
+        val until = 1_800_000_000_000L
+        assertEquals("أسبوعي حتى ${ScheduleCommandParser.displayTime(until)}", ScheduleCommandParser.recurrenceDescription("weekly", until))
+        assertEquals("شهري حتى الإلغاء", ScheduleCommandParser.recurrenceDescription("monthly", null))
+        assertEquals("مرة واحدة", ScheduleCommandParser.recurrenceDescription("none", null))
+    }
+
     @Test fun recurrenceNextOccurrenceUsesExpectedIntervals() {
         val start = 1_700_000_000_000L
         assertEquals(start + 24L * 60 * 60 * 1000, ScheduleCommandParser.nextOccurrence(start, "daily"))
         assertEquals(start + 7L * 24 * 60 * 60 * 1000, ScheduleCommandParser.nextOccurrence(start, "weekly"))
         assertEquals(null, ScheduleCommandParser.nextOccurrence(start, "once"))
+    }
+
+    @Test fun recurrenceSkipsMissedOccurrencesInsteadOfCatchingUpInABurst() {
+        val start = 1_700_000_000_000L
+        val day = 24L * 60 * 60 * 1000
+        assertEquals(start + 4 * day, ScheduleCommandParser.nextOccurrenceAfter(start, "daily", start + 3 * day))
     }
 }

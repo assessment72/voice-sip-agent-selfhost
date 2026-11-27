@@ -350,7 +350,7 @@ class GatewayService : Service() {
                         val reply = try {
                             when (command) {
                                 "/start", "/help", "/commands" ->
-                                    "Voicx Control جاهز. افتح القائمة عبر /menu أو /panel.\n\nالحالة: /status أو /health\nالتشغيل التلقائي: /automation_status؛ يعرض آخر فحص والموعد القادم وحالات الانتظار والمراجعة\nقاعدة البيانات: /db أو /database\nالعملاء: /customers أو /find نص؛ سيظهر لكل عميل زر اتصال مجدول وزر SMS مجدول\nإضافة عميل: /add_customer رقم | اسم | وظيفة | شركة | تعليمات\nجدولة اتصال: /schedule أو /schedule_add customerId | رقم | Unix ms/seconds | ملاحظة\nتعديل اتصال: /schedule_edit ID | Unix ms/seconds | ملاحظة\nجدولة SMS: /sms_schedule customerId | رقم | Unix ms/seconds | رسالة | ملاحظة\nتعديل SMS: /sms_schedule_edit ID | Unix ms/seconds | رسالة | ملاحظة\nالتكرار: من أزرار العميل اختر مرة واحدة أو يومي أو أسبوعي أو شهري؛ الموعد التالي يُنشأ تلقائياً بعد نجاح المهمة\nعرض الكل: /schedules أو /list_schedules (يعرض التكرار بوضوح)\nاتصالات مجدولة: /list_calls أو /schedule_list\nإلغاء اتصال: /cancel_schedule ID (يلغي السلسلة المستقبلية)\nإلغاء SMS: /cancel_sms ID (يلغي السلسلة المستقبلية)\nتسلسلات SMS: /sms_sequence رقم | YYYY-MM-DD HH:mm\nالحملات: /campaign_start اسم | YYYY-MM-DD HH:mm | المجموعة | call أو sms أو call_sms | قالب SMS\nالصيانة: /db_cleanup\nالمبيعات: /admin\nسجل المكالمات: /account\nتشغيل أو إيقاف البوابة: /enable أو /disable"
+                                    "Voicx Control جاهز. افتح القائمة عبر /menu أو /panel.\n\nالحالة: /status أو /health\nالتشغيل التلقائي: /automation_status؛ يعرض آخر فحص والموعد القادم وحالات الانتظار والمراجعة\nقاعدة البيانات: /db أو /database\nالعملاء: /customers [صفحة] أو /find نص؛ لكل عميل زرا اتصال وSMS، والتنقل بالصفحات\nإضافة عميل: /add_customer رقم | اسم | وظيفة | شركة | تعليمات\nجدولة اتصال: /schedule أو /schedule_add customerId | رقم | Unix ms/seconds | ملاحظة | تكرار اختياري | انتهاء Unix اختياري\nمثال متكرر: /schedule_add id | +967730000000 | 1800000000000 | متابعة | أسبوعي | 1805000000000\nتعديل اتصال: /schedule_edit ID | Unix ms/seconds | ملاحظة\nجدولة SMS: /sms_schedule customerId | رقم | Unix ms/seconds | رسالة | ملاحظة\nتعديل SMS: /sms_schedule_edit ID | Unix ms/seconds | رسالة | ملاحظة\nالتكرار: مرة واحدة أو يومي أو أسبوعي أو شهري؛ إذا لم تحدد الانتهاء يستمر حتى الإلغاء، والموعد التالي يُنشأ بعد نجاح المهمة\nعرض كل الجداول: /schedules أو /list_schedules (اتصالات وSMS)\nالاتصالات المجدولة فقط: /list_calls أو /schedule_list\nإلغاء اتصال: /cancel_schedule ID (يلغي السلسلة المستقبلية)\nإلغاء SMS: /cancel_sms ID (يلغي السلسلة المستقبلية)\nتسلسلات SMS: /sms_sequence رقم | YYYY-MM-DD HH:mm\nالحملات: /campaign_start اسم | YYYY-MM-DD HH:mm | المجموعة | call أو sms أو call_sms | قالب SMS\nالصيانة: /db_cleanup\nالمبيعات: /admin\nسجل المكالمات: /account\nتشغيل أو إيقاف البوابة: /enable أو /disable"
                                 "/automation_status", "/auto_status", "/scheduler_status" -> runtime.automaticSchedulingReport()
                                 "/status", "/health" -> {
                                     val h = GatewayRuntime.get(this@GatewayService).health.value
@@ -367,9 +367,13 @@ class GatewayService : Service() {
                                     "جارٍ تنفيذ صيانة قاعدة البيانات؛ ستصل النتيجة بعد الانتهاء."
                                 }
                                 "/db_customers", "/customers" -> {
-                                    val customers = runtime.localDatabaseCustomerOptions()
-                                    scope.launch(Dispatchers.IO) { runCatching { client.sendMessage(update.chatId, "العملاء:\n${customers.joinToString("\n") { "${it.id} | ${it.name} | ${it.phone} | ${it.company}" }.ifBlank { "لا يوجد عملاء" }.take(3600)}", customerButtons(customers)) } }
-                                    "جارٍ تجهيز خيارات العملاء من SQLite المحلية."
+                                    val page = if (argument.isBlank()) 1 else argument.toIntOrNull()
+                                    if (page == null || page < 1) "الاستخدام: /customers [رقم الصفحة]"
+                                    else {
+                                        val listing = customerPageReply(runtime, page)
+                                        scope.launch(Dispatchers.IO) { runCatching { client.sendMessage(update.chatId, listing.text, listing.buttons) } }
+                                        "جارٍ تجهيز صفحة العملاء $page من SQLite المحلية."
+                                    }
                                 }
                                 "/db_schedules", "/schedules", "/list_schedules" -> { runtime.listAllSchedules { result -> scope.launch(Dispatchers.IO) { runCatching { client.sendMessage(update.chatId, "المواعيد المجدولة:\n${result.take(3900)}") } } }; "جارٍ قراءة الجداول من SQLite المحلية." }
                                 "/db_export" -> "التصدير متاح من التطبيق عبر قسم قاعدة البيانات المحلية. لا أرسل ملف SQLite تلقائياً عبر Telegram لحماية بيانات العملاء؛ استخدم زر التصدير ثم شارك الملف يدوياً عند الحاجة."
@@ -383,10 +387,15 @@ class GatewayService : Service() {
                                     else { runtime.saveCustomer(VoicxCustomer(phone = fields[0], name = fields[1], role = fields[2], company = fields[3], instructions = fields.drop(4).joinToString(" | "))) { result -> scope.launch(Dispatchers.IO) { runCatching { client.sendMessage(update.chatId, "نتيجة حفظ العميل: $result") } } }; "تم استلام بيانات العميل للحفظ." }
                                 }
                                 "/schedule_add", "/schedule" -> {
-                                    val fields = parsedCommand.fields(); val at = ScheduleCommandParser.parseTime(fields.getOrNull(2))
-                                    if (fields.size < 3 || fields[0].isBlank() || fields[1].isBlank() || at == null)
-                                        "الاستخدام: /schedule customerId | رقم | وقت Unix ms (أو ثوانٍ) | ملاحظة\nيجب أن يكون الوقت في المستقبل وأن يطابق رقم العميل المحفوظ."
-                                    else { runtime.saveManualCallSchedule(fields[0], fields[1], at, fields.getOrElse(3) { "" }) { result -> scope.launch(Dispatchers.IO) { runCatching { client.sendMessage(update.chatId, result) } } }; "جارٍ التحقق من العميل وحفظ موعد الاتصال." }
+                                    val fields = parsedCommand.fields(limit = 6)
+                                    val at = ScheduleCommandParser.parseTime(fields.getOrNull(2))
+                                    val recurrenceText = fields.getOrNull(4).orEmpty()
+                                    val recurrence = if (recurrenceText.isBlank()) "none" else ScheduleCommandParser.recurrence(recurrenceText)
+                                    val untilText = fields.getOrNull(5).orEmpty()
+                                    val until = if (untilText.isBlank()) null else ScheduleCommandParser.parseTime(untilText)
+                                    if (fields.size < 3 || fields[0].isBlank() || fields[1].isBlank() || at == null || recurrence == null || (untilText.isNotBlank() && until == null))
+                                        "الاستخدام: /schedule customerId | رقم | وقت Unix ms/ثوانٍ | ملاحظة | تكرار اختياري | انتهاء Unix اختياري\nالتكرار: مرة أو يومي أو أسبوعي أو شهري. تاريخ الانتهاء بعد أول موعد؛ إن تركته يستمر التكرار حتى الإلغاء."
+                                    else { runtime.saveManualCallSchedule(fields[0], fields[1], at, fields.getOrElse(3) { "" }, recurrence, until) { result -> scope.launch(Dispatchers.IO) { runCatching { client.sendMessage(update.chatId, result) } } }; "جارٍ التحقق من العميل وحفظ موعد الاتصال والتكرار." }
                                 }
                                 "/schedule_list", "/list_calls" -> { runtime.listCallSchedules { result -> scope.launch(Dispatchers.IO) { runCatching { client.sendMessage(update.chatId, result.take(3900)) } } }; "جارٍ تحميل مواعيد الاتصالات." }
                                 "/schedule_edit", "/edit_schedule", "/reschedule" -> {
@@ -621,6 +630,30 @@ class GatewayService : Service() {
         ))
     }
 
+    private fun customerPageReply(runtime: GatewayRuntime, requestedPage: Int): AdminReply {
+        val pageSize = 20
+        val count = runtime.localDatabaseCustomerCount()
+        val pageCount = (((count + pageSize - 1) / pageSize).toInt()).coerceAtLeast(1)
+        val page = requestedPage.coerceIn(1, pageCount)
+        val customers = runtime.localDatabaseCustomerOptions(pageSize, (page - 1) * pageSize)
+        val entries = customers.joinToString("\n") { "${it.id} | ${it.name} | ${it.phone} | ${it.company}" }
+            .ifBlank { "لا يوجد عملاء" }
+        val buttons = customerButtons(customers).toMutableList()
+        if (page > 1 || page < pageCount) {
+            val navigation = mutableListOf<AdminButton>()
+            if (page > 1) navigation += AdminButton("السابق", "voicx:customers_page:${page - 1}")
+            if (page < pageCount) navigation += AdminButton("التالي", "voicx:customers_page:${page + 1}")
+            buttons += navigation
+        }
+        buttons += listOf(AdminButton("بحث", "voicx:flow:search"), AdminButton("إضافة", "voicx:flow:add_customer"))
+        buttons += listOf(AdminButton("القائمة الرئيسية", "voicx:home"))
+        val pageHint = if (page < pageCount) "استخدم /customers ${page + 1} أو زر التالي للمتابعة." else "هذه آخر صفحة للعملاء."
+        return AdminReply(
+            "👥 العملاء — صفحة $page من $pageCount (الإجمالي: $count)\n${entries.take(3000)}\n\nاختر لكل عميل اتصالًا أو SMS مجدولًا. $pageHint",
+            buttons,
+        )
+    }
+
     private fun handleVoicxPanel(action: String, runtime: GatewayRuntime, chatId: Long, client: TelegramBotClient): AdminReply {
         if (action == "voicx:home") panelSessions.remove(chatId)
         val home = listOf(
@@ -635,6 +668,11 @@ class GatewayService : Service() {
         if (action == "voicx:cancel_flow") {
             panelSessions.remove(chatId)
             return AdminReply("تم الإلغاء. لم يُنفذ أي إجراء.", home)
+        }
+        if (action.startsWith("voicx:customers_page:")) {
+            val page = action.substringAfterLast(':').toIntOrNull()
+                ?: return AdminReply("رقم صفحة العملاء غير صالح.", home)
+            return customerPageReply(runtime, page)
         }
         if (action.startsWith("voicx:customer:")) {
             val parts = action.split(":")
@@ -737,8 +775,7 @@ class GatewayService : Service() {
             "voicx:confirm_gateway_off" -> askConfirmation(chatId, "إيقاف التحويل؟ لن يُقطع اتصال نشط؛ سيسري الإيقاف وفق منطق التطبيق الحالي.", PanelAction.ToggleGateway(false))
             "voicx:db" -> AdminReply("قاعدة البيانات المحلية SQLite\n${runtime.localDatabaseSummary()}\n\nحالة Firebase: ${runtime.firebaseStatus()}\nالأسرار خارج ملف SQLite.", listOf(listOf(AdminButton("العملاء", "voicx:customers"), AdminButton("الجدولة", "voicx:schedules")), back.first()))
             "voicx:customers" -> {
-                val customers = runtime.localDatabaseCustomerOptions()
-                AdminReply("👥 <b>العملاء</b>\n${customers.joinToString("\n") { "${it.id} | ${it.name} | ${it.phone} | ${it.company}" }.ifBlank { "لا يوجد عملاء" }.take(2600)}\n\nاختر لكل عميل: اتصال مجدول أو SMS مجدول.", customerButtons(customers) + listOf(listOf(AdminButton("بحث", "voicx:flow:search"), AdminButton("إضافة", "voicx:flow:add_customer")), back.first()))
+                customerPageReply(runtime, 1)
             }
             "voicx:schedules" -> AdminReply("📅 <b>الجدولة</b>\n${runtime.localDatabaseSchedules().take(2700)}", listOf(listOf(AdminButton("إضافة اتصال", "voicx:flow:schedule_call"), AdminButton("إضافة SMS", "voicx:flow:sms_schedule")), back.first()))
             "voicx:sip" -> { val sip = runtime.health.value.sip; AdminReply("📡 <b>حالة SIP</b>\n${if (sip.ready) "جاهز" else "غير جاهز"}\n${sip.detail.take(700)}", back) }

@@ -1097,15 +1097,16 @@ class GatewayRuntime private constructor(context: Context) {
         }.getOrElse { "فشلت صيانة قاعدة البيانات: ${it.message ?: it.javaClass.simpleName}" })
     }
     fun localDatabaseCustomers(): String = runCatching {
-        customers.search("", 20).joinToString("\n") { "${it.id} | ${it.name} | ${it.phone} | ${it.company}" }
+        customers.listCustomers(20).joinToString("\n") { "${it.id} | ${it.name} | ${it.phone} | ${it.company}" }
             .ifBlank { "لا يوجد عملاء" }
     }.getOrElse { "تعذر قراءة العملاء: ${it.javaClass.simpleName}" }
-    fun localDatabaseCustomerOptions(limit: Int = 20): List<VoicxCustomer> =
-        runCatching { customers.search("", limit.coerceIn(1, 50)) }.getOrDefault(emptyList())
+    fun localDatabaseCustomerOptions(limit: Int = 20, offset: Int = 0): List<VoicxCustomer> =
+        runCatching { customers.listCustomers(limit.coerceIn(1, 100), offset.coerceAtLeast(0)) }.getOrDefault(emptyList())
+    fun localDatabaseCustomerCount(): Long = runCatching { customers.customerCount() }.getOrDefault(0L)
     fun localCustomer(id: String): VoicxCustomer? = runCatching { customers.findById(id) }.getOrNull()
     fun localDatabaseSchedules(): String = runCatching {
-        val calls = customers.listSchedules(10).joinToString("\n") { "اتصال | ${it.phone} | ${it.runAt} | ${it.status} | التكرار: ${ScheduleCommandParser.recurrenceLabel(it.recurrence)}" }
-        val sms = customers.listSmsSchedules(10).joinToString("\n") { "SMS | ${it.phone} | ${it.runAt} | ${it.status} | التكرار: ${ScheduleCommandParser.recurrenceLabel(it.recurrence)}" }
+        val calls = customers.listSchedules(10).joinToString("\n") { "اتصال | ${it.phone} | ${it.runAt} | ${it.status} | ${ScheduleCommandParser.recurrenceDescription(it.recurrence, it.recurrenceUntil)}" }
+        val sms = customers.listSmsSchedules(10).joinToString("\n") { "SMS | ${it.phone} | ${it.runAt} | ${it.status} | ${ScheduleCommandParser.recurrenceDescription(it.recurrence, it.recurrenceUntil)}" }
         listOf(calls, sms).filter(String::isNotBlank).joinToString("\n").ifBlank { "لا توجد جدولة" }
     }.getOrElse { "تعذر قراءة الجدولة: ${it.javaClass.simpleName}" }
     fun exportLocalDatabase(uri: Uri, callback: (String) -> Unit = {}) = worker.execute {
@@ -1225,19 +1226,32 @@ class GatewayRuntime private constructor(context: Context) {
     }
     fun searchCustomers(query: String, callback: (String) -> Unit) = worker.execute { callback(runCatching { customers.search(query).joinToString("\n") { "${it.id} | ${it.name} | ${it.phone} | ${it.company}" } }.getOrElse { "خطأ البحث: ${it.javaClass.simpleName}" }.ifBlank { "لا توجد نتائج" }) }
     fun saveCallSchedule(schedule: CallSchedule, callback: (String) -> Unit) = worker.execute { callback(runCatching { customers.saveSchedule(schedule) }.getOrElse { "خطأ جدولة الاتصال: ${it.javaClass.simpleName}" }) }
-    fun saveManualCallSchedule(customerId: String, phone: String, runAt: Long, note: String, callback: (String) -> Unit) = worker.execute {
+    fun saveManualCallSchedule(
+        customerId: String,
+        phone: String,
+        runAt: Long,
+        note: String,
+        recurrence: String = "none",
+        recurrenceUntil: Long? = null,
+        callback: (String) -> Unit,
+    ) = worker.execute {
         callback(runCatching {
             require(customerId.isNotBlank()) { "معرّف العميل مطلوب" }
             require(runAt > System.currentTimeMillis()) { "وقت الاتصال يجب أن يكون في المستقبل" }
+            val repeat = ScheduleCommandParser.recurrence(recurrence) ?: error("التكرار غير معروف؛ استخدم مرة أو يومي أو أسبوعي أو شهري")
+            require(recurrenceUntil == null || repeat != "none") { "حدد تكراراً قبل إدخال تاريخ الانتهاء" }
+            require(recurrenceUntil == null || recurrenceUntil > runAt) { "تاريخ الانتهاء يجب أن يكون بعد أول موعد" }
             val normalized = PhoneNumberNormalizer.normalizeYemen(phone)
             val customer = customers.findById(customerId) ?: error("العميل غير موجود: $customerId")
             require(customer.phone == normalized) { "الرقم لا يطابق رقم العميل في قاعدة البيانات" }
             val id = customers.saveSchedule(CallSchedule(
                 customerId = customer.id.orEmpty(), phone = normalized, runAt = runAt,
                 note = note.trim().take(1000),
-                idempotencyKey = ScheduleCommandParser.manualCallKey(customer.id.orEmpty(), normalized, runAt, note),
+                recurrence = repeat, recurrenceUntil = recurrenceUntil,
+                idempotencyKey = ScheduleCommandParser.manualCallKey(customer.id.orEmpty(), normalized, runAt, note, repeat, recurrenceUntil),
             ))
-            "تم حفظ موعد الاتصال $id للعميل ${customer.name.ifBlank { customer.id.orEmpty() }} في ${ScheduleCommandParser.displayTime(runAt)}. سيُنفذ تلقائياً عند تشغيل البوابة."
+            val recurrenceText = if (repeat == "none") "مرة واحدة" else "${ScheduleCommandParser.recurrenceLabel(repeat)}${recurrenceUntil?.let { " حتى ${ScheduleCommandParser.displayTime(it)}" } ?: " حتى الإلغاء"}"
+            "تم حفظ موعد الاتصال $id للعميل ${customer.name.ifBlank { customer.id.orEmpty() }} في ${ScheduleCommandParser.displayTime(runAt)}. التكرار: $recurrenceText. سيُنفذ تلقائياً عند تشغيل البوابة."
         }.getOrElse { "تعذر حفظ موعد الاتصال: ${it.message ?: it.javaClass.simpleName}" })
     }
     fun cancelCallSchedule(id: String, callback: (Boolean) -> Unit) = worker.execute { callback(runCatching { customers.cancelCallSchedule(id.trim()) }.getOrDefault(false)) }
@@ -1277,10 +1291,10 @@ class GatewayRuntime private constructor(context: Context) {
         "⚠️ مهام تحتاج مراجعة بشرية (${items.size} معروضة):\n\n$lines\n\nهذه القائمة للعرض فقط. لا تُعاد أي مهمة تلقائياً عند عودة الاتصال."
     }.getOrElse { "تعذر قراءة مهام المصالحة: ${it.javaClass.simpleName}" }
     fun salesAdminLeadsReport(): String = runCatching { customers.salesAdminLeadsReport() }.getOrElse { "تعذر تحميل طلبات الإدارة: ${it.javaClass.simpleName}" }
-    fun listCallSchedules(callback: (String) -> Unit) = worker.execute { callback(runCatching { customers.listSchedules().joinToString("\n") { "${it.id} | ${it.phone} | ${ScheduleCommandParser.displayTime(it.runAt)} | ${it.status} | التكرار: ${ScheduleCommandParser.recurrenceLabel(it.recurrence)} | ${it.note}" } }.getOrElse { "خطأ قراءة الجدولة: ${it.message ?: it.javaClass.simpleName}" }.ifBlank { "لا توجد مواعيد" }) }
+    fun listCallSchedules(callback: (String) -> Unit) = worker.execute { callback(runCatching { customers.listSchedules().joinToString("\n") { "${it.id} | ${it.phone} | ${ScheduleCommandParser.displayTime(it.runAt)} | ${it.status} | التكرار: ${ScheduleCommandParser.recurrenceDescription(it.recurrence, it.recurrenceUntil)} | ${it.note}" } }.getOrElse { "خطأ قراءة الجدولة: ${it.message ?: it.javaClass.simpleName}" }.ifBlank { "لا توجد مواعيد" }) }
     fun listAllSchedules(callback: (String) -> Unit) = worker.execute { callback(runCatching {
-        val calls = customers.listSchedules(50).joinToString("\n") { "اتصال | ${it.id} | ${it.phone} | ${ScheduleCommandParser.displayTime(it.runAt)} | ${it.status} | التكرار: ${ScheduleCommandParser.recurrenceLabel(it.recurrence)} | ${it.note}" }
-        val sms = customers.listSmsSchedules(50).joinToString("\n") { "SMS | ${it.id} | ${it.phone} | ${ScheduleCommandParser.displayTime(it.runAt)} | ${it.status} | التكرار: ${ScheduleCommandParser.recurrenceLabel(it.recurrence)} | ${it.note} | ${it.message.take(80)}" }
+        val calls = customers.listSchedules(50).joinToString("\n") { "اتصال | ${it.id} | ${it.phone} | ${ScheduleCommandParser.displayTime(it.runAt)} | ${it.status} | التكرار: ${ScheduleCommandParser.recurrenceDescription(it.recurrence, it.recurrenceUntil)} | ${it.note}" }
+        val sms = customers.listSmsSchedules(50).joinToString("\n") { "SMS | ${it.id} | ${it.phone} | ${ScheduleCommandParser.displayTime(it.runAt)} | ${it.status} | التكرار: ${ScheduleCommandParser.recurrenceDescription(it.recurrence, it.recurrenceUntil)} | ${it.note} | ${it.message.take(80)}" }
         listOf(calls, sms).filter(String::isNotBlank).joinToString("\n").ifBlank { "لا توجد مواعيد مجدولة" }
     }.getOrElse { "خطأ قراءة الجدولة: ${it.message ?: it.javaClass.simpleName}" }) }
     fun saveSmsSchedule(schedule: SmsSchedule, callback: (String) -> Unit) = worker.execute { callback(runCatching { customers.saveSmsSchedule(schedule) }.getOrElse { "خطأ جدولة SMS: ${it.javaClass.simpleName}" }) }
@@ -1291,7 +1305,7 @@ class GatewayRuntime private constructor(context: Context) {
             onFailure = { "تعذر تعديل موعد SMS: ${it.message ?: it.javaClass.simpleName}" },
         ))
     }
-    fun listSmsSchedules(callback: (String) -> Unit) = worker.execute { callback(runCatching { customers.listSmsSchedules().joinToString("\n") { "${it.id} | ${it.phone} | ${ScheduleCommandParser.displayTime(it.runAt)} | ${it.status} | التكرار: ${ScheduleCommandParser.recurrenceLabel(it.recurrence)} | ${it.note} | ${it.message.take(80)}" } }.getOrElse { "خطأ قراءة جدولة SMS: ${it.message ?: it.javaClass.simpleName}" }.ifBlank { "لا توجد رسائل مجدولة" }) }
+    fun listSmsSchedules(callback: (String) -> Unit) = worker.execute { callback(runCatching { customers.listSmsSchedules().joinToString("\n") { "${it.id} | ${it.phone} | ${ScheduleCommandParser.displayTime(it.runAt)} | ${it.status} | التكرار: ${ScheduleCommandParser.recurrenceDescription(it.recurrence, it.recurrenceUntil)} | ${it.note} | ${it.message.take(80)}" } }.getOrElse { "خطأ قراءة جدولة SMS: ${it.message ?: it.javaClass.simpleName}" }.ifBlank { "لا توجد رسائل مجدولة" }) }
     fun sendSms(phone: String, message: String, callback: (String) -> Unit) = worker.execute {
         callback(runCatching { PhoneNumberNormalizer.normalizeYemen(phone) }.fold({ normalized ->
             if (customers.isPhoneOptedOut(normalized)) "مرفوض: العميل ألغى الاشتراك وطلب عدم التواصل."
