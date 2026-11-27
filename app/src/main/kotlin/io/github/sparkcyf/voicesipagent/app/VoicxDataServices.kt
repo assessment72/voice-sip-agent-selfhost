@@ -267,7 +267,25 @@ internal class VoicxCustomerRepository(private val store: VoicxFirebaseStore) {
             candidate.id to mapper(read(name, candidate.id) ?: candidate)
         }
 
-    fun campaignCustomerBlocked(id: String?): Boolean = id?.takeIf(String::isNotBlank)?.let { read("campaign_customers", it)?.text("status") in listOf("admin", "opted_out", "paused") } ?: false
+    fun isPhoneOptedOut(phone: String): Boolean {
+        val normalized = runCatching { PhoneNumberNormalizer.normalizeYemen(phone) }.getOrNull() ?: return false
+        return read("contact_suppressions", normalized)?.text("reason") == "opted_out"
+    }
+
+    private fun suppressPhone(phone: String, reason: String = "opted_out") {
+        val normalized = PhoneNumberNormalizer.normalizeYemen(phone)
+        save("contact_suppressions", normalized, mapOf(
+            "phone" to normalized,
+            "reason" to reason,
+            "updatedAt" to System.currentTimeMillis(),
+        ))
+    }
+
+    fun campaignCustomerBlocked(id: String?): Boolean = id?.takeIf(String::isNotBlank)?.let {
+        val member = read("campaign_customers", it) ?: return@let false
+        member.text("status") in listOf("admin", "opted_out", "paused") ||
+            isPhoneOptedOut(member.text("phone"))
+    } ?: false
     fun latestCampaignCustomer(phone: String): String? = query("campaign_customers") { it.text("phone") == phone.trim() }.maxByOrNull { it.long("createdAt") }?.id
     fun saveCallReport(report: AiCallReport, scheduleId: String? = null, campaignCustomerId: String? = null) {
         val campaignId = campaignCustomerId?.let { read("campaign_customers", it)?.text("campaignId") }
@@ -308,7 +326,8 @@ internal class VoicxCustomerRepository(private val store: VoicxFirebaseStore) {
             "createdAt" to c.createdAt, "updatedAt" to c.updatedAt,
         ))
         val targets = query("customers").mapNotNull(::from).filter {
-            c.targetGroup.isBlank() || c.targetGroup.equals("all", true) || it.groups.contains(c.targetGroup.trim())
+            !isPhoneOptedOut(it.phone) &&
+                (c.targetGroup.isBlank() || c.targetGroup.equals("all", true) || it.groups.contains(c.targetGroup.trim()))
         }
         targets.forEachIndexed { i, customer ->
             save("campaign_customers", "$id-$i", mapOf(
@@ -351,7 +370,19 @@ internal class VoicxCustomerRepository(private val store: VoicxFirebaseStore) {
             "status" to status, "lastOutcome" to outcome, "followUpNote" to note.take(1000),
             "updatedAt" to System.currentTimeMillis(),
         ))
-        if (status in listOf("admin", "opted_out", "paused")) {
+        if (outcome == "opted_out") {
+            val phone = read("campaign_customers", id)?.text("phone").orEmpty()
+            if (phone.isNotBlank()) {
+                val normalized = PhoneNumberNormalizer.normalizeYemen(phone)
+                suppressPhone(normalized)
+                query("campaign_customers") { it.text("phone") == normalized && it.text("status") !in listOf("admin", "opted_out") }
+                    .forEach { save("campaign_customers", it.id, mapOf("status" to "opted_out", "lastOutcome" to "opted_out", "updatedAt" to System.currentTimeMillis())) }
+                query("call_schedules") { it.text("phone") == normalized && it.text("status") in listOf("pending", "running") }
+                    .forEach { updateScheduleStatus(it.id, "cancelled", "contact opted out") }
+                query("sms_schedules") { it.text("phone") == normalized && it.text("status") in listOf("queued", "running") }
+                    .forEach { updateSmsScheduleStatus(it.id, "cancelled", "contact opted out") }
+            }
+        } else if (status in listOf("admin", "paused")) {
             query("call_schedules") {
                 it.text("campaignCustomerId") == id && it.text("status") in listOf("pending", "running")
             }.forEach { updateScheduleStatus(it.id, "cancelled", "campaign customer is blocked") }
