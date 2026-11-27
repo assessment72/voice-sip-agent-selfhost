@@ -18,6 +18,7 @@ import org.bson.BsonRegularExpression
 import org.bson.conversions.Bson
 import org.bson.types.ObjectId
 import java.util.Date
+import java.util.UUID
 import java.util.concurrent.TimeUnit
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
@@ -99,14 +100,19 @@ internal class VoicxMongoStore {
     fun interestedCustomers(): MongoCollection<Document> = requireDatabase().getCollection("interested_customers")
 
     private fun ensureIndexes() {
+        // Older builds persisted an empty idempotencyKey on every row. Remove that
+        // sentinel before creating the partial unique indexes; an empty key is not a key.
+        schedules().updateMany(Filters.eq("idempotencyKey", ""), Updates.unset("idempotencyKey"))
+        smsSchedules().updateMany(Filters.eq("idempotencyKey", ""), Updates.unset("idempotencyKey"))
         customers().createIndex(Document("createdAt", 1).append("_id", 1))
         schedules().createIndex(Document("status", 1).append("runAt", 1))
-        schedules().createIndex(Document("idempotencyKey", 1))
+        schedules().createIndex(Document("idempotencyKey", 1), com.mongodb.client.model.IndexOptions().unique(true).partialFilterExpression(Filters.exists("idempotencyKey", true)))
         smsSchedules().createIndex(Document("status", 1).append("runAt", 1))
-        smsSchedules().createIndex(Document("idempotencyKey", 1))
+        smsSchedules().createIndex(Document("idempotencyKey", 1), com.mongodb.client.model.IndexOptions().unique(true).partialFilterExpression(Filters.exists("idempotencyKey", true)))
         campaigns().createIndex(Document("status", 1).append("startAt", 1))
         campaignCustomers().createIndex(Document("campaignId", 1).append("status", 1).append("sequence", 1))
         campaignCustomers().createIndex(Document("phone", 1).append("createdAt", -1))
+        campaignCustomers().createIndex(Document("campaignId", 1).append("customerId", 1), com.mongodb.client.model.IndexOptions().unique(true))
         interestedCustomers().createIndex(Document("campaignCustomerId", 1), com.mongodb.client.model.IndexOptions().unique(true))
     }
 
@@ -273,76 +279,89 @@ internal class VoicxCustomerRepository(private val store: VoicxMongoStore) {
     fun saveSchedule(schedule: CallSchedule): String {
         require(schedule.phone.matches(Regex("\\+?[0-9]{7,20}"))) { "Invalid phone number" }
         require(schedule.runAt > 0L) { "Invalid schedule time" }
-        schedule.idempotencyKey?.takeIf { it.isNotBlank() }?.let { key ->
-            store.schedules().find(Filters.eq("idempotencyKey", key)).first()?.getObjectId("_id")?.let { return it.toHexString() }
-        }
+        require(schedule.status in setOf("pending", "running", "completed", "cancelled", "failed")) { "Invalid schedule status" }
         val id = schedule.id?.takeIf { ObjectId.isValid(it) }?.let(::ObjectId) ?: ObjectId()
-        store.schedules().replaceOne(Document("_id", id), Document("customerId", schedule.customerId)
-            .append("phone", schedule.phone).append("runAt", Date(schedule.runAt))
-            .append("status", schedule.status).append("note", schedule.note)
-            .append("campaignId", schedule.campaignId.orEmpty())
-            .append("campaignCustomerId", schedule.campaignCustomerId.orEmpty())
-            .append("idempotencyKey", schedule.idempotencyKey.orEmpty())
-            .append("attempts", schedule.attempts), com.mongodb.client.model.ReplaceOptions().upsert(true))
+        val doc = Document("_id", id).append("customerId", schedule.customerId.trim())
+            .append("phone", schedule.phone.trim()).append("runAt", Date(schedule.runAt))
+            .append("status", schedule.status).append("note", schedule.note.take(2000))
+            .append("campaignId", schedule.campaignId.orEmpty()).append("campaignCustomerId", schedule.campaignCustomerId.orEmpty())
+            .append("attempts", schedule.attempts.coerceAtLeast(0))
+        schedule.idempotencyKey?.trim()?.takeIf { it.isNotEmpty() }?.let { key ->
+            require(key.length <= 200) { "Invalid idempotency key" }
+            doc.append("idempotencyKey", key)
+            val existing = store.schedules().findOneAndUpdate(Filters.eq("idempotencyKey", key), Updates.combine(
+                Updates.setOnInsert("_id", id), Updates.setOnInsert("createdAt", Date()),
+                Updates.set("customerId", schedule.customerId.trim()), Updates.set("phone", schedule.phone.trim()),
+                Updates.set("runAt", Date(schedule.runAt)), Updates.set("note", schedule.note.take(2000)),
+                Updates.set("campaignId", schedule.campaignId.orEmpty()), Updates.set("campaignCustomerId", schedule.campaignCustomerId.orEmpty())
+            ), FindOneAndUpdateOptions().upsert(true).returnDocument(ReturnDocument.AFTER))
+            return existing?.getObjectId("_id")?.toHexString() ?: id.toHexString()
+        }
+        store.schedules().replaceOne(Filters.eq("_id", id), doc, com.mongodb.client.model.ReplaceOptions().upsert(true))
         return id.toHexString()
     }
     fun claimDueSchedule(now: Long = System.currentTimeMillis()): CallSchedule? {
-        store.schedules().updateMany(Filters.and(Filters.eq("status", "running"), Filters.lt("claimedAt", Date(now - 10 * 60 * 1000L))), Updates.combine(Updates.set("status", "pending"), Updates.unset("claimedAt")))
-        val doc = store.schedules().findOneAndUpdate(
-            Filters.and(
-                Filters.eq("status", "pending"),
-                Filters.lte("runAt", Date(now)),
-            ),
-            Updates.combine(Updates.set("status", "running"), Updates.set("claimedAt", Date(now)), Updates.inc("attempts", 1)),
-            FindOneAndUpdateOptions().sort(Document("runAt", 1)).returnDocument(ReturnDocument.AFTER),
-        ) ?: return null
+        val stale = Date(now - 10 * 60 * 1000L)
+        store.schedules().updateMany(Filters.and(Filters.eq("status", "running"), Filters.or(Filters.lt("claimedAt", stale), Filters.exists("claimedAt", false))),
+            Updates.combine(Updates.set("status", "pending"), Updates.unset("claimedAt"), Updates.unset("claimToken")))
+        val token = UUID.randomUUID().toString()
+        val doc = store.schedules().findOneAndUpdate(Filters.and(Filters.eq("status", "pending"), Filters.lte("runAt", Date(now))),
+            Updates.combine(Updates.set("status", "running"), Updates.set("claimedAt", Date(now)), Updates.set("claimToken", token), Updates.inc("attempts", 1)),
+            FindOneAndUpdateOptions().sort(Document("runAt", 1).append("_id", 1)).returnDocument(ReturnDocument.AFTER)) ?: return null
         return scheduleFrom(doc)
     }
-    fun updateScheduleStatus(id: String, status: String, error: String = "") {
-        if (!ObjectId.isValid(id)) return
-        val updates = mutableListOf<Bson>(Updates.set("status", status))
+    fun updateScheduleStatus(id: String, status: String, error: String = "", claimToken: String? = null) {
+        if (!ObjectId.isValid(id) || status !in setOf("pending", "running", "completed", "cancelled", "failed")) return
+        val filter = if (claimToken.isNullOrBlank()) Filters.eq("_id", ObjectId(id)) else Filters.and(Filters.eq("_id", ObjectId(id)), Filters.eq("claimToken", claimToken))
+        val updates = mutableListOf<Bson>(Updates.set("status", status), Updates.set("updatedAt", Date()))
         if (error.isBlank()) updates += Updates.unset("error") else updates += Updates.set("error", error.take(500))
-        updates += Updates.unset("claimedAt")
-        store.schedules().updateOne(Filters.eq("_id", ObjectId(id)), Updates.combine(updates))
+        updates += Updates.unset("claimedAt"); updates += Updates.unset("claimToken")
+        store.schedules().updateOne(filter, Updates.combine(updates))
     }
-    fun retrySchedule(id: String, now: Long, attempts: Int, error: String) {
+    fun retrySchedule(id: String, now: Long, attempts: Int, error: String, claimToken: String? = null) {
         if (!ObjectId.isValid(id)) return
+        val filter = if (claimToken.isNullOrBlank()) Filters.eq("_id", ObjectId(id)) else Filters.and(Filters.eq("_id", ObjectId(id)), Filters.eq("claimToken", claimToken))
         val terminal = attempts >= MAX_DELIVERY_ATTEMPTS
-        val updates = mutableListOf<Bson>(Updates.set("status", if (terminal) "failed" else "pending"))
-        if (terminal) updates += Updates.set("error", error.take(500))
-        else {
+        val updates = mutableListOf<Bson>(Updates.set("status", if (terminal) "failed" else "pending"), Updates.set("updatedAt", Date()))
+        if (terminal) updates += Updates.set("error", error.take(500)) else {
             val delay = RETRY_DELAYS_MS[(attempts - 1).coerceIn(0, RETRY_DELAYS_MS.lastIndex)]
-            updates += Updates.set("runAt", Date(now + delay))
-            updates += Updates.set("error", error.take(500))
+            updates += Updates.set("runAt", Date(now + delay)); updates += Updates.set("error", error.take(500))
         }
-        updates += Updates.unset("claimedAt")
-        store.schedules().updateOne(Filters.eq("_id", ObjectId(id)), Updates.combine(updates))
+        updates += Updates.unset("claimedAt"); updates += Updates.unset("claimToken")
+        store.schedules().updateOne(filter, Updates.combine(updates))
     }
     fun saveSmsSchedule(schedule: SmsSchedule): String {
         require(schedule.phone.matches(Regex("\\+?[0-9]{7,20}"))) { "Invalid phone number" }
         require(schedule.message.isNotBlank() && schedule.message.length <= MAX_SMS_LENGTH) { "Invalid SMS message" }
         require(schedule.runAt > 0L) { "Invalid schedule time" }
-        schedule.idempotencyKey?.takeIf { it.isNotBlank() }?.let { key ->
-            store.smsSchedules().find(Filters.eq("idempotencyKey", key)).first()?.getObjectId("_id")?.let { return it.toHexString() }
-        }
+        require(schedule.status in setOf("queued", "running", "sent", "cancelled", "failed")) { "Invalid SMS schedule status" }
         val id = schedule.id?.takeIf { ObjectId.isValid(it) }?.let(::ObjectId) ?: ObjectId()
-        store.smsSchedules().replaceOne(Document("_id", id), Document("customerId", schedule.customerId)
-            .append("phone", schedule.phone).append("runAt", Date(schedule.runAt))
-            .append("message", schedule.message).append("status", schedule.status)
-            .append("campaignId", schedule.campaignId.orEmpty()).append("note", schedule.note)
-            .append("campaignCustomerId", schedule.campaignCustomerId.orEmpty())
-            .append("idempotencyKey", schedule.idempotencyKey.orEmpty())
-            .append("attempts", schedule.attempts),
-            com.mongodb.client.model.ReplaceOptions().upsert(true))
+        val key = schedule.idempotencyKey?.trim()?.takeIf { it.isNotEmpty() }
+        key?.let { require(it.length <= 200) { "Invalid idempotency key" } }
+        val doc = Document("_id", id).append("customerId", schedule.customerId.trim()).append("phone", schedule.phone.trim())
+            .append("runAt", Date(schedule.runAt)).append("message", schedule.message).append("status", schedule.status)
+            .append("campaignId", schedule.campaignId.orEmpty()).append("note", schedule.note.take(2000))
+            .append("campaignCustomerId", schedule.campaignCustomerId.orEmpty()).append("attempts", schedule.attempts.coerceAtLeast(0))
+        if (key != null) doc.append("idempotencyKey", key)
+        if (key != null) {
+            val existing = store.smsSchedules().findOneAndUpdate(Filters.eq("idempotencyKey", key), Updates.combine(
+                Updates.setOnInsert("_id", id), Updates.setOnInsert("createdAt", Date()), Updates.set("customerId", schedule.customerId.trim()),
+                Updates.set("phone", schedule.phone.trim()), Updates.set("runAt", Date(schedule.runAt)), Updates.set("message", schedule.message),
+                Updates.set("campaignId", schedule.campaignId.orEmpty()), Updates.set("note", schedule.note.take(2000)), Updates.set("campaignCustomerId", schedule.campaignCustomerId.orEmpty())
+            ), FindOneAndUpdateOptions().upsert(true).returnDocument(ReturnDocument.AFTER))
+            return existing?.getObjectId("_id")?.toHexString() ?: id.toHexString()
+        }
+        store.smsSchedules().replaceOne(Filters.eq("_id", id), doc, com.mongodb.client.model.ReplaceOptions().upsert(true))
         return id.toHexString()
     }
     fun claimDueSmsSchedule(now: Long = System.currentTimeMillis()): SmsSchedule? {
-        store.smsSchedules().updateMany(Filters.and(Filters.eq("status", "running"), Filters.lt("claimedAt", Date(now - 10 * 60 * 1000L))), Updates.combine(Updates.set("status", "queued"), Updates.unset("claimedAt")))
-        val doc = store.smsSchedules().findOneAndUpdate(
-            Filters.and(Filters.eq("status", "queued"), Filters.lte("runAt", Date(now))),
-            Updates.combine(Updates.set("status", "running"), Updates.set("claimedAt", Date(now)), Updates.inc("attempts", 1)),
-            FindOneAndUpdateOptions().sort(Document("runAt", 1)).returnDocument(ReturnDocument.AFTER),
-        ) ?: return null
+        val stale = Date(now - 10 * 60 * 1000L)
+        store.smsSchedules().updateMany(Filters.and(Filters.eq("status", "running"), Filters.or(Filters.lt("claimedAt", stale), Filters.exists("claimedAt", false))),
+            Updates.combine(Updates.set("status", "queued"), Updates.unset("claimedAt"), Updates.unset("claimToken")))
+        val token = UUID.randomUUID().toString()
+        val doc = store.smsSchedules().findOneAndUpdate(Filters.and(Filters.eq("status", "queued"), Filters.lte("runAt", Date(now))),
+            Updates.combine(Updates.set("status", "running"), Updates.set("claimedAt", Date(now)), Updates.set("claimToken", token), Updates.inc("attempts", 1)),
+            FindOneAndUpdateOptions().sort(Document("runAt", 1).append("_id", 1)).returnDocument(ReturnDocument.AFTER)) ?: return null
         return smsScheduleFrom(doc)
     }
     fun campaignCustomerBlocked(id: String?): Boolean {
@@ -356,25 +375,27 @@ internal class VoicxCustomerRepository(private val store: VoicxMongoStore) {
     }
     fun latestCampaignCustomer(phone: String): String? = store.campaignCustomers().find(Filters.eq("phone", phone.trim()))
         .sort(Document("createdAt", -1)).first()?.getObjectId("_id")?.toHexString()
-    fun updateSmsScheduleStatus(id: String, status: String, error: String = "") {
-        if (!ObjectId.isValid(id)) return
-        val updates = mutableListOf<Bson>(Updates.set("status", status))
+    fun updateSmsScheduleStatus(id: String, status: String, error: String = "", claimToken: String? = null) {
+        if (!ObjectId.isValid(id) || status !in setOf("queued", "running", "sent", "cancelled", "failed")) return
+        val filter = if (claimToken.isNullOrBlank()) Filters.eq("_id", ObjectId(id)) else Filters.and(Filters.eq("_id", ObjectId(id)), Filters.eq("claimToken", claimToken))
+        val updates = mutableListOf<Bson>(Updates.set("status", status), Updates.set("updatedAt", Date()))
         if (error.isBlank()) updates += Updates.unset("error") else updates += Updates.set("error", error.take(500))
-        updates += Updates.unset("claimedAt")
-        store.smsSchedules().updateOne(Filters.eq("_id", ObjectId(id)), Updates.combine(updates))
+        updates += Updates.unset("claimedAt"); updates += Updates.unset("claimToken")
+        store.smsSchedules().updateOne(filter, Updates.combine(updates))
     }
-    fun retrySmsSchedule(id: String, now: Long, attempts: Int, error: String) {
+    fun retrySmsSchedule(id: String, now: Long, attempts: Int, error: String, claimToken: String? = null) {
         if (!ObjectId.isValid(id)) return
+        val filter = if (claimToken.isNullOrBlank()) Filters.eq("_id", ObjectId(id)) else Filters.and(Filters.eq("_id", ObjectId(id)), Filters.eq("claimToken", claimToken))
         val terminal = attempts >= MAX_DELIVERY_ATTEMPTS
-        val updates = mutableListOf<Bson>(Updates.set("status", if (terminal) "failed" else "queued"))
+        val updates = mutableListOf<Bson>(Updates.set("status", if (terminal) "failed" else "queued"), Updates.set("updatedAt", Date()))
         if (terminal) updates += Updates.set("error", error.take(500))
         else {
             val delay = RETRY_DELAYS_MS[(attempts - 1).coerceIn(0, RETRY_DELAYS_MS.lastIndex)]
             updates += Updates.set("runAt", Date(now + delay))
             updates += Updates.set("error", error.take(500))
         }
-        updates += Updates.unset("claimedAt")
-        store.smsSchedules().updateOne(Filters.eq("_id", ObjectId(id)), Updates.combine(updates))
+        updates += Updates.unset("claimedAt"); updates += Updates.unset("claimToken")
+        store.smsSchedules().updateOne(filter, Updates.combine(updates))
     }
     fun saveCallReport(report: AiCallReport) {
         store.calls().insertOne(Document("phone", report.number.orEmpty())
@@ -416,13 +437,17 @@ internal class VoicxCustomerRepository(private val store: VoicxMongoStore) {
 
     /** Creates a stable customer snapshot and schedules only the first call in a call campaign. */
     fun createCampaign(campaign: Campaign): String {
+        require(campaign.name.trim().length in 1..200) { "Invalid campaign name" }
+        require(campaign.startAt > 0L) { "Invalid campaign start time" }
+        require(campaign.channel in setOf("call", "sms", "call_sms")) { "Invalid campaign channel" }
+        require(campaign.smsTemplate.length <= MAX_SMS_LENGTH) { "Invalid campaign SMS template" }
         val campaignId = campaign.id?.takeIf(ObjectId::isValid)?.let(::ObjectId) ?: ObjectId()
         store.campaigns().insertOne(Document("_id", campaignId).append("name", campaign.name.trim())
             .append("startAt", Date(campaign.startAt)).append("timezone", campaign.timezone)
             .append("targetGroup", campaign.targetGroup.trim()).append("channel", campaign.channel)
             .append("smsTemplate", campaign.smsTemplate.take(1000)).append("status", campaign.status)
             .append("createdAt", Date(campaign.createdAt)).append("updatedAt", Date(campaign.updatedAt)))
-        val filter: Bson = Filters.and(Filters.ne("optedOut", true), if (campaign.targetGroup.isBlank() || campaign.targetGroup.equals("all", true))
+        val filter: Bson = Filters.and(Filters.ne("optedOut", true), Filters.ne("doNotContact", true), Filters.regex("phone", "^\\+?[0-9]{7,20}$"), if (campaign.targetGroup.isBlank() || campaign.targetGroup.equals("all", true))
             Document() else Filters.eq("groups", campaign.targetGroup.trim()))
         val customers = store.customers().find(filter).sort(Document("createdAt", 1).append("_id", 1)).toList()
         customers.forEachIndexed { index, doc ->
@@ -448,14 +473,14 @@ internal class VoicxCustomerRepository(private val store: VoicxMongoStore) {
                 store.campaignCustomers().updateOne(Filters.eq("_id", first.getObjectId("_id")), Updates.set("status", "call_scheduled"))
             }
         } else if (customers.isNotEmpty() && campaign.channel == "sms" && campaign.smsTemplate.isNotBlank()) {
-            customers.forEachIndexed { index, doc ->
-                val customerId = doc.getObjectId("_id")?.toHexString().orEmpty(); val phone = doc.getString("phone").orEmpty()
-                val cc = store.campaignCustomers().find(Filters.and(Filters.eq("campaignId", campaignId.toHexString()), Filters.eq("sequence", index))).first()
-                val ccId = cc?.getObjectId("_id")?.toHexString().orEmpty()
+            val first = store.campaignCustomers().find(Filters.and(Filters.eq("campaignId", campaignId.toHexString()), Filters.eq("sequence", 0))).first()
+            if (first != null) {
+                val customerId = first.getString("customerId").orEmpty(); val phone = first.getString("phone").orEmpty()
+                val ccId = first.getObjectId("_id")?.toHexString().orEmpty()
                 saveSmsSchedule(SmsSchedule(customerId = customerId, phone = phone, runAt = campaign.startAt,
                     message = campaign.smsTemplate, campaignId = campaignId.toHexString(), campaignCustomerId = ccId,
                     idempotencyKey = "${campaignId}:sms:$ccId:${campaign.startAt}"))
-                cc?.getObjectId("_id")?.let { store.campaignCustomers().updateOne(Filters.eq("_id", it), Updates.set("status", "sms_scheduled")) }
+                store.campaignCustomers().updateOne(Filters.eq("_id", first.getObjectId("_id")), Updates.set("status", "sms_scheduled"))
             }
         }
         return campaignId.toHexString()
@@ -496,24 +521,42 @@ internal class VoicxCustomerRepository(private val store: VoicxMongoStore) {
         return true
     }
 
+    fun advanceSmsCampaign(campaignCustomerId: String) {
+        if (!ObjectId.isValid(campaignCustomerId)) return
+        val current = store.campaignCustomers().find(Filters.eq("_id", ObjectId(campaignCustomerId))).first() ?: return
+        val campaignId = current.getString("campaignId") ?: return
+        if (!ObjectId.isValid(campaignId)) return
+        val campaign = store.campaigns().find(Filters.eq("_id", ObjectId(campaignId))).first() ?: return
+        if (campaign.getString("channel") == "sms") advanceCampaign(campaignCustomerId)
+    }
+
     fun advanceCampaign(campaignCustomerId: String) {
         if (!ObjectId.isValid(campaignCustomerId)) return
         val current = store.campaignCustomers().find(Filters.eq("_id", ObjectId(campaignCustomerId))).first() ?: return
-        val next = store.campaignCustomers().find(Filters.and(Filters.eq("campaignId", current.getString("campaignId")), Filters.eq("status", "queued"))).sort(Document("sequence", 1)).first() ?: return
-        val campaign = store.campaigns().find(Filters.eq("_id", ObjectId(current.getString("campaignId")))).first() ?: return
+        if (current.getString("status") in setOf("admin", "opted_out", "paused")) return
+        val next = store.campaignCustomers().find(Filters.and(Filters.eq("campaignId", current.getString("campaignId")), Filters.eq("status", "queued")))
+            .sort(Document("sequence", 1).append("_id", 1)).first() ?: return
+        val campaignId = current.getString("campaignId").orEmpty()
+        if (!ObjectId.isValid(campaignId)) return
+        val campaign = store.campaigns().find(Filters.eq("_id", ObjectId(campaignId))).first() ?: return
         val nextId = next.getObjectId("_id")?.toHexString().orEmpty(); val at = System.currentTimeMillis()
-        if (campaign.getString("channel").orEmpty().contains("call")) {
-            saveSchedule(CallSchedule(customerId = next.getString("customerId").orEmpty(), phone = next.getString("phone").orEmpty(), runAt = at,
-                campaignId = current.getString("campaignId"), campaignCustomerId = nextId, idempotencyKey = "${current.getString("campaignId")}:call:$nextId:$at"))
-            if (campaign.getString("channel") == "call_sms" && campaign.getString("smsTemplate").orEmpty().isNotBlank()) saveSmsSchedule(SmsSchedule(customerId = next.getString("customerId").orEmpty(), phone = next.getString("phone").orEmpty(), runAt = at, message = campaign.getString("smsTemplate"), campaignId = current.getString("campaignId"), campaignCustomerId = nextId, idempotencyKey = "${current.getString("campaignId")}:sms:$nextId:$at"))
-            store.campaignCustomers().updateOne(Filters.eq("_id", next.getObjectId("_id")), Updates.set("status", "call_scheduled"))
-        }
+        val phone = next.getString("phone").orEmpty(); val customerId = next.getString("customerId").orEmpty()
+        if (!phone.matches(Regex("\\+?[0-9]{7,20}")) || customerBlocked(phone, nextId)) return
+        val channel = campaign.getString("channel").orEmpty()
+        if (channel.contains("call")) saveSchedule(CallSchedule(customerId = customerId, phone = phone, runAt = at,
+            campaignId = campaignId, campaignCustomerId = nextId, idempotencyKey = "$campaignId:call:$nextId:$at"))
+        if (channel == "sms" || (channel == "call_sms" && campaign.getString("smsTemplate").orEmpty().isNotBlank()))
+            saveSmsSchedule(SmsSchedule(customerId = customerId, phone = phone, runAt = at, message = campaign.getString("smsTemplate").orEmpty(),
+                campaignId = campaignId, campaignCustomerId = nextId, idempotencyKey = "$campaignId:sms:$nextId:$at"))
+        val nextStatus = if (channel.contains("call")) "call_scheduled" else "sms_scheduled"
+        store.campaignCustomers().updateOne(Filters.and(Filters.eq("_id", next.getObjectId("_id")), Filters.eq("status", "queued")),
+            Updates.combine(Updates.set("status", nextStatus), Updates.set("updatedAt", Date())))
     }
     private fun scheduleFrom(it: Document): CallSchedule = CallSchedule(
         it.getObjectId("_id")?.toHexString(), it.getString("customerId").orEmpty(), it.getString("phone").orEmpty(),
         it.getDate("runAt")?.time ?: 0L, it.getString("status").orEmpty(), it.getString("note").orEmpty(),
         it.getString("campaignId")?.ifBlank { null }, it.getString("campaignCustomerId")?.ifBlank { null },
-        it.getString("idempotencyKey")?.ifBlank { null }, it.getInteger("attempts", 0),
+        it.getString("idempotencyKey")?.ifBlank { null }, it.getInteger("attempts", 0), it.getString("claimToken"),
     )
     private fun smsScheduleFrom(it: Document): SmsSchedule = SmsSchedule(
         id = it.getObjectId("_id")?.toHexString(), customerId = it.getString("customerId").orEmpty(),
@@ -521,7 +564,7 @@ internal class VoicxCustomerRepository(private val store: VoicxMongoStore) {
         message = it.getString("message").orEmpty(), status = it.getString("status").orEmpty(),
         campaignId = it.getString("campaignId")?.ifBlank { null }, note = it.getString("note").orEmpty(),
         campaignCustomerId = it.getString("campaignCustomerId")?.ifBlank { null },
-        idempotencyKey = it.getString("idempotencyKey")?.ifBlank { null }, attempts = it.getInteger("attempts", 0),
+        idempotencyKey = it.getString("idempotencyKey")?.ifBlank { null }, attempts = it.getInteger("attempts", 0), claimToken = it.getString("claimToken"),
     )
     private fun from(d: Document?): VoicxCustomer? = d?.let { VoicxCustomer(
         id = it.getObjectId("_id")?.toHexString(), phone = it.getString("phone").orEmpty(), name = it.getString("name").orEmpty(),

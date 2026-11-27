@@ -150,9 +150,10 @@ class GatewayRuntime private constructor(context: Context) {
                         scheduledCampaignCustomerId = null
                     }
                     scheduledCallId?.let { id ->
-                        runCatching { customers.updateScheduleStatus(id, "completed") }
+                        runCatching { customers.updateScheduleStatus(id, "completed", claimToken = scheduledCallClaimToken) }
                             .onFailure { AppLog.w("could not complete scheduled call $id", it) }
                         scheduledCallId = null
+                        scheduledCallClaimToken = null
                     }
                 }
             }
@@ -167,6 +168,7 @@ class GatewayRuntime private constructor(context: Context) {
     private var telegramSimCall: TelegramSimCall? = null
     @Volatile
     private var scheduledCallId: String? = null
+    private var scheduledCallClaimToken: String? = null
     @Volatile
     private var scheduledCampaignCustomerId: String? = null
     private var started = false
@@ -845,11 +847,11 @@ class GatewayRuntime private constructor(context: Context) {
                 return
             } ?: return
             if (customers.customerBlocked(schedule.phone, schedule.campaignCustomerId)) {
-                customers.updateScheduleStatus(schedule.id.orEmpty(), "cancelled", "campaign customer is blocked")
+                customers.updateScheduleStatus(schedule.id.orEmpty(), "cancelled", "campaign customer is blocked", schedule.claimToken)
                 return@repeat
             }
             if (hasActiveWork()) {
-                customers.retrySchedule(schedule.id.orEmpty(), System.currentTimeMillis(), schedule.attempts, "gateway busy")
+                customers.retrySchedule(schedule.id.orEmpty(), System.currentTimeMillis(), schedule.attempts, "gateway busy", schedule.claimToken)
                 AppLog.w("scheduled call ${schedule.id} skipped because gateway is busy")
                 return@repeat
             }
@@ -861,13 +863,14 @@ class GatewayRuntime private constructor(context: Context) {
                     instructions = customer?.instructions.orEmpty(), memories = customers.memoriesFor(schedule.phone),
                 ))
                 scheduledCallId = schedule.id
+                scheduledCallClaimToken = schedule.claimToken
                 scheduledCampaignCustomerId = schedule.campaignCustomerId
                 gemini.startOutbound(cellular, schedule.phone, Party(schedule.phone, customer?.name?.ifBlank { null }))
-                customers.updateScheduleStatus(schedule.id.orEmpty(), "running")
                 AppLog.i("scheduled Gemini call started: ${schedule.id}")
             } catch (e: Exception) {
                 scheduledCallId = null
-                customers.retrySchedule(schedule.id.orEmpty(), System.currentTimeMillis(), schedule.attempts, e.message ?: e.javaClass.simpleName)
+                scheduledCallClaimToken = null
+                customers.retrySchedule(schedule.id.orEmpty(), System.currentTimeMillis(), schedule.attempts, e.message ?: e.javaClass.simpleName, schedule.claimToken)
                 AppLog.w("scheduled Gemini call failed: ${schedule.id}", e)
             }
         }
@@ -881,15 +884,16 @@ class GatewayRuntime private constructor(context: Context) {
                 return
             } ?: return
             if (customers.customerBlocked(schedule.phone, schedule.campaignCustomerId)) {
-                customers.updateSmsScheduleStatus(schedule.id.orEmpty(), "cancelled", "campaign customer is blocked")
+                customers.updateSmsScheduleStatus(schedule.id.orEmpty(), "cancelled", "campaign customer is blocked", schedule.claimToken)
                 return@repeat
             }
             try {
                 SmsApiClient(settings.smsApiKey).send(schedule.phone, schedule.message).getOrThrow()
-                customers.updateSmsScheduleStatus(schedule.id.orEmpty(), "sent")
+                customers.updateSmsScheduleStatus(schedule.id.orEmpty(), "sent", claimToken = schedule.claimToken)
+                customers.advanceSmsCampaign(schedule.campaignCustomerId.orEmpty())
                 AppLog.i("scheduled SMS sent: ${schedule.id}")
             } catch (e: Exception) {
-                customers.retrySmsSchedule(schedule.id.orEmpty(), System.currentTimeMillis(), schedule.attempts, e.message ?: e.javaClass.simpleName)
+                customers.retrySmsSchedule(schedule.id.orEmpty(), System.currentTimeMillis(), schedule.attempts, e.message ?: e.javaClass.simpleName, schedule.claimToken)
                 AppLog.w("scheduled SMS failed: ${schedule.id}", e)
             }
         }
