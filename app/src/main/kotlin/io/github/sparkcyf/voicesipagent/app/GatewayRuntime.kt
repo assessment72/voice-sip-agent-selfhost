@@ -146,6 +146,9 @@ class GatewayRuntime private constructor(context: Context) {
                         }
                         runCatching {
                             customers.setCampaignDecision(ccId, outcome, "نتيجة المكالمة: ${report.cause?.name.orEmpty()}")
+                            if (outcome == "follow_up" && report.cause == HangupCause.NORMAL && report.failureDetail.isBlank()) {
+                                customers.scheduleCampaignSmsAfterCall(ccId)
+                            }
                             customers.advanceCampaign(ccId)
                         }.onFailure { AppLog.w("could not advance campaign after call", it) }
                         scheduledCampaignCustomerId = null
