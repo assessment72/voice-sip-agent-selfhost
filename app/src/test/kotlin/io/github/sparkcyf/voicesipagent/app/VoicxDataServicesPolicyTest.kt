@@ -41,6 +41,12 @@ class VoicxDataServicesPolicyTest {
         assertFalse(ScheduleLeasePolicy.isExpired("running", 0L, now))
     }
 
+    @Test fun expiredExternalSideEffectClaimsRequireReconciliationInsteadOfAutomaticRetry() {
+        assertEquals("needs_reconciliation", ScheduleLeasePolicy.recoveryStatus())
+        assertTrue(ScheduleLeasePolicy.EXPIRED_CLAIM_ERROR.contains("outcome is unknown"))
+        assertTrue(ScheduleLeasePolicy.EXPIRED_CLAIM_ERROR.contains("before retrying"))
+    }
+
     @Test fun globalOptOutBlocksEveryCampaignButInterestedAndPausedAreScoped() {
         assertTrue(CustomerSuppressionPolicy.isBlocked("queued", true))
         assertTrue(CustomerSuppressionPolicy.isBlocked("opted_out", false))
