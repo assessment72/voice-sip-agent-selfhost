@@ -257,6 +257,12 @@ internal class VoicxCustomerRepository(private val store: VoicxFirebaseStore) {
                 it.text("channel") == "sms" && it.long("receivedAt") >= since
         }.sortedBy { it.long("receivedAt") }
 
+    fun customerSmsHistorySince(customerId: String, since: Long): List<LocalDocument> =
+        query("customer_messages") {
+            it.text("customerId") == customerId && it.text("channel") == "sms" &&
+                (it.long("receivedAt") >= since || it.long("sentAt") >= since)
+        }.sortedBy { maxOf(it.long("receivedAt"), it.long("sentAt")) }
+
     /** Creates a three-step customer-specific SMS sequence. Only the first stage is queued. */
     fun createCustomerSmsSequence(customerId: String, firstAt: Long, first: String, second: String, third: String): String = db.transaction {
         val customer = findById(customerId) ?: error("العميل غير موجود")
