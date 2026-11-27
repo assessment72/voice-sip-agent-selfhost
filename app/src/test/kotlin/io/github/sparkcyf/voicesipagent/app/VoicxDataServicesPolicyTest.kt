@@ -62,4 +62,32 @@ class VoicxDataServicesPolicyTest {
         assertEquals("+967730501035", PhoneNumberNormalizer.normalizeYemen("00967730501035"))
         assertEquals("+967730501035", PhoneNumberNormalizer.normalizeYemen("+967 730 501 035"))
     }
+    @Test fun quoteRequestIsRoutedToManagementOnlyFromCustomerSpeech() {
+        assertEquals(SalesCallDisposition.QUOTE_REQUEST,
+            SalesCallDispositionPolicy.classify("نعم أريد عرض سعر لتوريد الديزل", io.github.sparkcyf.voicesipagent.voice.HangupCause.NORMAL))
+        assertEquals(SalesCallDisposition.REMINDER,
+            SalesCallDispositionPolicy.classify("نعم تفضل، أرسل التفاصيل", io.github.sparkcyf.voicesipagent.voice.HangupCause.NORMAL))
+    }
+
+    @Test fun busyOrClosedCustomerGetsThreeHourRetryDisposition() {
+        assertEquals(SalesCallDisposition.BUSY_OR_UNAVAILABLE,
+            SalesCallDispositionPolicy.classify("أنا مشغول اتصل بعد ثلاث ساعات", io.github.sparkcyf.voicesipagent.voice.HangupCause.NORMAL))
+        assertEquals(SalesCallDisposition.BUSY_OR_UNAVAILABLE,
+            SalesCallDispositionPolicy.classify("", io.github.sparkcyf.voicesipagent.voice.HangupCause.NO_ANSWER))
+        assertEquals(SalesCallDisposition.BUSY_OR_UNAVAILABLE,
+            SalesCallDispositionPolicy.classify("الهاتف مغلق", io.github.sparkcyf.voicesipagent.voice.HangupCause.NORMAL))
+    }
+
+    @Test fun optOutAlwaysTakesPriorityOverFollowUp() {
+        assertEquals(SalesCallDisposition.OPTED_OUT,
+            SalesCallDispositionPolicy.classify("لا تتصل بي مرة أخرى", io.github.sparkcyf.voicesipagent.voice.HangupCause.NORMAL))
+    }
+
+    @Test fun normalCompletedCallGetsOneWeekReminderDisposition() {
+        assertEquals(SalesCallDisposition.REMINDER,
+            SalesCallDispositionPolicy.classify("شكراً لك، سأراجع العرض", io.github.sparkcyf.voicesipagent.voice.HangupCause.NORMAL))
+        assertEquals(SalesCallDisposition.NO_FOLLOW_UP,
+            SalesCallDispositionPolicy.classify("", io.github.sparkcyf.voicesipagent.voice.HangupCause.NETWORK_ERROR))
+    }
+
 }
