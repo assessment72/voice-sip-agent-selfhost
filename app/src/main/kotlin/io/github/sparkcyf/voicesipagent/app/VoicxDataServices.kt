@@ -377,7 +377,8 @@ internal class VoicxCustomerRepository(private val store: VoicxFirebaseStore) {
         require(scheduleId.isNotBlank()) { "Schedule ID is required" }
         val collection = if (type == ScheduleType.CALL) "call_schedules" else "sms_schedules"
         val current = read(collection, scheduleId) ?: return@transaction false
-        val result = ScheduleReconciliationPolicy.resolve(current.text("status"), decision)
+        val retryStatus = if (type == ScheduleType.CALL) "pending" else "queued"
+        val result = ScheduleReconciliationPolicy.resolve(current.text("status"), decision, retryStatus)
         save(collection, scheduleId, mapOf(
             "status" to result.status,
             "claimedAt" to null,
