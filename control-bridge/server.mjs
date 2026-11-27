@@ -58,11 +58,25 @@ async function load() {
   }
 }
 let state = await load();
+// Serialize snapshots to avoid concurrent requests racing on the same temporary
+// file or allowing an older snapshot to overwrite a newer persisted state.
+let saveQueue = Promise.resolve();
 async function save() {
-  await mkdir(path.dirname(STORE), { recursive: true });
-  const tmp = STORE + ".tmp";
-  await writeFile(tmp, JSON.stringify(state, null, 2), { mode: 0o600 });
-  await rename(tmp, STORE);
+  const snapshot = JSON.stringify(state, null, 2);
+  const persist = async () => {
+    await mkdir(path.dirname(STORE), { recursive: true });
+    const tmp = STORE + "." + randomUUID() + ".tmp";
+    try {
+      await writeFile(tmp, snapshot, { mode: 0o600, flag: "wx" });
+      await rename(tmp, STORE);
+    } catch (error) {
+      await import("node:fs/promises").then(({ unlink }) => unlink(tmp).catch(() => {}));
+      throw error;
+    }
+  };
+  const pending = saveQueue.then(persist, persist);
+  saveQueue = pending.catch(() => {});
+  await pending;
 }
 function audit(action, actor, details = {}) {
   state.audit.push({ id: randomUUID(), at: new Date().toISOString(), action, actor, ...details });
