@@ -155,10 +155,10 @@ export async function handleCrmRoute(req, res, url, ctx) {
     if (channel !== "call" && !job.content) return fail(res, 400, "message_required"), true;
     crm.outbox.push(job);
     if (channel === "call") crm.calls.push(job);
-    if (contact && channel !== "call") {
-      contact.previousMessages = [...(Array.isArray(contact.previousMessages) ? contact.previousMessages : []),
+    if (recipientContact && channel !== "call") {
+      recipientContact.previousMessages = [...(Array.isArray(recipientContact.previousMessages) ? recipientContact.previousMessages : []),
         { id: job.id, channel, direction: "outbound", message: job.content, scheduledAt, status: "queued" }].slice(-100);
-      contact.updatedAt = new Date().toISOString();
+      recipientContact.updatedAt = new Date().toISOString();
     }
     ctx.audit("crm." + channel + ".queued", "api-client", { jobId: job.id });
     await ctx.save();
