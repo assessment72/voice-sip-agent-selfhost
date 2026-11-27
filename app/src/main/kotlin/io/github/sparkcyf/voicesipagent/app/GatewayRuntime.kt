@@ -158,7 +158,7 @@ class GatewayRuntime private constructor(context: Context) {
                                 customers.cancelPendingCallsForPhone(customer.phone, "customer requested quotation; routed to management")
                             }
                             reportCampaignCustomerId?.let { customers.setCampaignDecision(it, "interested", reason) }
-                            onAiReport?.invoke(listOf("📩 طلب عرض سعر جديد حُوّل إلى الإدارة.\\nالعميل: ${customer?.name.orEmpty()}\\nالشركة: ${customer?.company.orEmpty()}\\nالرقم: ${report.number.orEmpty()}\\nطلب العميل: ${report.inputText.take(900)}\\nتم إلغاء اتصالات المتابعة المعلقة لهذا الرقم."))
+                            onAiReport?.invoke(listOf("📩 طلب عرض سعر جديد حُوّل إلى الإدارة.\nالعميل: ${customer?.name.orEmpty()}\nالشركة: ${customer?.company.orEmpty()}\nالرقم: ${report.number.orEmpty()}\nطلب العميل: ${report.inputText.take(900)}\nتم إلغاء اتصالات المتابعة المعلقة لهذا الرقم."))
                         }
                         SalesCallDisposition.OPTED_OUT -> {
                             customer?.let { customers.suppressCustomerPhone(it.phone, "customer requested no further contact") }
@@ -899,7 +899,7 @@ class GatewayRuntime private constructor(context: Context) {
                     customer?.instructions?.takeIf(String::isNotBlank)?.let { appendLine("تعليمات العميل: $it") }
                     customer?.notes?.takeIf(String::isNotBlank)?.let { appendLine("ملاحظات العميل: $it") }
                 }.take(7000),
-                memories = (runCatching { customers.memoriesFor(clean) }.getOrDefault("") + "\\n" + priorContext).take(10000),
+                memories = (runCatching { customers.memoriesFor(clean) }.getOrDefault("") + "\n" + priorContext).take(10000),
             ))
             gemini.startOutbound(cellular, clean, Party(clean, name.trim().ifBlank { null }))
         } catch (e: Exception) { AppLog.w("outbound AI call rejected before dialing: ${e.message}") }
@@ -953,7 +953,7 @@ class GatewayRuntime private constructor(context: Context) {
                             appendLine(it.trim())
                         }
                     }.trim().take(9000),
-                    memories = (customers.memoriesFor(normalizedPhone) + "\\n" + customers.salesContextForCall(normalizedPhone)).take(12000),
+                    memories = (customers.memoriesFor(normalizedPhone) + "\n" + customers.salesContextForCall(normalizedPhone)).take(12000),
                 ))
                 synchronized(scheduledCallLock) {
                     scheduledCallId = schedule.id
