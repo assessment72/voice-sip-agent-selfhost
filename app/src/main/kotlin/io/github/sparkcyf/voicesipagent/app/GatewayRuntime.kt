@@ -1264,6 +1264,18 @@ class GatewayRuntime private constructor(context: Context) {
         }
     }
 
+    /** Save a matching customer's incoming SIM SMS before forwarding it to the SIP handset. */
+    fun receiveSms(from: String?, text: String, receivedAt: Long) = worker.execute {
+        runCatching { customers.recordIncomingSms(from, text, receivedAt) }
+            .onFailure { AppLog.w("could not persist incoming customer SMS", it) }
+        val s = sip
+        if (s is SipUserAgent && s.sendMessage(from, text)) {
+            AppLog.i("SMS forwarded to the registered phone")
+        } else {
+            AppLog.w("SMS not forwarded: no phone registered")
+        }
+    }
+
     /** Forward an incoming cellular SMS to the registered phone (server mode) as a SIP MESSAGE. */
     fun forwardSms(from: String?, text: String) = worker.execute {
         val s = sip
