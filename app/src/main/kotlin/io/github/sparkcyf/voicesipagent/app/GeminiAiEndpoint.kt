@@ -694,12 +694,12 @@ ${context.salesInfo}
                     lastSpeechAt = now
                 } else if (turnSpeechStartedAt != null && lastSpeechAt != null &&
                     now - lastSpeechAt!! >= 600 && turnEndGate.trySignal()) {
-                    // Hybrid VAD: preserve automatic server VAD, but finalize promptly after
-                    // a locally detected speech end instead of waiting for the full server window.
+                    // Finalize the caller turn explicitly. Without this signal Gemini can keep
+                    // waiting for a server-side VAD edge that is unreliable on narrowband
+                    // cellular audio, leaving the caller unheard after the opening greeting.
                     lastSpeechEndAt = lastSpeechAt
-                    // Gemini automaticActivityDetection is enabled in the Live setup.
-                    // Keep this local VAD edge for metrics only; sending audioStreamEnd as
-                    // well would race server VAD and finalize the same utterance twice.
+                    val ended = client?.sendAudioStreamEnd() == true
+                    AppLog.i("Gemini caller audio turn ended locally: queued=$ended")
                 }
                 inputAttempts++
                 if (client?.sendPcm8(frame) == true) {
