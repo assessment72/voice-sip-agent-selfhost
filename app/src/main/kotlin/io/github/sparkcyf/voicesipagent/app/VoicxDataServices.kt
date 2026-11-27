@@ -888,7 +888,13 @@ internal class VoicxCustomerRepository(private val store: VoicxFirebaseStore) {
     }
     fun saveSchedule(s: CallSchedule): String = db.transaction { saveScheduleInTransaction(s) }
 
-    fun claimDueSchedule(now: Long = System.currentTimeMillis()): CallSchedule? = claim("call_schedules", "pending", now) { scheduleFrom(it) }?.second
+    fun claimDueSchedule(now: Long = System.currentTimeMillis()): CallSchedule? = claim(
+        name = "call_schedules",
+        status = "pending",
+        now = now,
+        eligible = { ScheduleCommandParser.isDisplayableSchedule(it.text("phone"), it.long("runAt")) },
+        mapper = ::scheduleFrom,
+    )?.second
     fun updateScheduleStatus(id: String, status: String, error: String = "") = db.transaction {
         if (id.isBlank()) return@transaction
         val current = read("call_schedules", id) ?: return@transaction
@@ -958,7 +964,13 @@ internal class VoicxCustomerRepository(private val store: VoicxFirebaseStore) {
 
     fun saveSmsSchedule(s: SmsSchedule): String = db.transaction { saveSmsScheduleInTransaction(s) }
 
-    fun claimDueSmsSchedule(now: Long = System.currentTimeMillis()): SmsSchedule? = claim("sms_schedules", "queued", now) { smsScheduleFrom(it) }?.second
+    fun claimDueSmsSchedule(now: Long = System.currentTimeMillis()): SmsSchedule? = claim(
+        name = "sms_schedules",
+        status = "queued",
+        now = now,
+        eligible = { ScheduleCommandParser.isDisplayableSchedule(it.text("phone"), it.long("runAt")) },
+        mapper = ::smsScheduleFrom,
+    )?.second
     fun updateSmsScheduleStatus(id: String, status: String, error: String = "") = db.transaction {
         if (id.isBlank()) return@transaction
         val current = read("sms_schedules", id) ?: return@transaction
@@ -1036,11 +1048,17 @@ internal class VoicxCustomerRepository(private val store: VoicxFirebaseStore) {
         true
     }
 
-    private fun <T> claim(name: String, status: String, now: Long, mapper: (LocalDocument) -> T): Pair<String, T>? =
+    private fun <T> claim(
+        name: String,
+        status: String,
+        now: Long,
+        eligible: (LocalDocument) -> Boolean = { true },
+        mapper: (LocalDocument) -> T,
+    ): Pair<String, T>? =
         db.transaction {
             // Recover abandoned claims, then select and mark one due item while holding
             // the same SQLite write transaction. Competing workers cannot claim it twice.
-            query(name) { ScheduleLeasePolicy.isExpired(it.text("status"), it.long("claimedAt"), now) }
+            query(name) { eligible(it) && ScheduleLeasePolicy.isExpired(it.text("status"), it.long("claimedAt"), now) }
                 .forEach {
                     save(name, it.id, mapOf(
                         "status" to ScheduleLeasePolicy.recoveryStatus(),
@@ -1048,7 +1066,9 @@ internal class VoicxCustomerRepository(private val store: VoicxFirebaseStore) {
                         "error" to ScheduleLeasePolicy.EXPIRED_CLAIM_ERROR,
                     ))
                 }
-            val candidate = db.due(name, status, now) ?: return@transaction null
+            val candidate = query(name) { it.text("status") == status && it.long("runAt") <= now && eligible(it) }
+                .minWithOrNull(compareBy<LocalDocument> { it.long("runAt") }.thenBy { it.id })
+                ?: return@transaction null
             save(name, candidate.id, mapOf(
                 "status" to "running",
                 "claimedAt" to now,
