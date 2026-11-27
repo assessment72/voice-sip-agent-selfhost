@@ -267,8 +267,8 @@ internal data class LocalDocument(val id: String, val data: JSONObject) {
 data class VoicxCustomer(val id: String? = null, val phone: String, val name: String, val role: String = "", val company: String = "", val instructions: String = "", val notes: String = "", val groups: List<String> = emptyList(), val createdAt: Long = System.currentTimeMillis(), val updatedAt: Long = System.currentTimeMillis())
 data class Campaign(val id: String? = null, val name: String, val startAt: Long, val timezone: String = java.time.ZoneId.systemDefault().id, val targetGroup: String = "", val channel: String = "call_sms", val smsTemplate: String = "", val status: String = "queued", val createdAt: Long = System.currentTimeMillis(), val updatedAt: Long = System.currentTimeMillis())
 data class CampaignCustomer(val id: String? = null, val campaignId: String, val customerId: String, val phone: String, val sequence: Int, val status: String = "queued", val attempts: Int = 0, val lastCallAt: Long? = null, val lastSmsAt: Long? = null, val nextCallAt: Long? = null, val nextSmsAt: Long? = null, val lastOutcome: String = "", val followUpNote: String = "", val interestedAt: Long? = null, val adminAt: Long? = null, val pausedAt: Long? = null, val optedOutAt: Long? = null, val createdAt: Long = System.currentTimeMillis(), val updatedAt: Long = System.currentTimeMillis())
-data class CallSchedule(val id: String? = null, val customerId: String, val phone: String, val runAt: Long, val status: String = "pending", val note: String = "", val campaignId: String? = null, val campaignCustomerId: String? = null, val idempotencyKey: String? = null, val attempts: Int = 0)
-data class SmsSchedule(val id: String? = null, val customerId: String = "", val phone: String, val runAt: Long, val message: String, val status: String = "queued", val campaignId: String? = null, val note: String = "", val campaignCustomerId: String? = null, val idempotencyKey: String? = null, val attempts: Int = 0)
+data class CallSchedule(val id: String? = null, val customerId: String, val phone: String, val runAt: Long, val status: String = "pending", val note: String = "", val campaignId: String? = null, val campaignCustomerId: String? = null, val idempotencyKey: String? = null, val attempts: Int = 0, val recurrence: String = "none", val recurrenceUntil: Long? = null, val recurrenceSeriesId: String? = null)
+data class SmsSchedule(val id: String? = null, val customerId: String = "", val phone: String, val runAt: Long, val message: String, val status: String = "queued", val campaignId: String? = null, val note: String = "", val campaignCustomerId: String? = null, val idempotencyKey: String? = null, val attempts: Int = 0, val recurrence: String = "none", val recurrenceUntil: Long? = null, val recurrenceSeriesId: String? = null)
 data class CustomerSmsSequence(val id: String, val customerId: String, val phone: String, val firstAt: Long, val secondAt: Long, val thirdAt: Long, val firstMessage: String, val secondMessage: String, val thirdMessage: String, val status: String, val firstSentAt: Long = 0L, val secondSentAt: Long = 0L, val thirdSentAt: Long = 0L)
 internal object CustomerSmsSequencePolicy {
     const val FOLLOW_UP_DELAY_MS = 7L * 24 * 60 * 60 * 1000
@@ -644,21 +644,34 @@ internal class VoicxCustomerRepository(private val store: VoicxFirebaseStore) {
         // Repeated enqueue requests must never reset completed/cancelled work to pending.
         if (existing != null) return@transaction existing
         val id = idOrNew(s.id)
+        val seriesId = s.recurrenceSeriesId ?: id.takeIf { s.recurrence != "none" }
         save("call_schedules", id, mapOf(
             "customerId" to s.customerId, "phone" to s.phone, "runAt" to s.runAt,
             "status" to s.status, "note" to s.note, "campaignId" to s.campaignId,
             "campaignCustomerId" to s.campaignCustomerId, "idempotencyKey" to s.idempotencyKey,
-            "attempts" to s.attempts, "createdAt" to System.currentTimeMillis(),
+            "attempts" to s.attempts, "recurrence" to s.recurrence, "recurrenceUntil" to s.recurrenceUntil,
+            "recurrenceSeriesId" to seriesId,
+            "createdAt" to System.currentTimeMillis(),
         ))
         id
     }
 
     fun claimDueSchedule(now: Long = System.currentTimeMillis()): CallSchedule? = claim("call_schedules", "pending", now) { scheduleFrom(it) }?.second
-    fun updateScheduleStatus(id: String, status: String, error: String = "") { if (id.isNotBlank()) save("call_schedules", id, mapOf("status" to status, "error" to error.takeIf(String::isNotBlank))) }
+    fun updateScheduleStatus(id: String, status: String, error: String = "") = db.transaction {
+        if (id.isBlank()) return@transaction
+        val current = read("call_schedules", id) ?: return@transaction
+        save("call_schedules", id, mapOf("status" to status, "error" to error.takeIf(String::isNotBlank)))
+        if (status == "completed") enqueueNextCallInTransaction(current)
+    }
     fun cancelCallSchedule(id: String, reason: String = "cancelled by administrator"): Boolean = db.transaction {
         val current = read("call_schedules", id) ?: return@transaction false
         if (current.text("status") != "pending") return@transaction false
+        val seriesId = current.nullableText("recurrenceSeriesId")
         save("call_schedules", id, mapOf("status" to "cancelled", "error" to reason.take(300)))
+        seriesId?.let { series ->
+            query("call_schedules") { it.text("recurrenceSeriesId") == series && it.text("status") == "pending" }
+                .forEach { save("call_schedules", it.id, mapOf("status" to "cancelled", "error" to reason.take(300))) }
+        }
         true
     }
     fun editCallSchedule(id: String, runAt: Long, note: String): Boolean = db.transaction {
@@ -695,11 +708,14 @@ internal class VoicxCustomerRepository(private val store: VoicxFirebaseStore) {
         }
         if (existing != null) return existing
         val id = idOrNew(s.id)
+        val seriesId = s.recurrenceSeriesId ?: id.takeIf { s.recurrence != "none" }
         save("sms_schedules", id, mapOf(
             "customerId" to s.customerId, "phone" to s.phone, "runAt" to s.runAt,
             "message" to s.message, "status" to s.status, "campaignId" to s.campaignId,
             "note" to s.note, "campaignCustomerId" to s.campaignCustomerId,
             "idempotencyKey" to s.idempotencyKey, "attempts" to s.attempts,
+            "recurrence" to s.recurrence, "recurrenceUntil" to s.recurrenceUntil,
+            "recurrenceSeriesId" to seriesId,
             "createdAt" to System.currentTimeMillis(),
         ))
         return id
@@ -708,12 +724,56 @@ internal class VoicxCustomerRepository(private val store: VoicxFirebaseStore) {
     fun saveSmsSchedule(s: SmsSchedule): String = db.transaction { saveSmsScheduleInTransaction(s) }
 
     fun claimDueSmsSchedule(now: Long = System.currentTimeMillis()): SmsSchedule? = claim("sms_schedules", "queued", now) { smsScheduleFrom(it) }?.second
-    fun updateSmsScheduleStatus(id: String, status: String, error: String = "") { if (id.isNotBlank()) save("sms_schedules", id, mapOf("status" to status, "error" to error.takeIf(String::isNotBlank))) }
+    fun updateSmsScheduleStatus(id: String, status: String, error: String = "") = db.transaction {
+        if (id.isBlank()) return@transaction
+        val current = read("sms_schedules", id) ?: return@transaction
+        save("sms_schedules", id, mapOf("status" to status, "error" to error.takeIf(String::isNotBlank)))
+        if (status == "sent") enqueueNextSmsInTransaction(current)
+    }
     fun cancelSmsSchedule(id: String, reason: String = "cancelled by administrator"): Boolean = db.transaction {
         val current = read("sms_schedules", id) ?: return@transaction false
         if (current.text("status") != "queued") return@transaction false
+        val seriesId = current.nullableText("recurrenceSeriesId")
         save("sms_schedules", id, mapOf("status" to "cancelled", "error" to reason.take(300)))
+        seriesId?.let { series ->
+            query("sms_schedules") { it.text("recurrenceSeriesId") == series && it.text("status") == "queued" }
+                .forEach { save("sms_schedules", it.id, mapOf("status" to "cancelled", "error" to reason.take(300))) }
+        }
         true
+    }
+
+    private fun enqueueNextCallInTransaction(current: LocalDocument) {
+        val recurrence = current.text("recurrence")
+        val nextAt = ScheduleCommandParser.nextOccurrence(current.long("runAt"), recurrence) ?: return
+        val until = current.long("recurrenceUntil")
+        if (until > 0L && nextAt > until) return
+        val series = current.text("recurrenceSeriesId").ifBlank { current.id }
+        val id = UUID.randomUUID().toString()
+        save("call_schedules", id, mapOf(
+            "customerId" to current.text("customerId"), "phone" to current.text("phone"), "runAt" to nextAt,
+            "status" to "pending", "note" to current.text("note"), "campaignId" to current.nullableText("campaignId"),
+            "campaignCustomerId" to current.nullableText("campaignCustomerId"),
+            "idempotencyKey" to "recurring-call:$series:$nextAt", "attempts" to 0,
+            "recurrence" to recurrence, "recurrenceUntil" to until.takeIf { it > 0L },
+            "recurrenceSeriesId" to series, "createdAt" to System.currentTimeMillis(),
+        ))
+    }
+
+    private fun enqueueNextSmsInTransaction(current: LocalDocument) {
+        val recurrence = current.text("recurrence")
+        val nextAt = ScheduleCommandParser.nextOccurrence(current.long("runAt"), recurrence) ?: return
+        val until = current.long("recurrenceUntil")
+        if (until > 0L && nextAt > until) return
+        val series = current.text("recurrenceSeriesId").ifBlank { current.id }
+        val id = UUID.randomUUID().toString()
+        save("sms_schedules", id, mapOf(
+            "customerId" to current.text("customerId"), "phone" to current.text("phone"), "runAt" to nextAt,
+            "message" to current.text("message"), "status" to "queued", "campaignId" to current.nullableText("campaignId"),
+            "note" to current.text("note"), "campaignCustomerId" to current.nullableText("campaignCustomerId"),
+            "idempotencyKey" to "recurring-sms:$series:$nextAt", "attempts" to 0,
+            "recurrence" to recurrence, "recurrenceUntil" to until.takeIf { it > 0L },
+            "recurrenceSeriesId" to series, "createdAt" to System.currentTimeMillis(),
+        ))
     }
     fun editSmsSchedule(id: String, runAt: Long, message: String, note: String): Boolean = db.transaction {
         require(runAt > System.currentTimeMillis()) { "وقت الرسالة يجب أن يكون في المستقبل" }
@@ -1016,8 +1076,8 @@ internal class VoicxCustomerRepository(private val store: VoicxFirebaseStore) {
         }
     }
 
-    private fun scheduleFrom(d: LocalDocument) = CallSchedule(d.id, d.text("customerId"), d.text("phone"), d.long("runAt"), d.text("status"), d.text("note"), d.nullableText("campaignId"), d.nullableText("campaignCustomerId"), d.nullableText("idempotencyKey"), d.int("attempts"))
-    private fun smsScheduleFrom(d: LocalDocument) = SmsSchedule(d.id, d.text("customerId"), d.text("phone"), d.long("runAt"), d.text("message"), d.text("status"), d.nullableText("campaignId"), d.text("note"), d.nullableText("campaignCustomerId"), d.nullableText("idempotencyKey"), d.int("attempts"))
+    private fun scheduleFrom(d: LocalDocument) = CallSchedule(d.id, d.text("customerId"), d.text("phone"), d.long("runAt"), d.text("status"), d.text("note"), d.nullableText("campaignId"), d.nullableText("campaignCustomerId"), d.nullableText("idempotencyKey"), d.int("attempts"), d.text("recurrence").ifBlank { "none" }, d.long("recurrenceUntil").takeIf { it > 0L }, d.nullableText("recurrenceSeriesId"))
+    private fun smsScheduleFrom(d: LocalDocument) = SmsSchedule(d.id, d.text("customerId"), d.text("phone"), d.long("runAt"), d.text("message"), d.text("status"), d.nullableText("campaignId"), d.text("note"), d.nullableText("campaignCustomerId"), d.nullableText("idempotencyKey"), d.int("attempts"), d.text("recurrence").ifBlank { "none" }, d.long("recurrenceUntil").takeIf { it > 0L }, d.nullableText("recurrenceSeriesId"))
     private fun from(d: LocalDocument): VoicxCustomer? = VoicxCustomer(d.id, d.text("phone"), d.text("name"), d.text("role"), d.text("company"), d.text("instructions"), d.text("notes"), d.strings("groups"), d.long("createdAt"), d.long("updatedAt"))
 }
 

@@ -34,4 +34,22 @@ class CommandParserTest {
             ScheduleCommandParser.manualCallKey("c1", "+967700000000", 1_700_000_000_000L, " note "),
         )
     }
+
+    @Test fun recurrenceAcceptsOnceDailyWeeklyAndMonthly() {
+        assertEquals("none", ScheduleCommandParser.recurrence("مرة واحدة"))
+        assertEquals("daily", ScheduleCommandParser.recurrence("يومي"))
+        assertEquals("weekly", ScheduleCommandParser.recurrence("weekly"))
+        assertEquals("monthly", ScheduleCommandParser.recurrence("شهرياً"))
+    }
+
+    @Test fun recurrenceRejectsUnknownValue() {
+        assertEquals(null, ScheduleCommandParser.recurrence("every two weeks"))
+    }
+
+    @Test fun recurrenceNextOccurrenceUsesExpectedIntervals() {
+        val start = 1_700_000_000_000L
+        assertEquals(start + 24L * 60 * 60 * 1000, ScheduleCommandParser.nextOccurrence(start, "daily"))
+        assertEquals(start + 7L * 24 * 60 * 60 * 1000, ScheduleCommandParser.nextOccurrence(start, "weekly"))
+        assertEquals(null, ScheduleCommandParser.nextOccurrence(start, "once"))
+    }
 }

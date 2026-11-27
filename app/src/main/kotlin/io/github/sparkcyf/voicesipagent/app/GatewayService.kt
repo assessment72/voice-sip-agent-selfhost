@@ -60,6 +60,7 @@ class GatewayService : Service() {
     private data class PanelSession(
         val flow: String,
         val values: MutableList<String> = mutableListOf(),
+        val customerId: String? = null,
         var confirmationToken: String? = null,
         var action: PanelAction? = null,
     )
@@ -68,8 +69,8 @@ class GatewayService : Service() {
         data class GeminiCall(val phone: String, val name: String, val role: String, val company: String) : PanelAction
         data class SimCall(val phone: String) : PanelAction
         data class SendSms(val phone: String, val text: String) : PanelAction
-        data class ScheduleCall(val phone: String, val at: Long, val note: String) : PanelAction
-        data class ScheduleSms(val phone: String, val at: Long, val text: String) : PanelAction
+        data class ScheduleCall(val phone: String, val at: Long, val note: String, val customerId: String = "", val recurrence: String = "none") : PanelAction
+        data class ScheduleSms(val phone: String, val at: Long, val text: String, val customerId: String = "", val recurrence: String = "none") : PanelAction
         data class CreateCampaign(val name: String, val at: Long, val group: String, val channel: String, val template: String) : PanelAction
         data class DeleteCall(val id: String) : PanelAction
         data class ToggleGateway(val enabled: Boolean) : PanelAction
@@ -349,7 +350,7 @@ class GatewayService : Service() {
                         val reply = try {
                             when (command) {
                                 "/start", "/help", "/commands" ->
-                                    "Voicx Control جاهز. افتح القائمة عبر /menu أو /panel.\n\nالحالة: /status أو /health\nقاعدة البيانات: /db أو /database\nالعملاء: /customers أو /find نص\nإضافة عميل: /add_customer رقم | اسم | وظيفة | شركة | تعليمات\nجدولة اتصال: /schedule أو /schedule_add customerId | رقم | Unix ms/seconds | ملاحظة\nتعديل اتصال: /schedule_edit ID | Unix ms/seconds | ملاحظة\nجدولة SMS: /sms_schedule customerId | رقم | Unix ms/seconds | رسالة | ملاحظة\nتعديل SMS: /sms_schedule_edit ID | Unix ms/seconds | رسالة | ملاحظة\nعرض الكل: /schedules أو /list_schedules\nاتصالات مجدولة: /list_calls أو /schedule_list\nإلغاء اتصال: /cancel_schedule ID\nإلغاء SMS: /cancel_sms ID\nتسلسلات SMS: /sms_sequence رقم | YYYY-MM-DD HH:mm\nالحملات: /campaign_start اسم | YYYY-MM-DD HH:mm | المجموعة | call أو sms أو call_sms | قالب SMS\nالصيانة: /db_cleanup\nالمبيعات: /admin\nسجل المكالمات: /account\nتشغيل أو إيقاف البوابة: /enable أو /disable"
+                                    "Voicx Control جاهز. افتح القائمة عبر /menu أو /panel.\n\nالحالة: /status أو /health\nقاعدة البيانات: /db أو /database\nالعملاء: /customers أو /find نص؛ سيظهر لكل عميل زر اتصال مجدول وزر SMS مجدول\nإضافة عميل: /add_customer رقم | اسم | وظيفة | شركة | تعليمات\nجدولة اتصال: /schedule أو /schedule_add customerId | رقم | Unix ms/seconds | ملاحظة\nتعديل اتصال: /schedule_edit ID | Unix ms/seconds | ملاحظة\nجدولة SMS: /sms_schedule customerId | رقم | Unix ms/seconds | رسالة | ملاحظة\nتعديل SMS: /sms_schedule_edit ID | Unix ms/seconds | رسالة | ملاحظة\nالتكرار: من أزرار العميل اختر مرة واحدة أو يومي أو أسبوعي أو شهري؛ الموعد التالي يُنشأ تلقائياً بعد نجاح المهمة\nعرض الكل: /schedules أو /list_schedules (يعرض التكرار بوضوح)\nاتصالات مجدولة: /list_calls أو /schedule_list\nإلغاء اتصال: /cancel_schedule ID (يلغي السلسلة المستقبلية)\nإلغاء SMS: /cancel_sms ID (يلغي السلسلة المستقبلية)\nتسلسلات SMS: /sms_sequence رقم | YYYY-MM-DD HH:mm\nالحملات: /campaign_start اسم | YYYY-MM-DD HH:mm | المجموعة | call أو sms أو call_sms | قالب SMS\nالصيانة: /db_cleanup\nالمبيعات: /admin\nسجل المكالمات: /account\nتشغيل أو إيقاف البوابة: /enable أو /disable"
                                 "/status", "/health" -> {
                                     val h = GatewayRuntime.get(this@GatewayService).health.value
                                     "Gateway: ${if (h.takeover) "ON" else "OFF"}\nSIP: ${if (h.sip.ready) "ready" else "not ready"}\nActive call: ${h.session != null || h.calls.owned > 0}"
@@ -364,7 +365,11 @@ class GatewayService : Service() {
                                     runtime.maintainLocalDatabase { result -> scope.launch(Dispatchers.IO) { runCatching { client.sendMessage(update.chatId, result) } } }
                                     "جارٍ تنفيذ صيانة قاعدة البيانات؛ ستصل النتيجة بعد الانتهاء."
                                 }
-                                "/db_customers", "/customers" -> runtime.searchCustomers("") { result -> scope.launch(Dispatchers.IO) { runCatching { client.sendMessage(update.chatId, "العملاء:\n${result.take(3800)}") } } }.let { "جارٍ قراءة العملاء من SQLite المحلية." }
+                                "/db_customers", "/customers" -> {
+                                    val customers = runtime.localDatabaseCustomerOptions()
+                                    scope.launch(Dispatchers.IO) { runCatching { client.sendMessage(update.chatId, "العملاء:\n${customers.joinToString("\n") { "${it.id} | ${it.name} | ${it.phone} | ${it.company}" }.ifBlank { "لا يوجد عملاء" }.take(3600)}", customerButtons(customers)) } }
+                                    "جارٍ تجهيز خيارات العملاء من SQLite المحلية."
+                                }
                                 "/db_schedules", "/schedules", "/list_schedules" -> { runtime.listAllSchedules { result -> scope.launch(Dispatchers.IO) { runCatching { client.sendMessage(update.chatId, "المواعيد المجدولة:\n${result.take(3900)}") } } }; "جارٍ قراءة الجداول من SQLite المحلية." }
                                 "/db_export" -> "التصدير متاح من التطبيق عبر قسم قاعدة البيانات المحلية. لا أرسل ملف SQLite تلقائياً عبر Telegram لحماية بيانات العملاء؛ استخدم زر التصدير ثم شارك الملف يدوياً عند الحاجة."
                                 "/customer_search", "/find" -> {
@@ -606,6 +611,15 @@ class GatewayService : Service() {
         }
     }
 
+    private fun customerButtons(customers: List<VoicxCustomer>): List<List<AdminButton>> = customers.take(20).flatMap { customer ->
+        val id = customer.id.orEmpty()
+        val label = customer.name.ifBlank { customer.phone }.take(18)
+        listOf(listOf(
+            AdminButton("📞 $label", "voicx:customer:$id:call"),
+            AdminButton("💬 SMS", "voicx:customer:$id:sms"),
+        ))
+    }
+
     private fun handleVoicxPanel(action: String, runtime: GatewayRuntime, chatId: Long, client: TelegramBotClient): AdminReply {
         if (action == "voicx:home") panelSessions.remove(chatId)
         val home = listOf(
@@ -620,6 +634,19 @@ class GatewayService : Service() {
         if (action == "voicx:cancel_flow") {
             panelSessions.remove(chatId)
             return AdminReply("تم الإلغاء. لم يُنفذ أي إجراء.", home)
+        }
+        if (action.startsWith("voicx:customer:")) {
+            val parts = action.split(":")
+            val customerId = parts.getOrNull(2).orEmpty()
+            val operation = parts.getOrNull(3).orEmpty()
+            val customer = runtime.localCustomer(customerId)
+                ?: return AdminReply("لم يعد العميل موجوداً في قاعدة البيانات.", back)
+            val flow = when (operation) {
+                "call" -> "schedule_call"
+                "sms" -> "sms_schedule"
+                else -> return AdminReply("خيار العميل غير صالح.", back)
+            }
+            return beginPanelFlow(chatId, flow, customer.id, listOf(customer.phone))
         }
         if (action.startsWith("voicx:pick_date:")) {
             val session = panelSessions[chatId]
@@ -661,8 +688,8 @@ class GatewayService : Service() {
             }
             session.values[1] = "$date $time"
             val nextPrompt = when (session.flow) {
-                "schedule_call" -> "تم اختيار الموعد $date الساعة $time. أرسل ملاحظة الاتصال أو اكتب تخطي."
-                "sms_schedule" -> "تم اختيار موعد الإرسال $date الساعة $time. أرسل نص الرسالة."
+                "schedule_call" -> "تم اختيار الموعد $date الساعة $time. أرسل ملاحظة الاتصال أو اكتب تخطي، ثم اختر التكرار: مرة واحدة/يومي/أسبوعي/شهري."
+                "sms_schedule" -> "تم اختيار موعد الإرسال $date الساعة $time. أرسل نص الرسالة، ثم اختر التكرار: مرة واحدة/يومي/أسبوعي/شهري."
                 else -> "تم اختيار بداية الحملة $date الساعة $time. أرسل مجموعة العملاء (all للجميع)."
             }
             return AdminReply(nextPrompt, listOf(listOf(AdminButton("إلغاء", "voicx:cancel_flow"))))
@@ -708,7 +735,10 @@ class GatewayService : Service() {
             "voicx:confirm_gateway_on" -> askConfirmation(chatId, "تشغيل البوابة الآن؟", PanelAction.ToggleGateway(true))
             "voicx:confirm_gateway_off" -> askConfirmation(chatId, "إيقاف التحويل؟ لن يُقطع اتصال نشط؛ سيسري الإيقاف وفق منطق التطبيق الحالي.", PanelAction.ToggleGateway(false))
             "voicx:db" -> AdminReply("قاعدة البيانات المحلية SQLite\n${runtime.localDatabaseSummary()}\n\nحالة Firebase: ${runtime.firebaseStatus()}\nالأسرار خارج ملف SQLite.", listOf(listOf(AdminButton("العملاء", "voicx:customers"), AdminButton("الجدولة", "voicx:schedules")), back.first()))
-            "voicx:customers" -> AdminReply("👥 <b>العملاء</b>\n${runtime.localDatabaseCustomers().take(2600)}", listOf(listOf(AdminButton("بحث", "voicx:flow:search"), AdminButton("إضافة", "voicx:flow:add_customer")), back.first()))
+            "voicx:customers" -> {
+                val customers = runtime.localDatabaseCustomerOptions()
+                AdminReply("👥 <b>العملاء</b>\n${customers.joinToString("\n") { "${it.id} | ${it.name} | ${it.phone} | ${it.company}" }.ifBlank { "لا يوجد عملاء" }.take(2600)}\n\nاختر لكل عميل: اتصال مجدول أو SMS مجدول.", customerButtons(customers) + listOf(listOf(AdminButton("بحث", "voicx:flow:search"), AdminButton("إضافة", "voicx:flow:add_customer")), back.first()))
+            }
             "voicx:schedules" -> AdminReply("📅 <b>الجدولة</b>\n${runtime.localDatabaseSchedules().take(2700)}", listOf(listOf(AdminButton("إضافة اتصال", "voicx:flow:schedule_call"), AdminButton("إضافة SMS", "voicx:flow:sms_schedule")), back.first()))
             "voicx:sip" -> { val sip = runtime.health.value.sip; AdminReply("📡 <b>حالة SIP</b>\n${if (sip.ready) "جاهز" else "غير جاهز"}\n${sip.detail.take(700)}", back) }
             "voicx:calls" -> AdminReply("📞 <b>المكالمات</b>\n${runtime.health.value.calls.summary.take(1200)}", back)
@@ -769,19 +799,22 @@ class GatewayService : Service() {
         scope.launch(Dispatchers.IO) { renderPanel(chatId, client, AdminReply(text, listOf(listOf(AdminButton("⬅️ القائمة الرئيسية", "voicx:home"))))) }
     }
 
-    private fun beginPanelFlow(chatId: Long, flow: String): AdminReply {
-        panelSessions[chatId] = PanelSession(flow)
+    private fun beginPanelFlow(chatId: Long, flow: String, customerId: String? = null, initialValues: List<String> = emptyList()): AdminReply {
+        panelSessions[chatId] = PanelSession(flow, initialValues.toMutableList(), customerId)
         val prompts = mapOf(
             "search" to "أرسل جزءاً من الاسم أو رقم الهاتف للبحث في العملاء.",
             "add_customer" to "إضافة عميل (1/5): أرسل رقم الجوال اليمني.",
             "gemini" to "اتصال Gemini (1/4): أرسل رقم الجوال اليمني.",
             "sim" to "اتصال SIM مع SIP (1/1): أرسل رقم الجوال اليمني.",
             "sms" to "إرسال SMS (1/2): أرسل رقم الجوال اليمني.",
-            "schedule_call" to "جدولة اتصال (1/3): أرسل رقم الجوال اليمني.",
-            "sms_schedule" to "جدولة SMS (1/3): أرسل رقم الجوال اليمني.",
+            "schedule_call" to if (initialValues.isEmpty()) "جدولة اتصال (1/3): أرسل رقم الجوال اليمني." else "جدولة اتصال (2/4): اختر الموعد من الأزرار أو أرسله بصيغة YYYY-MM-DD HH:mm.",
+            "sms_schedule" to if (initialValues.isEmpty()) "جدولة SMS (1/3): أرسل رقم الجوال اليمني." else "جدولة SMS (2/4): اختر الموعد من الأزرار أو أرسله بصيغة YYYY-MM-DD HH:mm.",
             "campaign" to "إنشاء حملة (1/4): أرسل اسم الحملة.",
             "delete_call" to "حذف سجل (1/1): أرسل معرّف السجل الظاهر في تقرير المكالمات.",
         )
+        if (initialValues.isNotEmpty() && flow in setOf("schedule_call", "sms_schedule")) {
+            return scheduleDatePickerReply(flow, prompts[flow].orEmpty())
+        }
         return AdminReply("${prompts[flow] ?: "أدخل البيانات المطلوبة."}\nأرسل /cancel للإلغاء.", listOf(listOf(AdminButton("إلغاء", "voicx:cancel_flow")), listOf(AdminButton("القائمة الرئيسية", "voicx:home"))))
     }
 
@@ -835,8 +868,8 @@ class GatewayService : Service() {
             "gemini" -> 4
             "sim", "delete_call" -> 1
             "sms" -> 2
-            "sms_schedule" -> 3
-            "schedule_call" -> 3
+            "sms_schedule" -> 4
+            "schedule_call" -> 4
             "campaign" -> if (fields.size >= 4 && fields[3].lowercase() in setOf("اتصال", "call")) 4 else 5
             else -> fields.size
         }
@@ -848,8 +881,8 @@ class GatewayService : Service() {
                 "add_customer" -> listOf("رقم الجوال", "اسم العميل", "الوظيفة أو تخطي", "الشركة أو تخطي", "تعليمات/ملاحظات أو تخطي")[fields.size]
                 "gemini" -> listOf("رقم الجوال", "الاسم أو تخطي", "الوظيفة أو تخطي", "الشركة أو تخطي")[fields.size]
                 "sms" -> listOf("رقم الجوال", "نص الرسالة")[fields.size]
-                "sms_schedule" -> listOf("رقم الجوال", "موعد الإرسال YYYY-MM-DD HH:mm", "نص الرسالة")[fields.size]
-                "schedule_call" -> listOf("رقم الجوال", "موعد الاتصال YYYY-MM-DD HH:mm", "ملاحظة أو تخطي")[fields.size]
+                "sms_schedule" -> listOf("رقم الجوال", "موعد الإرسال YYYY-MM-DD HH:mm", "نص الرسالة", "التكرار: مرة واحدة أو يومي أو أسبوعي أو شهري")[fields.size]
+                "schedule_call" -> listOf("رقم الجوال", "موعد الاتصال YYYY-MM-DD HH:mm", "ملاحظة أو تخطي", "التكرار: مرة واحدة أو يومي أو أسبوعي أو شهري")[fields.size]
                 "campaign" -> listOf("اسم الحملة", "موعد البدء YYYY-MM-DD HH:mm", "مجموعة العملاء أو all", "نوع الحملة: call أو sms أو call_sms", "نص SMS أو تخطي")[fields.size]
                 else -> "البيانات المطلوبة"
             }
@@ -864,12 +897,14 @@ class GatewayService : Service() {
             "schedule_call" -> {
                 val at = campaignTime(fields[1]) ?: return retryPanelStep(session, "صيغة الموعد غير صحيحة. استخدم YYYY-MM-DD HH:mm (مثال 2026-12-01 09:30).")
                 if (at <= System.currentTimeMillis()) return retryPanelStep(session, "يجب أن يكون الموعد في المستقبل. أعد إدخاله بصيغة YYYY-MM-DD HH:mm.")
-                PanelAction.ScheduleCall(fields[0], at, fields[2])
+                val recurrence = ScheduleCommandParser.recurrence(fields[3]) ?: return retryPanelStep(session, "التكرار غير صحيح. اكتب: مرة واحدة، يومي، أسبوعي أو شهري.")
+                PanelAction.ScheduleCall(fields[0], at, fields[2], session.customerId.orEmpty(), recurrence)
             }
             "sms_schedule" -> {
                 val at = campaignTime(fields[1]) ?: return retryPanelStep(session, "صيغة الموعد غير صحيحة. استخدم YYYY-MM-DD HH:mm.")
                 if (at <= System.currentTimeMillis()) return retryPanelStep(session, "موعد الإرسال يجب أن يكون في المستقبل.")
-                PanelAction.ScheduleSms(fields[0], at, fields[2])
+                val recurrence = ScheduleCommandParser.recurrence(fields[3]) ?: return retryPanelStep(session, "التكرار غير صحيح. اكتب: مرة واحدة، يومي، أسبوعي أو شهري.")
+                PanelAction.ScheduleSms(fields[0], at, fields[2], session.customerId.orEmpty(), recurrence)
             }
             "campaign" -> {
                 if (fields[0].isBlank()) return retryPanelStep(session, "اسم الحملة مطلوب.")
@@ -886,8 +921,8 @@ class GatewayService : Service() {
             is PanelAction.GeminiCall -> "اتصال Gemini إلى ${action.phone} (${action.name.ifBlank { "بلا اسم" }})"
             is PanelAction.SimCall -> "اتصال SIM مع ربط SIP إلى ${action.phone}. قد تُحتسب رسوم المشغّل."
             is PanelAction.SendSms -> "إرسال SMS إلى ${action.phone}:\n${action.text}"
-            is PanelAction.ScheduleCall -> "جدولة اتصال إلى ${action.phone} في ${java.time.Instant.ofEpochMilli(action.at).atZone(ZoneId.systemDefault()).toLocalDateTime()}"
-            is PanelAction.ScheduleSms -> "جدولة SMS إلى ${action.phone} في ${java.time.Instant.ofEpochMilli(action.at).atZone(ZoneId.systemDefault()).toLocalDateTime()}:\n${action.text}"
+            is PanelAction.ScheduleCall -> "جدولة اتصال إلى ${action.phone} في ${java.time.Instant.ofEpochMilli(action.at).atZone(ZoneId.systemDefault()).toLocalDateTime()}\nالتكرار: ${action.recurrence}"
+            is PanelAction.ScheduleSms -> "جدولة SMS إلى ${action.phone} في ${java.time.Instant.ofEpochMilli(action.at).atZone(ZoneId.systemDefault()).toLocalDateTime()}\nالتكرار: ${action.recurrence}\n${action.text}"
             is PanelAction.CreateCampaign -> "إنشاء حملة ${action.name}؛ المجموعة=${action.group}؛ القناة=${action.channel}؛ البدء=${java.time.Instant.ofEpochMilli(action.at).atZone(ZoneId.systemDefault()).toLocalDateTime()}"
             is PanelAction.DeleteCall -> "حذف سجل المكالمة بالمعرّف ${action.id} نهائياً من سجل Telegram المحلي."
             is PanelAction.ToggleGateway -> if (action.enabled) "تشغيل البوابة" else "إيقاف التحويل"
@@ -945,8 +980,8 @@ class GatewayService : Service() {
             is PanelAction.GeminiCall -> runtime.startAiCall(action.phone, action.name, action.role, action.company)
             is PanelAction.SimCall -> runtime.startTelegramSimCall(action.phone) { asyncPanelReply(chatId, client, it) }
             is PanelAction.SendSms -> runtime.sendSms(action.phone, action.text) { asyncPanelReply(chatId, client, "نتيجة SMS: $it") }
-            is PanelAction.ScheduleCall -> runtime.saveCallSchedule(CallSchedule(customerId = "", phone = action.phone, runAt = action.at, note = action.note)) { asyncPanelReply(chatId, client, "نتيجة جدولة الاتصال: $it") }
-            is PanelAction.ScheduleSms -> runtime.saveSmsSchedule(SmsSchedule(phone = action.phone, runAt = action.at, message = action.text)) { asyncPanelReply(chatId, client, "نتيجة جدولة SMS: $it") }
+            is PanelAction.ScheduleCall -> runtime.saveCallSchedule(CallSchedule(customerId = action.customerId, phone = action.phone, runAt = action.at, note = action.note, recurrence = action.recurrence)) { asyncPanelReply(chatId, client, "نتيجة جدولة الاتصال: $it") }
+            is PanelAction.ScheduleSms -> runtime.saveSmsSchedule(SmsSchedule(customerId = action.customerId, phone = action.phone, runAt = action.at, message = action.text, recurrence = action.recurrence)) { asyncPanelReply(chatId, client, "نتيجة جدولة SMS: $it") }
             is PanelAction.CreateCampaign -> runtime.createCampaign(Campaign(name = action.name, startAt = action.at, targetGroup = action.group, channel = action.channel, smsTemplate = action.template)) { asyncPanelReply(chatId, client, "نتيجة إنشاء الحملة: $it") }
             is PanelAction.DeleteCall -> return AdminReply(if (runtime.deleteTelegramCallRecord(action.id)) "تم حذف السجل المحدد." else "لم يوجد سجل بهذا المعرّف؛ لم يُحذف شيء.", home)
             is PanelAction.ToggleGateway -> runtime.setTakeover(action.enabled)
