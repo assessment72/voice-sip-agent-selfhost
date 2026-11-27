@@ -327,7 +327,7 @@ class CustomerOutreachStore(
 
     /** Return sequence records newest first, breaking timestamp ties by descending ID. */
     fun listSequences(): List<CustomerOutreachSequence> = db.all(SEQUENCES_COLLECTION)
-        .mapNotNull(LocalDocument::toSequenceOrNull)
+        .mapNotNull { document -> document.toSequenceOrNull() }
         .sortedWith(compareByDescending<CustomerOutreachSequence> { it.createdAt }.thenByDescending { it.id })
 
     override fun close() = db.close()

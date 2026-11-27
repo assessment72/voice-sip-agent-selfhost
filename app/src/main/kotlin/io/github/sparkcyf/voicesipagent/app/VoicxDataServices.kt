@@ -881,7 +881,7 @@ internal class VoicxCustomerRepository(private val store: VoicxFirebaseStore) {
             "recurrenceSeriesId" to seriesId,
             "createdAt" to System.currentTimeMillis(),
         ))
-        id
+        return id
     }
     fun saveSchedule(s: CallSchedule): String = db.transaction { saveScheduleInTransaction(s) }
 

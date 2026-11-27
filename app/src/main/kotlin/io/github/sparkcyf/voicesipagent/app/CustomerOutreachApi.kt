@@ -309,22 +309,22 @@ internal fun buildManusTaskCreateBody(
     require(subject.isNotBlank()) { "Email subject is required" }
     require(finalBody.isNotBlank()) { "Final email body is required" }
 
-    val instruction = """
-        أرسل بريدًا إلكترونيًا فعليًا الآن إلى المستلم أدناه، وليس مسودة.
-        استخدم المستلم والعنوان والنص النهائي حرفيًا كما أُعطيت، دون تخمين أو تعديل أو إضافة.
-        إذا تعذر عليك إرسال البريد فعليًا باستخدام الموصل، فأبلغ بوضوح عن التعذر ولا تدّعِ الإرسال.
-        أعد نتيجة منظمة مطابقة للمخطط: sent=true فقط بعد التأكد من نجاح الإرسال الفعلي؛ وإلا sent=false.
-        أعد recipient وsubject كما أُعطيا، وmessage_id من نتيجة الإرسال أو نصًا فارغًا إن لم يتم الإرسال.
-
-        المستلم (حرفيًا):
-        $recipient
-
-        العنوان (حرفيًا):
-        $subject
-
-        النص النهائي (حرفيًا، أرسله كما هو):
-        $finalBody
-    """.trimIndent()
+    val instruction = buildString {
+        appendLine("أرسل بريدًا إلكترونيًا فعليًا الآن إلى المستلم أدناه، وليس مسودة.")
+        appendLine("استخدم المستلم والعنوان والنص النهائي حرفيًا كما أُعطيت، دون تخمين أو تعديل أو إضافة.")
+        appendLine("إذا تعذر عليك إرسال البريد فعليًا باستخدام الموصل، فأبلغ بوضوح عن التعذر ولا تدّعِ الإرسال.")
+        appendLine("أعد نتيجة منظمة مطابقة للمخطط: sent=true فقط بعد التأكد من نجاح الإرسال الفعلي؛ وإلا sent=false.")
+        appendLine("أعد recipient وsubject كما أُعطيا، وmessage_id من نتيجة الإرسال أو نصًا فارغًا إن لم يتم الإرسال.")
+        appendLine()
+        appendLine("المستلم (حرفيًا):")
+        appendLine(recipient)
+        appendLine()
+        appendLine("العنوان (حرفيًا):")
+        appendLine(subject)
+        appendLine()
+        appendLine("النص النهائي (حرفيًا، أرسله كما هو):")
+        append(finalBody)
+    }
     val content = JSONArray().put(
         JSONObject()
             .put("type", "text")
