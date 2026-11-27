@@ -236,10 +236,13 @@ data class SmsSchedule(
 internal class VoicxCustomerRepository(private val store: VoicxMongoStore) {
     fun upsert(customer: VoicxCustomer): String {
         val id = customer.id?.takeIf { ObjectId.isValid(it) }?.let(::ObjectId) ?: ObjectId()
+        val existing = store.customers().find(Filters.eq("_id", id)).first()
         val doc = Document("phone", customer.phone.trim()).append("name", customer.name.trim())
             .append("role", customer.role.trim()).append("company", customer.company.trim())
             .append("instructions", customer.instructions.trim()).append("notes", customer.notes.trim())
             .append("groups", customer.groups.distinct().filter { it.isNotBlank() })
+            .append("optedOut", existing?.getBoolean("optedOut", false) ?: false)
+            .append("doNotContact", existing?.getBoolean("doNotContact", false) ?: false)
             .append("createdAt", Date(customer.createdAt)).append("updatedAt", Date(customer.updatedAt))
         store.customers().replaceOne(Document("_id", id), doc, com.mongodb.client.model.ReplaceOptions().upsert(true))
         return id.toHexString()
@@ -268,6 +271,8 @@ internal class VoicxCustomerRepository(private val store: VoicxMongoStore) {
             .toList().asReversed().joinToString("\n") { "- $it" }
     }
     fun saveSchedule(schedule: CallSchedule): String {
+        require(schedule.phone.matches(Regex("\\+?[0-9]{7,20}"))) { "Invalid phone number" }
+        require(schedule.runAt > 0L) { "Invalid schedule time" }
         schedule.idempotencyKey?.takeIf { it.isNotBlank() }?.let { key ->
             store.schedules().find(Filters.eq("idempotencyKey", key)).first()?.getObjectId("_id")?.let { return it.toHexString() }
         }
@@ -297,9 +302,26 @@ internal class VoicxCustomerRepository(private val store: VoicxMongoStore) {
         if (!ObjectId.isValid(id)) return
         val updates = mutableListOf<Bson>(Updates.set("status", status))
         if (error.isBlank()) updates += Updates.unset("error") else updates += Updates.set("error", error.take(500))
+        updates += Updates.unset("claimedAt")
+        store.schedules().updateOne(Filters.eq("_id", ObjectId(id)), Updates.combine(updates))
+    }
+    fun retrySchedule(id: String, now: Long, attempts: Int, error: String) {
+        if (!ObjectId.isValid(id)) return
+        val terminal = attempts >= MAX_DELIVERY_ATTEMPTS
+        val updates = mutableListOf<Bson>(Updates.set("status", if (terminal) "failed" else "pending"))
+        if (terminal) updates += Updates.set("error", error.take(500))
+        else {
+            val delay = RETRY_DELAYS_MS[(attempts - 1).coerceIn(0, RETRY_DELAYS_MS.lastIndex)]
+            updates += Updates.set("runAt", Date(now + delay))
+            updates += Updates.set("error", error.take(500))
+        }
+        updates += Updates.unset("claimedAt")
         store.schedules().updateOne(Filters.eq("_id", ObjectId(id)), Updates.combine(updates))
     }
     fun saveSmsSchedule(schedule: SmsSchedule): String {
+        require(schedule.phone.matches(Regex("\\+?[0-9]{7,20}"))) { "Invalid phone number" }
+        require(schedule.message.isNotBlank() && schedule.message.length <= MAX_SMS_LENGTH) { "Invalid SMS message" }
+        require(schedule.runAt > 0L) { "Invalid schedule time" }
         schedule.idempotencyKey?.takeIf { it.isNotBlank() }?.let { key ->
             store.smsSchedules().find(Filters.eq("idempotencyKey", key)).first()?.getObjectId("_id")?.let { return it.toHexString() }
         }
@@ -327,12 +349,31 @@ internal class VoicxCustomerRepository(private val store: VoicxMongoStore) {
         if (id.isNullOrBlank() || !ObjectId.isValid(id)) return false
         return store.campaignCustomers().find(Filters.eq("_id", ObjectId(id))).first()?.getString("status") in listOf("admin", "opted_out", "paused")
     }
+    fun customerBlocked(phone: String, campaignCustomerId: String? = null): Boolean {
+        if (campaignCustomerBlocked(campaignCustomerId)) return true
+        val customer = store.customers().find(Filters.eq("phone", phone.trim())).first()
+        return customer?.getBoolean("optedOut", false) == true || customer?.getBoolean("doNotContact", false) == true
+    }
     fun latestCampaignCustomer(phone: String): String? = store.campaignCustomers().find(Filters.eq("phone", phone.trim()))
         .sort(Document("createdAt", -1)).first()?.getObjectId("_id")?.toHexString()
     fun updateSmsScheduleStatus(id: String, status: String, error: String = "") {
         if (!ObjectId.isValid(id)) return
         val updates = mutableListOf<Bson>(Updates.set("status", status))
         if (error.isBlank()) updates += Updates.unset("error") else updates += Updates.set("error", error.take(500))
+        updates += Updates.unset("claimedAt")
+        store.smsSchedules().updateOne(Filters.eq("_id", ObjectId(id)), Updates.combine(updates))
+    }
+    fun retrySmsSchedule(id: String, now: Long, attempts: Int, error: String) {
+        if (!ObjectId.isValid(id)) return
+        val terminal = attempts >= MAX_DELIVERY_ATTEMPTS
+        val updates = mutableListOf<Bson>(Updates.set("status", if (terminal) "failed" else "queued"))
+        if (terminal) updates += Updates.set("error", error.take(500))
+        else {
+            val delay = RETRY_DELAYS_MS[(attempts - 1).coerceIn(0, RETRY_DELAYS_MS.lastIndex)]
+            updates += Updates.set("runAt", Date(now + delay))
+            updates += Updates.set("error", error.take(500))
+        }
+        updates += Updates.unset("claimedAt")
         store.smsSchedules().updateOne(Filters.eq("_id", ObjectId(id)), Updates.combine(updates))
     }
     fun saveCallReport(report: AiCallReport) {
@@ -429,8 +470,8 @@ internal class VoicxCustomerRepository(private val store: VoicxMongoStore) {
         if (status == "opted_out") updates += Updates.set("optedOutAt", now)
         store.campaignCustomers().updateOne(Filters.eq("_id", ObjectId(campaignCustomerId)), Updates.combine(updates))
         if (status == "admin" || status == "opted_out" || status == "paused") {
-            store.schedules().updateMany(Filters.and(Filters.eq("campaignCustomerId", campaignCustomerId), Filters.eq("status", "pending")), Updates.set("status", "cancelled"))
-            store.smsSchedules().updateMany(Filters.and(Filters.eq("campaignCustomerId", campaignCustomerId), Filters.eq("status", "queued")), Updates.set("status", "cancelled"))
+            store.schedules().updateMany(Filters.and(Filters.eq("campaignCustomerId", campaignCustomerId), Filters.`in`("status", listOf("pending", "running"))), Updates.combine(Updates.set("status", "cancelled"), Updates.unset("claimedAt")))
+            store.smsSchedules().updateMany(Filters.and(Filters.eq("campaignCustomerId", campaignCustomerId), Filters.`in`("status", listOf("queued", "running"))), Updates.combine(Updates.set("status", "cancelled"), Updates.unset("claimedAt")))
         }
         if (status == "admin") store.interestedCustomers().updateOne(Filters.eq("campaignCustomerId", campaignCustomerId),
             Updates.combine(Updates.set("campaignCustomerId", campaignCustomerId), Updates.set("outcome", outcome), Updates.set("note", note.take(1000)), Updates.set("updatedAt", now)),
@@ -488,6 +529,12 @@ internal class VoicxCustomerRepository(private val store: VoicxMongoStore) {
         notes = it.getString("notes").orEmpty(), groups = it.getList("groups", String::class.java) ?: emptyList(),
         createdAt = it.getDate("createdAt")?.time ?: it.getDate("updatedAt")?.time ?: 0L,
         updatedAt = it.getDate("updatedAt")?.time ?: 0L) }
+
+    private companion object {
+        const val MAX_SMS_LENGTH = 1000
+        const val MAX_DELIVERY_ATTEMPTS = 3
+        val RETRY_DELAYS_MS = longArrayOf(60_000L, 5 * 60_000L, 30 * 60_000L)
+    }
 }
 
 internal class SmsApiClient(private val apiKey: String, private val endpoint: String = "https://adasms-standalone.vercel.app/api/sms/send") {

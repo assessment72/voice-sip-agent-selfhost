@@ -348,9 +348,9 @@ class GatewayService : Service() {
                                     val callAt = fields.getOrNull(2)?.toLongOrNull(); val smsAt = fields.getOrNull(3)?.toLongOrNull()
                                     if (fields.size < 5 || fields[0].isBlank() || fields[1].isBlank() || callAt == null || smsAt == null || callAt <= System.currentTimeMillis() || smsAt <= System.currentTimeMillis() || fields[4].isBlank()) "الاستخدام: /campaign_add customerId | رقم | وقت الاتصال Unix ms | وقت SMS Unix ms | الرسالة | ملاحظة"
                                     else {
-                                        val campaignId = "campaign-${System.currentTimeMillis()}-${fields[0]}"
-                                        runtime.saveCallSchedule(CallSchedule(customerId = fields[0], phone = fields[1], runAt = callAt, note = fields.getOrElse(5) { "" }, campaignId = campaignId)) { callId ->
-                                            runtime.saveSmsSchedule(SmsSchedule(customerId = fields[0], phone = fields[1], runAt = smsAt ?: 0L, message = fields[4], note = fields.getOrElse(5) { "" }, campaignId = campaignId)) { smsId ->
+                                        val campaignId = "campaign-${fields[0]}-$callAt-$smsAt"
+                                        runtime.saveCallSchedule(CallSchedule(customerId = fields[0], phone = fields[1], runAt = callAt, note = fields.getOrElse(5) { "" }, campaignId = campaignId, idempotencyKey = "$campaignId:call")) { callId ->
+                                            runtime.saveSmsSchedule(SmsSchedule(customerId = fields[0], phone = fields[1], runAt = smsAt ?: 0L, message = fields[4], note = fields.getOrElse(5) { "" }, campaignId = campaignId, idempotencyKey = "$campaignId:sms")) { smsId ->
                                                 scope.launch(Dispatchers.IO) { runCatching { client.sendMessage(update.chatId, "تم إنشاء الحملة $campaignId\nالمكالمة: $callId\nSMS: $smsId") } }
                                             }
                                         }

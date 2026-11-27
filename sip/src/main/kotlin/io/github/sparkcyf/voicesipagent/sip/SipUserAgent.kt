@@ -158,13 +158,17 @@ class SipUserAgent(
     fun sendMessage(fromNumber: String?, text: String): Boolean {
         val peer = peerContactUri ?: return false
         post {
-            val fromUser = fromNumber ?: "sms"
+            val fromUser = fromNumber?.filter { it.isDigit() || it == '+' }?.take(32)?.ifBlank { "sms" } ?: "sms"
             val from = NameAddr(fromNumber, "sip:$fromUser@$localDomain").withTag(newTag())
             val to = NameAddr(null, peer)
             val req = newRequest("MESSAGE", peer, from, to, newCallId(), 1)
             req.headers.add("Content-Type", "text/plain;charset=UTF-8")
-            req.body = text.toByteArray(Charsets.UTF_8)
-            sendClient(req) { /* delivery response ignored; best-effort */ }
+            req.body = text.take(MAX_MESSAGE_CHARS).toByteArray(Charsets.UTF_8)
+            sendClient(req) { response ->
+                if (response == null || !response.isSuccess) {
+                    log.warn("SIP MESSAGE delivery failed: ${response?.code ?: "timeout"}")
+                }
+            }
             log.info("SMS from ${redactNumber(fromNumber)} relayed to phone")
         }
         return true
@@ -658,5 +662,6 @@ class SipUserAgent(
 
     companion object {
         const val ALLOW = "INVITE, ACK, CANCEL, BYE, OPTIONS, INFO, NOTIFY, UPDATE"
+        private const val MAX_MESSAGE_CHARS = 4000
     }
 }

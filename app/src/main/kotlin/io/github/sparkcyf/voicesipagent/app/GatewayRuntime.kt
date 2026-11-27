@@ -836,19 +836,20 @@ class GatewayRuntime private constructor(context: Context) {
     }
 
     private fun runDueSchedules() {
-        if (mongoStore.state != MongoState.CONNECTED || !gatewayEnabled) return
+        if (mongoStore.state != MongoState.CONNECTED) return
         runDueSmsSchedules()
+        if (!gatewayEnabled) return
         repeat(3) {
             val schedule = runCatching { customers.claimDueSchedule() }.getOrElse {
                 AppLog.w("could not claim scheduled call", it)
                 return
             } ?: return
-            if (customers.campaignCustomerBlocked(schedule.campaignCustomerId)) {
+            if (customers.customerBlocked(schedule.phone, schedule.campaignCustomerId)) {
                 customers.updateScheduleStatus(schedule.id.orEmpty(), "cancelled", "campaign customer is blocked")
                 return@repeat
             }
             if (hasActiveWork()) {
-                customers.updateScheduleStatus(schedule.id.orEmpty(), "failed", "gateway busy")
+                customers.retrySchedule(schedule.id.orEmpty(), System.currentTimeMillis(), schedule.attempts, "gateway busy")
                 AppLog.w("scheduled call ${schedule.id} skipped because gateway is busy")
                 return@repeat
             }
@@ -866,7 +867,7 @@ class GatewayRuntime private constructor(context: Context) {
                 AppLog.i("scheduled Gemini call started: ${schedule.id}")
             } catch (e: Exception) {
                 scheduledCallId = null
-                customers.updateScheduleStatus(schedule.id.orEmpty(), "failed", e.message ?: e.javaClass.simpleName)
+                customers.retrySchedule(schedule.id.orEmpty(), System.currentTimeMillis(), schedule.attempts, e.message ?: e.javaClass.simpleName)
                 AppLog.w("scheduled Gemini call failed: ${schedule.id}", e)
             }
         }
@@ -879,7 +880,7 @@ class GatewayRuntime private constructor(context: Context) {
                 AppLog.w("could not claim scheduled SMS", it)
                 return
             } ?: return
-            if (customers.campaignCustomerBlocked(schedule.campaignCustomerId)) {
+            if (customers.customerBlocked(schedule.phone, schedule.campaignCustomerId)) {
                 customers.updateSmsScheduleStatus(schedule.id.orEmpty(), "cancelled", "campaign customer is blocked")
                 return@repeat
             }
@@ -888,7 +889,7 @@ class GatewayRuntime private constructor(context: Context) {
                 customers.updateSmsScheduleStatus(schedule.id.orEmpty(), "sent")
                 AppLog.i("scheduled SMS sent: ${schedule.id}")
             } catch (e: Exception) {
-                customers.updateSmsScheduleStatus(schedule.id.orEmpty(), "failed", e.message ?: e.javaClass.simpleName)
+                customers.retrySmsSchedule(schedule.id.orEmpty(), System.currentTimeMillis(), schedule.attempts, e.message ?: e.javaClass.simpleName)
                 AppLog.w("scheduled SMS failed: ${schedule.id}", e)
             }
         }
@@ -944,7 +945,11 @@ class GatewayRuntime private constructor(context: Context) {
     fun listCallSchedules(callback: (String) -> Unit) = worker.execute { callback(runCatching { customers.listSchedules().joinToString("\n") { "${it.id} | ${it.phone} | ${it.runAt} | ${it.status} | ${it.note}" } }.getOrElse { "خطأ قراءة الجدولة: ${it.javaClass.simpleName}" }.ifBlank { "لا توجد مواعيد" }) }
     fun saveSmsSchedule(schedule: SmsSchedule, callback: (String) -> Unit) = worker.execute { callback(runCatching { customers.saveSmsSchedule(schedule) }.getOrElse { "خطأ جدولة SMS: ${it.javaClass.simpleName}" }) }
     fun listSmsSchedules(callback: (String) -> Unit) = worker.execute { callback(runCatching { customers.listSmsSchedules().joinToString("\n") { "${it.id} | ${it.phone} | ${it.runAt} | ${it.status} | ${it.note} | ${it.message.take(80)}" } }.getOrElse { "خطأ قراءة جدولة SMS: ${it.javaClass.simpleName}" }.ifBlank { "لا توجد رسائل مجدولة" }) }
-    fun sendSms(phone: String, message: String, callback: (String) -> Unit) = worker.execute { callback(SmsApiClient(settings.smsApiKey).send(phone, message).fold({ it }, { "فشل SMS: ${it.message ?: it.javaClass.simpleName}" })) }
+    fun sendSms(phone: String, message: String, callback: (String) -> Unit) = worker.execute {
+        val blocked = mongoStore.state == MongoState.CONNECTED && customers.customerBlocked(phone)
+        callback(if (blocked) "مرفوض: العميل أوقف التواصل أو محظور." else
+            SmsApiClient(settings.smsApiKey).send(phone, message).fold({ it }, { "فشل SMS: ${it.message ?: it.javaClass.simpleName}" }))
+    }
     fun updateSmsApiKey(key: String) = worker.execute { settingsStore.save(settings.copy(smsApiKey = key.trim()).also { _settings.value = it }) }
 
     /** Starts an authenticated Telegram-originated SIM call and bridges it to the registered SIP phone. */

@@ -50,7 +50,7 @@ export async function handleCrmRoute(req, res, url, ctx) {
   }
 
   const specs = {
-    contacts: ["contacts", ["name","phone","email","jobTitle","company","professionalEmail","previousMessages","previousCallSummary","nextSendAt","tags","notes"]],
+    contacts: ["contacts", ["name","phone","email","jobTitle","company","professionalEmail","previousMessages","previousCallSummary","nextSendAt","tags","notes","optedOut","doNotContact"]],
     filters: ["filters", ["name","description","rules","enabled"]],
     tasks: ["tasks", ["title","description","dueAt","status","priority","contactId","channel"]],
     automations: ["automations", ["name","channel","trigger","enabled","config","replyPolicy"]],
@@ -128,9 +128,14 @@ export async function handleCrmRoute(req, res, url, ctx) {
     if (Number.isNaN(Date.parse(scheduledAt))) return fail(res, 400, "invalid_scheduled_at"), true;
     if (contact?.doNotContact === true || contact?.optedOut === true)
       return fail(res, 409, "contact_opted_out"), true;
+    const idempotencyKey = cleanString(req.headers["idempotency-key"], 128);
+    if (idempotencyKey) {
+      const existing = crm.outbox.find(x => x.idempotencyKey === idempotencyKey && x.channel === channel);
+      if (existing) return ok(res, 200, { job: existing, reused: true, delivery: "queued_only_provider_not_configured" }), true;
+    }
     const job = { id: id(), channel, to: to || contact.phone, contactId: contact?.id || null,
       content: cleanString(b.message || b.prompt, 4000), scheduledAt,
-      status: "queued", provider: "not_configured", createdAt: new Date().toISOString() };
+      status: "queued", provider: "not_configured", idempotencyKey: idempotencyKey || null, createdAt: new Date().toISOString() };
     if (channel !== "call" && !job.content) return fail(res, 400, "message_required"), true;
     crm.outbox.push(job);
     if (channel === "call") crm.calls.push(job);
@@ -174,6 +179,9 @@ export async function handleCrmRoute(req, res, url, ctx) {
     if (expected.length < 32 || supplied !== expected) return fail(res, 401, "invalid_webhook_token"), true;
     const incoming = { id: id(), channel: itemId, from: cleanString(b.from, 40),
       message: cleanString(b.message, 4000), receivedAt: new Date().toISOString(), providerMessageId: cleanString(b.messageId, 200) };
+    if (!incoming.from || !incoming.message) return fail(res, 400, "sender_and_message_required"), true;
+    if (incoming.providerMessageId && crm.outbox.some(x => x.channel === itemId && x.providerMessageId === incoming.providerMessageId))
+      return ok(res, 200, { accepted: true, duplicate: true }), true;
     crm.outbox.push({ ...incoming, direction: "inbound", status: "replied" });
     const contact = crm.contacts.find(x => x.phone === incoming.from);
     if (contact) {
