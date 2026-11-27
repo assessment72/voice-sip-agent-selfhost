@@ -488,7 +488,10 @@ ${context.salesInfo}
             if (state != LegState.CONNECTED || silenceFollowUpCount >= 3) return
             silenceCheck?.cancel(false)
             val expectedSpeechVersion = callerSpeechVersion
-            val delayMs = when (silenceFollowUpCount) {
+            // turnComplete can arrive while the cellular output queue is still playing.
+            // Wait for queued speech to drain before starting the customer's silence window.
+            val outputDrainMs = port.pendingOutputDurationMs()
+            val delayMs = outputDrainMs + when (silenceFollowUpCount) {
                 0 -> 4_500L
                 1 -> 6_500L
                 else -> 8_000L
@@ -712,6 +715,8 @@ ${context.salesInfo}
                 lastSpeechAt = null
                 turnEndGate.reset()
             }
+            fun pendingOutputDurationMs(): Long = output.size * 20L
+
             @Synchronized fun responseStats(): Triple<Int, Long?, Long?> {
                 val values = turnResponseLatencies.toList()
                 return Triple(values.size, values.lastOrNull(), values.average().takeIf { values.isNotEmpty() }?.toLong())
