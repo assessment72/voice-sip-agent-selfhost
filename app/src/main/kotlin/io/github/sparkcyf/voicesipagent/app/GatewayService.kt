@@ -56,6 +56,12 @@ class GatewayService : Service() {
     private fun campaignTime(value: String): Long? = runCatching {
         LocalDateTime.parse(value.trim().replace('T', ' '), campaignTimeFormatter).atZone(ZoneId.systemDefault()).toInstant().toEpochMilli()
     }.getOrNull()
+    private fun validOptionalEmail(value: String): Boolean = value.isBlank() || Regex("^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$").matches(value)
+    private fun parseTelegramYesNo(value: String): Boolean? = when (value.trim().lowercase()) {
+        "", "no", "لا", "skip", "تخطي" -> false
+        "yes", "نعم" -> true
+        else -> null
+    }
     private val salesAdmin by lazy { SalesAdminController(SalesAdminStore(this)) }
     private data class PanelSession(
         val flow: String,
@@ -65,7 +71,11 @@ class GatewayService : Service() {
         var action: PanelAction? = null,
     )
     private sealed interface PanelAction {
-        data class AddCustomer(val phone: String, val name: String, val role: String, val company: String, val instructions: String) : PanelAction
+        data class AddCustomer(
+            val phone: String, val name: String, val role: String, val company: String, val instructions: String,
+            val personalEmail: String, val workEmail: String, val phoneHasWhatsApp: Boolean,
+            val emailContactConsent: Boolean, val whatsappContactConsent: Boolean,
+        ) : PanelAction
         data class GeminiCall(val phone: String, val name: String, val role: String, val company: String) : PanelAction
         data class SimCall(val phone: String) : PanelAction
         data class SendSms(val phone: String, val text: String) : PanelAction
@@ -350,7 +360,7 @@ class GatewayService : Service() {
                         val reply = try {
                             when (command) {
                                 "/start", "/help", "/commands" ->
-                                    "Voicx Control جاهز. افتح القائمة عبر /menu أو /panel.\n\nالحالة: /status أو /health\nالتشغيل التلقائي: /automation_status؛ يعرض آخر فحص والموعد القادم وحالات الانتظار والمراجعة\nقاعدة البيانات: /db أو /database\nالعملاء: /customers [صفحة] أو /find نص؛ لكل عميل زرا اتصال وSMS، والتنقل بالصفحات\nإضافة عميل: /add_customer رقم | اسم | وظيفة | شركة | تعليمات\nجدولة اتصال: /schedule أو /schedule_add customerId | رقم | Unix ms/seconds | ملاحظة | تكرار اختياري | انتهاء Unix اختياري\nمثال متكرر: /schedule_add id | +967730000000 | 1800000000000 | متابعة | أسبوعي | 1805000000000\nتعديل اتصال: /schedule_edit ID | Unix ms/seconds | ملاحظة\nجدولة SMS: /sms_schedule customerId | رقم | Unix ms/seconds | رسالة | ملاحظة\nتعديل SMS: /sms_schedule_edit ID | Unix ms/seconds | رسالة | ملاحظة\nالتكرار: مرة واحدة أو يومي أو أسبوعي أو شهري؛ إذا لم تحدد الانتهاء يستمر حتى الإلغاء، والموعد التالي يُنشأ بعد نجاح المهمة\nعرض كل الجداول: /schedules أو /list_schedules (اتصالات وSMS)\nالاتصالات المجدولة فقط: /list_calls أو /schedule_list\nإلغاء اتصال: /cancel_schedule ID (يلغي السلسلة المستقبلية)\nإلغاء SMS: /cancel_sms ID (يلغي السلسلة المستقبلية)\nتسلسلات SMS: /sms_sequence رقم | YYYY-MM-DD HH:mm\nالحملات: /campaign_start اسم | YYYY-MM-DD HH:mm | المجموعة | call أو sms أو call_sms | قالب SMS\nالصيانة: /db_cleanup\nالمبيعات: /admin\nسجل المكالمات: /account\nتشغيل أو إيقاف البوابة: /enable أو /disable"
+                                    "Voicx Control جاهز. افتح القائمة عبر /menu أو /panel.\n\nالحالة: /status أو /health\nالتشغيل التلقائي: /automation_status؛ يعرض آخر فحص والموعد القادم وحالات الانتظار والمراجعة\nقاعدة البيانات: /db أو /database\nالعملاء: /customers [صفحة] أو /find نص؛ لكل عميل زرا اتصال وSMS، والتنقل بالصفحات\nإضافة عميل: /add_customer رقم | اسم | وظيفة | شركة | تعليمات | personalEmail اختياري | workEmail اختياري | WhatsApp مرتبط yes/no | موافقة البريد yes/no | موافقة تسويق WhatsApp yes/no\nالتواصل الصريح فقط: /outreach_start customerId | Unix ms/seconds | minDays 3..7 | maxDays 3..7؛ إيقاف: /outreach_stop sequenceId؛ عرض: /outreach_sequences\nجدولة اتصال: /schedule أو /schedule_add customerId | رقم | Unix ms/seconds | ملاحظة | تكرار اختياري | انتهاء Unix اختياري\nمثال متكرر: /schedule_add id | +967730000000 | 1800000000000 | متابعة | أسبوعي | 1805000000000\nتعديل اتصال: /schedule_edit ID | Unix ms/seconds | ملاحظة\nجدولة SMS: /sms_schedule customerId | رقم | Unix ms/seconds | رسالة | ملاحظة\nتعديل SMS: /sms_schedule_edit ID | Unix ms/seconds | رسالة | ملاحظة\nالتكرار: مرة واحدة أو يومي أو أسبوعي أو شهري؛ إذا لم تحدد الانتهاء يستمر حتى الإلغاء، والموعد التالي يُنشأ بعد نجاح المهمة\nعرض كل الجداول: /schedules أو /list_schedules (اتصالات وSMS)\nالاتصالات المجدولة فقط: /list_calls أو /schedule_list\nإلغاء اتصال: /cancel_schedule ID (يلغي السلسلة المستقبلية)\nإلغاء SMS: /cancel_sms ID (يلغي السلسلة المستقبلية)\nتسلسلات SMS: /sms_sequence رقم | YYYY-MM-DD HH:mm\nالحملات: /campaign_start اسم | YYYY-MM-DD HH:mm | المجموعة | call أو sms أو call_sms | قالب SMS\nالصيانة: /db_cleanup\nالمبيعات: /admin\nسجل المكالمات: /account\nتشغيل أو إيقاف البوابة: /enable أو /disable"
                                 "/automation_status", "/auto_status", "/scheduler_status" -> runtime.automaticSchedulingReport()
                                 "/status", "/health" -> {
                                     val h = GatewayRuntime.get(this@GatewayService).health.value
@@ -383,8 +393,54 @@ class GatewayService : Service() {
                                 }
                                 "/customer_add", "/add_customer" -> {
                                     val fields = parsedCommand.fields()
-                                    if (fields.size < 5 || fields[0].isBlank() || fields[1].isBlank()) "الاستخدام: /customer_add رقم | اسم | وظيفة | شركة | تعليمات"
-                                    else { runtime.saveCustomer(VoicxCustomer(phone = fields[0], name = fields[1], role = fields[2], company = fields[3], instructions = fields.drop(4).joinToString(" | "))) { result -> scope.launch(Dispatchers.IO) { runCatching { client.sendMessage(update.chatId, "نتيجة حفظ العميل: $result") } } }; "تم استلام بيانات العميل للحفظ." }
+                                    val personalEmail = fields.getOrElse(5) { "" }.trim()
+                                    val workEmail = fields.getOrElse(6) { "" }.trim()
+                                    val whatsappLinked = parseTelegramYesNo(fields.getOrElse(7) { "" })
+                                    val emailConsent = parseTelegramYesNo(fields.getOrElse(8) { "" })
+                                    val whatsappConsent = parseTelegramYesNo(fields.getOrElse(9) { "" })
+                                    when {
+                                        fields.size < 5 || fields.size > 10 || fields[0].isBlank() || fields[1].isBlank() -> "الاستخدام: /customer_add رقم | اسم | وظيفة | شركة | تعليمات | personalEmail اختياري | workEmail اختياري | WhatsApp مرتبط yes/no | موافقة البريد yes/no | موافقة تسويق WhatsApp yes/no"
+                                        !validOptionalEmail(personalEmail) || !validOptionalEmail(workEmail) -> "صيغة البريد الإلكتروني غير صحيحة؛ أرسل بريداً صالحاً أو اترك الحقل فارغاً."
+                                        whatsappLinked == null || emailConsent == null || whatsappConsent == null -> "حقول WhatsApp المرتبط وموافقة البريد وموافقة تسويق WhatsApp تقبل yes أو no فقط (أو تترك فارغة؛ الافتراضي no)."
+                                        else -> {
+                                            runtime.saveCustomer(VoicxCustomer(
+                                                phone = fields[0], name = fields[1], role = fields[2], company = fields[3], instructions = fields[4],
+                                                personalEmail = personalEmail, workEmail = workEmail, phoneHasWhatsApp = whatsappLinked,
+                                                emailContactConsent = emailConsent, whatsappContactConsent = whatsappConsent,
+                                                contactFieldsProvided = fields.size > 5,
+                                            )) { result -> scope.launch(Dispatchers.IO) { runCatching { client.sendMessage(update.chatId, "نتيجة حفظ العميل: $result") } } }
+                                            "تم استلام بيانات العميل للحفظ؛ لم يبدأ أي إرسال."
+                                        }
+                                    }
+                                }
+                                "/outreach_start" -> {
+                                    val fields = parsedCommand.fields()
+                                    val firstAt = ScheduleCommandParser.parseTime(fields.getOrNull(1))
+                                    val minDays = fields.getOrNull(2)?.toIntOrNull()
+                                    val maxDays = fields.getOrNull(3)?.toIntOrNull()
+                                    if (fields.size != 4 || fields[0].isBlank() || firstAt == null || minDays == null || maxDays == null || minDays !in 3..7 || maxDays !in 3..7 || minDays > maxDays) {
+                                        "الاستخدام: /outreach_start customerId | Unix ms/seconds | minDays 3..7 | maxDays 3..7"
+                                    } else {
+                                        runtime.startCustomerOutreach(fields[0], firstAt, minDays!!, maxDays!!) { result ->
+                                            scope.launch(Dispatchers.IO) { runCatching { client.sendMessage(update.chatId, result) } }
+                                        }
+                                        "تم استلام طلب بدء تسلسل التواصل الصريح للعميل ${fields[0]}."
+                                    }
+                                }
+                                "/outreach_stop" -> {
+                                    if (argument.isBlank()) "الاستخدام: /outreach_stop sequenceId"
+                                    else {
+                                        runtime.stopCustomerOutreach(argument.trim()) { result ->
+                                            scope.launch(Dispatchers.IO) { runCatching { client.sendMessage(update.chatId, result) } }
+                                        }
+                                        "جارٍ إيقاف تسلسل التواصل ${argument.trim()}."
+                                    }
+                                }
+                                "/outreach_sequences" -> {
+                                    runtime.listCustomerOutreach { result ->
+                                        scope.launch(Dispatchers.IO) { runCatching { client.sendMessage(update.chatId, result.take(3900)) } }
+                                    }
+                                    "جارٍ تحميل تسلسلات التواصل."
                                 }
                                 "/schedule_add", "/schedule" -> {
                                     val fields = parsedCommand.fields(limit = 6)
@@ -631,12 +687,14 @@ class GatewayService : Service() {
     }
 
     private fun customerPageReply(runtime: GatewayRuntime, requestedPage: Int): AdminReply {
-        val pageSize = 20
+        val pageSize = 5
         val count = runtime.localDatabaseCustomerCount()
         val pageCount = (((count + pageSize - 1) / pageSize).toInt()).coerceAtLeast(1)
         val page = requestedPage.coerceIn(1, pageCount)
         val customers = runtime.localDatabaseCustomerOptions(pageSize, (page - 1) * pageSize)
-        val entries = customers.joinToString("\n") { "${it.id} | ${it.name} | ${it.phone} | ${it.company}" }
+        val entries = customers.joinToString("\n") {
+            "${it.id} | ${it.name} | ${it.phone} | ${it.company} | شخصي: ${it.personalEmail.ifBlank { "—" }} | مهني: ${it.workEmail.ifBlank { "—" }} | WhatsApp: ${if (it.phoneHasWhatsApp) "مرتبط" else "غير مرتبط"} | موافقة البريد: ${if (it.emailContactConsent) "نعم" else "لا"} | موافقة WhatsApp: ${if (it.whatsappContactConsent) "نعم" else "لا"}"
+        }
             .ifBlank { "لا يوجد عملاء" }
         val buttons = customerButtons(customers).toMutableList()
         if (page > 1 || page < pageCount) {
@@ -649,7 +707,7 @@ class GatewayService : Service() {
         buttons += listOf(AdminButton("القائمة الرئيسية", "voicx:home"))
         val pageHint = if (page < pageCount) "استخدم /customers ${page + 1} أو زر التالي للمتابعة." else "هذه آخر صفحة للعملاء."
         return AdminReply(
-            "👥 العملاء — صفحة $page من $pageCount (الإجمالي: $count)\n${entries.take(3000)}\n\nاختر لكل عميل اتصالًا أو SMS مجدولًا. $pageHint",
+            "👥 العملاء — صفحة $page من $pageCount (الإجمالي: $count)\n${entries.take(3000)}\n\nلكل عميل اختر اتصالًا أو SMS مجدولًا. لبدء تسلسل البريد/WhatsApp صراحةً: /outreach_start customerId | وقت Unix ms/seconds | minDays 3..7 | maxDays 3..7. الحالة: /outreach_sequences — الإيقاف: /outreach_stop sequenceId. $pageHint",
             buttons,
         )
     }
@@ -841,7 +899,7 @@ class GatewayService : Service() {
         panelSessions[chatId] = PanelSession(flow, initialValues.toMutableList(), customerId)
         val prompts = mapOf(
             "search" to "أرسل جزءاً من الاسم أو رقم الهاتف للبحث في العملاء.",
-            "add_customer" to "إضافة عميل (1/5): أرسل رقم الجوال اليمني.",
+            "add_customer" to "إضافة عميل (1/10): أرسل رقم الجوال اليمني.",
             "gemini" to "اتصال Gemini (1/4): أرسل رقم الجوال اليمني.",
             "sim" to "اتصال SIM مع SIP (1/1): أرسل رقم الجوال اليمني.",
             "sms" to "إرسال SMS (1/2): أرسل رقم الجوال اليمني.",
@@ -899,10 +957,17 @@ class GatewayService : Service() {
         if (phoneStep) {
             value = runCatching { PhoneNumberNormalizer.normalizeYemen(value) }.getOrElse { return AdminReply("رقم غير صالح. أدخل جوالاً يمنياً مثل 730501035 أو +967730501035.") }
         }
+        if (session.flow == "add_customer") {
+            when (session.values.size) {
+                5 -> if (!validOptionalEmail(value)) return AdminReply("صيغة البريد الشخصي غير صحيحة. أرسل بريداً صالحاً أو اكتب تخطي.")
+                6 -> if (!validOptionalEmail(value)) return AdminReply("صيغة بريد العمل غير صحيحة. أرسل بريداً صالحاً أو اكتب تخطي.")
+                7, 8, 9 -> if (parseTelegramYesNo(value) == null) return AdminReply("أرسل yes أو no فقط، أو اكتب تخطي (والقيمة الافتراضية no).")
+            }
+        }
         session.values += value
         val fields = session.values
         val expected = when (session.flow) {
-            "add_customer" -> 5
+            "add_customer" -> 10
             "gemini" -> 4
             "sim", "delete_call" -> 1
             "sms" -> 2
@@ -916,7 +981,7 @@ class GatewayService : Service() {
                 return scheduleDatePickerReply(session.flow, "اختر التاريخ من الأزرار، أو اكتب الموعد كاملاً بصيغة YYYY-MM-DD HH:mm.")
             }
             val prompt = when (session.flow) {
-                "add_customer" -> listOf("رقم الجوال", "اسم العميل", "الوظيفة أو تخطي", "الشركة أو تخطي", "تعليمات/ملاحظات أو تخطي")[fields.size]
+                "add_customer" -> listOf("رقم الجوال", "اسم العميل", "الوظيفة أو تخطي", "الشركة أو تخطي", "تعليمات/ملاحظات أو تخطي", "البريد الشخصي أو تخطي", "بريد العمل أو تخطي", "هل الرقم مرتبط بواتساب؟ أرسل yes أو no", "هل وافق العميل على التواصل بالبريد؟ أرسل yes أو no", "هل وافق على التسويق عبر WhatsApp؟ أرسل yes أو no")[fields.size]
                 "gemini" -> listOf("رقم الجوال", "الاسم أو تخطي", "الوظيفة أو تخطي", "الشركة أو تخطي")[fields.size]
                 "sms" -> listOf("رقم الجوال", "نص الرسالة")[fields.size]
                 "sms_schedule" -> listOf("رقم الجوال", "موعد الإرسال YYYY-MM-DD HH:mm", "نص الرسالة", "التكرار: مرة واحدة أو يومي أو أسبوعي أو شهري")[fields.size]
@@ -928,7 +993,19 @@ class GatewayService : Service() {
         }
 
         val action = when (session.flow) {
-            "add_customer" -> PanelAction.AddCustomer(fields[0], fields[1], fields[2], fields[3], fields[4])
+            "add_customer" -> {
+                val personalEmail = fields[5].trim()
+                val workEmail = fields[6].trim()
+                val whatsappLinked = parseTelegramYesNo(fields[7])
+                val emailConsent = parseTelegramYesNo(fields[8])
+                val whatsappConsent = parseTelegramYesNo(fields[9])
+                if (!validOptionalEmail(personalEmail)) return retryPanelStep(session, "صيغة البريد الشخصي غير صحيحة. أرسل بريداً صالحاً أو اكتب تخطي.")
+                if (!validOptionalEmail(workEmail)) return retryPanelStep(session, "صيغة بريد العمل غير صحيحة. أرسل بريداً صالحاً أو اكتب تخطي.")
+                if (whatsappLinked == null || emailConsent == null || whatsappConsent == null) {
+                    return retryPanelStep(session, "أرسل yes أو no (أو اكتب تخطي؛ والقيمة الافتراضية no).")
+                }
+                PanelAction.AddCustomer(fields[0], fields[1], fields[2], fields[3], fields[4], personalEmail, workEmail, whatsappLinked, emailConsent, whatsappConsent)
+            }
             "gemini" -> PanelAction.GeminiCall(fields[0], fields[1], fields[2], fields[3])
             "sim" -> PanelAction.SimCall(fields[0])
             "sms" -> PanelAction.SendSms(fields[0], fields[1])
@@ -955,7 +1032,7 @@ class GatewayService : Service() {
             else -> { panelSessions.remove(chatId); return AdminReply("انتهى النموذج؛ ابدأ من القائمة الرئيسية.") }
         }
         val summary = when (action) {
-            is PanelAction.AddCustomer -> "إضافة العميل ${action.name} — ${action.phone}"
+            is PanelAction.AddCustomer -> "إضافة العميل ${action.name} — ${action.phone}\nالبريد الشخصي: ${action.personalEmail.ifBlank { "غير مضاف" }}\nبريد العمل: ${action.workEmail.ifBlank { "غير مضاف" }}\nWhatsApp مرتبط: ${if (action.phoneHasWhatsApp) "نعم" else "لا"}\nموافقة التواصل بالبريد: ${if (action.emailContactConsent) "نعم" else "لا"}\nموافقة التسويق عبر WhatsApp: ${if (action.whatsappContactConsent) "نعم" else "لا"}\nلن يبدأ أي إرسال عند إضافة العميل."
             is PanelAction.GeminiCall -> "اتصال Gemini إلى ${action.phone} (${action.name.ifBlank { "بلا اسم" }})"
             is PanelAction.SimCall -> "اتصال SIM مع ربط SIP إلى ${action.phone}. قد تُحتسب رسوم المشغّل."
             is PanelAction.SendSms -> "إرسال SMS إلى ${action.phone}:\n${action.text}"
@@ -1014,7 +1091,12 @@ class GatewayService : Service() {
 
     private fun executePanelAction(action: PanelAction, runtime: GatewayRuntime, chatId: Long, client: TelegramBotClient, home: List<List<AdminButton>>): AdminReply {
         when (action) {
-            is PanelAction.AddCustomer -> runtime.saveCustomer(VoicxCustomer(phone = action.phone, name = action.name, role = action.role, company = action.company, instructions = action.instructions)) { asyncPanelReply(chatId, client, "حفظ العميل: $it") }
+            is PanelAction.AddCustomer -> runtime.saveCustomer(VoicxCustomer(
+                phone = action.phone, name = action.name, role = action.role, company = action.company, instructions = action.instructions,
+                personalEmail = action.personalEmail, workEmail = action.workEmail, phoneHasWhatsApp = action.phoneHasWhatsApp,
+                emailContactConsent = action.emailContactConsent, whatsappContactConsent = action.whatsappContactConsent,
+                contactFieldsProvided = true,
+            )) { asyncPanelReply(chatId, client, "حفظ العميل: $it؛ لم يبدأ أي إرسال.") }
             is PanelAction.GeminiCall -> runtime.startAiCall(action.phone, action.name, action.role, action.company)
             is PanelAction.SimCall -> runtime.startTelegramSimCall(action.phone) { asyncPanelReply(chatId, client, it) }
             is PanelAction.SendSms -> runtime.sendSms(action.phone, action.text) { asyncPanelReply(chatId, client, "نتيجة SMS: $it") }

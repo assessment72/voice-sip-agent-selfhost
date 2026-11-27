@@ -80,6 +80,41 @@ internal object CustomerSuppressionPolicy {
         globallyOptedOut || memberStatus in listOf("admin", "opted_out", "paused")
 }
 
+internal object CustomerContactPolicy {
+    private val basicEmailPattern = Regex("^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$")
+
+    data class Values(
+        val personalEmail: String,
+        val workEmail: String,
+        val phoneHasWhatsApp: Boolean,
+        val emailContactConsent: Boolean,
+        val whatsappContactConsent: Boolean,
+    )
+
+    /** Return a trimmed basic email address, or an empty value for blank/invalid input. */
+    fun emailOrEmpty(value: String): String = value.trim().takeIf(basicEmailPattern::matches).orEmpty()
+
+    /** Omitted legacy fields preserve an existing record; an explicit contact form may revoke them. */
+    fun valuesFor(incoming: VoicxCustomer, existing: VoicxCustomer?): Values {
+        if (!incoming.contactFieldsProvided && existing != null) {
+            return Values(
+                existing.personalEmail,
+                existing.workEmail,
+                existing.phoneHasWhatsApp,
+                existing.emailContactConsent,
+                existing.whatsappContactConsent,
+            )
+        }
+        return Values(
+            emailOrEmpty(incoming.personalEmail),
+            emailOrEmpty(incoming.workEmail),
+            incoming.phoneHasWhatsApp,
+            incoming.emailContactConsent,
+            incoming.whatsappContactConsent,
+        )
+    }
+}
+
 internal class LocalDatabase(context: Context) : SQLiteOpenHelper(context, "voicx_local.db", null, 4) {
     private val databaseFile = context.getDatabasePath("voicx_local.db")
     override fun onConfigure(db: SQLiteDatabase) {
@@ -277,13 +312,14 @@ internal data class LocalDocument(val id: String, val data: JSONObject) {
     fun text(key: String) = data.optString(key, "")
     fun long(key: String) = data.optLong(key, 0L)
     fun int(key: String) = data.optInt(key, 0)
+    fun boolean(key: String) = data.optBoolean(key, false)
     fun nullableText(key: String) = text(key).ifBlank { null }
     fun strings(key: String): List<String> = data.optJSONArray(key)?.let { a ->
         (0 until a.length()).mapNotNull { a.optString(it, null) }
     } ?: emptyList()
 }
 
-data class VoicxCustomer(val id: String? = null, val phone: String, val name: String, val role: String = "", val company: String = "", val instructions: String = "", val notes: String = "", val groups: List<String> = emptyList(), val createdAt: Long = System.currentTimeMillis(), val updatedAt: Long = System.currentTimeMillis())
+data class VoicxCustomer(val id: String? = null, val phone: String, val name: String, val role: String = "", val company: String = "", val instructions: String = "", val notes: String = "", val groups: List<String> = emptyList(), val createdAt: Long = System.currentTimeMillis(), val updatedAt: Long = System.currentTimeMillis(), val personalEmail: String = "", val workEmail: String = "", val phoneHasWhatsApp: Boolean = false, val emailContactConsent: Boolean = false, val whatsappContactConsent: Boolean = false, val contactFieldsProvided: Boolean = false)
 data class Campaign(val id: String? = null, val name: String, val startAt: Long, val timezone: String = java.time.ZoneId.systemDefault().id, val targetGroup: String = "", val channel: String = "call_sms", val smsTemplate: String = "", val status: String = "queued", val createdAt: Long = System.currentTimeMillis(), val updatedAt: Long = System.currentTimeMillis())
 data class CampaignCustomer(val id: String? = null, val campaignId: String, val customerId: String, val phone: String, val sequence: Int, val status: String = "queued", val attempts: Int = 0, val lastCallAt: Long? = null, val lastSmsAt: Long? = null, val nextCallAt: Long? = null, val nextSmsAt: Long? = null, val lastOutcome: String = "", val followUpNote: String = "", val interestedAt: Long? = null, val adminAt: Long? = null, val pausedAt: Long? = null, val optedOutAt: Long? = null, val createdAt: Long = System.currentTimeMillis(), val updatedAt: Long = System.currentTimeMillis())
 data class CallSchedule(val id: String? = null, val customerId: String, val phone: String, val runAt: Long, val status: String = "pending", val note: String = "", val campaignId: String? = null, val campaignCustomerId: String? = null, val idempotencyKey: String? = null, val attempts: Int = 0, val recurrence: String = "none", val recurrenceUntil: Long? = null, val recurrenceSeriesId: String? = null)
@@ -353,6 +389,7 @@ internal class VoicxCustomerRepository(private val store: VoicxFirebaseStore) {
     fun upsert(c: VoicxCustomer): String = db.transaction {
         val phone = PhoneNumberNormalizer.normalizeYemen(c.phone)
         val existing = findByPhone(phone) ?: findByPhone(c.phone.trim())
+        val contact = CustomerContactPolicy.valuesFor(c, existing)
         val id = c.id?.takeIf(String::isNotBlank) ?: existing?.id ?: idOrNew(null)
         save("customers", id, mapOf(
             "phone" to phone,
@@ -364,6 +401,11 @@ internal class VoicxCustomerRepository(private val store: VoicxFirebaseStore) {
             "groups" to c.groups.distinct().filter(String::isNotBlank),
             "createdAt" to (existing?.createdAt ?: c.createdAt),
             "updatedAt" to System.currentTimeMillis(),
+            "personalEmail" to contact.personalEmail,
+            "workEmail" to contact.workEmail,
+            "phoneHasWhatsApp" to contact.phoneHasWhatsApp,
+            "emailContactConsent" to contact.emailContactConsent,
+            "whatsappContactConsent" to contact.whatsappContactConsent,
         ))
         id
     }
@@ -373,7 +415,7 @@ internal class VoicxCustomerRepository(private val store: VoicxFirebaseStore) {
         db.allPage("customers", limit, offset).mapNotNull(::from)
     fun customerCount(): Long = db.count("customers")
     fun findByPhone(phone: String): VoicxCustomer? = query("customers") { it.text("phone") == phone.trim() }.firstOrNull()?.let(::from)
-    fun search(q: String, limit: Int = 20): List<VoicxCustomer> { val s = q.trim().lowercase(); return query("customers").mapNotNull(::from).filter { s.isBlank() || listOf(it.phone, it.name, it.company).any { v -> v.lowercase().contains(s) } }.take(limit.coerceIn(1, 50)) }
+    fun search(q: String, limit: Int = 20): List<VoicxCustomer> { val s = q.trim().lowercase(); return query("customers").mapNotNull(::from).filter { s.isBlank() || listOf(it.phone, it.name, it.company, it.personalEmail, it.workEmail).any { v -> v.lowercase().contains(s) } }.take(limit.coerceIn(1, 50)) }
     fun smsSequenceCustomers(targetGroup: String): List<VoicxCustomer> {
         val group = targetGroup.trim()
         return query("customers").mapNotNull(::from)
@@ -1110,7 +1152,7 @@ internal class VoicxCustomerRepository(private val store: VoicxFirebaseStore) {
 
     private fun scheduleFrom(d: LocalDocument) = CallSchedule(d.id, d.text("customerId"), d.text("phone"), d.long("runAt"), d.text("status"), d.text("note"), d.nullableText("campaignId"), d.nullableText("campaignCustomerId"), d.nullableText("idempotencyKey"), d.int("attempts"), d.text("recurrence").ifBlank { "none" }, d.long("recurrenceUntil").takeIf { it > 0L }, d.nullableText("recurrenceSeriesId"))
     private fun smsScheduleFrom(d: LocalDocument) = SmsSchedule(d.id, d.text("customerId"), d.text("phone"), d.long("runAt"), d.text("message"), d.text("status"), d.nullableText("campaignId"), d.text("note"), d.nullableText("campaignCustomerId"), d.nullableText("idempotencyKey"), d.int("attempts"), d.text("recurrence").ifBlank { "none" }, d.long("recurrenceUntil").takeIf { it > 0L }, d.nullableText("recurrenceSeriesId"))
-    private fun from(d: LocalDocument): VoicxCustomer? = VoicxCustomer(d.id, d.text("phone"), d.text("name"), d.text("role"), d.text("company"), d.text("instructions"), d.text("notes"), d.strings("groups"), d.long("createdAt"), d.long("updatedAt"))
+    private fun from(d: LocalDocument): VoicxCustomer? = VoicxCustomer(d.id, d.text("phone"), d.text("name"), d.text("role"), d.text("company"), d.text("instructions"), d.text("notes"), d.strings("groups"), d.long("createdAt"), d.long("updatedAt"), CustomerContactPolicy.emailOrEmpty(d.text("personalEmail")), CustomerContactPolicy.emailOrEmpty(d.text("workEmail")), d.boolean("phoneHasWhatsApp"), d.boolean("emailContactConsent"), d.boolean("whatsappContactConsent"))
 }
 
 internal class SmsApiClient(private val apiKey: String, private val endpoint: String = "https://adasms-standalone.vercel.app/api/sms/send") {

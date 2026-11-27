@@ -82,6 +82,18 @@ data class GatewaySettings(
     val firebaseLastSuccessAt: Long = 0L,
     /** Adasms API key, encrypted with Android Keystore. */
     val smsApiKey: String = "",
+    /** Manus API key; encrypted with the Android Keystore key. */
+    val manusApiKey: String = "",
+    /** Gmail connector ID used by Manus tasks. */
+    val manusGmailConnectorId: String = "9444d960-ab7e-450f-9cb9-b9467fb0adda",
+    /** WhatsApp Business Cloud API phone-number ID. */
+    val whatsappPhoneNumberId: String = "",
+    /** WhatsApp Business access token, encrypted with Android Keystore. */
+    val whatsappAccessToken: String = "",
+    /** Meta Graph API version (for example v27.0); kept configurable as Meta versions change. */
+    val whatsappGraphVersion: String = "v27.0",
+    /** Language code used by approved WhatsApp message templates. */
+    val whatsappTemplateLanguage: String = "ar",
     /** UI language: "ru" or "en". Pure UI preference, no SIP restart. */
     val uiLanguage: String = "ru",
 ) {
@@ -151,6 +163,12 @@ class SettingsStore(context: Context) {
         firebaseEnabled = prefs.getBoolean("firebase_enabled", false),
         firebaseLastSuccessAt = prefs.getLong("firebase_last_success_at", 0L),
         smsApiKey = prefs.getString("sms_api_key_sealed", null)?.let(::unseal).orEmpty(),
+        manusApiKey = prefs.getString("manus_api_key_sealed", null)?.let(::unseal).orEmpty(),
+        manusGmailConnectorId = prefs.getString("manus_gmail_connector_id", "9444d960-ab7e-450f-9cb9-b9467fb0adda")!!,
+        whatsappPhoneNumberId = prefs.getString("whatsapp_phone_number_id", "")!!,
+        whatsappAccessToken = prefs.getString("whatsapp_access_token_sealed", null)?.let(::unseal).orEmpty(),
+        whatsappGraphVersion = prefs.getString("whatsapp_graph_version", "v27.0")!!,
+        whatsappTemplateLanguage = prefs.getString("whatsapp_template_language", "ar")!!,
         // First run (key absent): default to the system language — Russian locale → "ru",
         // anything else → "en". Once the user picks a language it is saved and always wins.
         uiLanguage = prefs.getString("ui_lang", null) ?: systemDefaultUiLang(),
@@ -195,6 +213,12 @@ class SettingsStore(context: Context) {
             .putBoolean("firebase_enabled", s.firebaseEnabled)
             .putLong("firebase_last_success_at", s.firebaseLastSuccessAt)
             .putString("sms_api_key_sealed", seal(s.smsApiKey))
+            .putString("manus_api_key_sealed", seal(s.manusApiKey))
+            .putString("manus_gmail_connector_id", s.manusGmailConnectorId.trim())
+            .putString("whatsapp_phone_number_id", s.whatsappPhoneNumberId.trim())
+            .putString("whatsapp_access_token_sealed", seal(s.whatsappAccessToken))
+            .putString("whatsapp_graph_version", s.whatsappGraphVersion.trim())
+            .putString("whatsapp_template_language", s.whatsappTemplateLanguage.trim())
             .putString("ui_lang", s.uiLanguage)
             .apply()
     }

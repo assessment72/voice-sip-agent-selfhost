@@ -100,6 +100,9 @@ data class HealthState(
 class GatewayRuntime private constructor(context: Context) {
     private val app = context.applicationContext
     private val worker = newWorker()
+    private val outreachWorker = ScheduledThreadPoolExecutor(1) { task ->
+        Thread(task, "VoicxCustomerOutreach").apply { isDaemon = true }
+    }.apply { removeOnCancelPolicy = true }
     private val smsInboundWorker = java.util.concurrent.Executors.newSingleThreadExecutor { task -> Thread(task, "VoicxSmsInbound").apply { isDaemon = true } }
     val settingsStore = SettingsStore(app)
     private val salesAdminStore = SalesAdminStore(app)
@@ -108,6 +111,7 @@ class GatewayRuntime private constructor(context: Context) {
     val settings: GatewaySettings get() = _settings.value
     private val firebaseStore = VoicxFirebaseStore(app)
     private val customers = VoicxCustomerRepository(firebaseStore)
+    private val customerOutreach = CustomerOutreachCoordinator(app, customers, { settings }) { AppLog.i(it) }
     private val smsWriter = GeminiSmsWriter { settings.geminiApiKey }
 
     // Service entry points can run before the worker initializes. Use the actual saved switch and
@@ -226,6 +230,7 @@ class GatewayRuntime private constructor(context: Context) {
     private var dialerRetry: ScheduledFuture<*>? = null
     private var healthCheck: ScheduledFuture<*>? = null
     private var scheduleCheck: ScheduledFuture<*>? = null
+    private var customerOutreachCheck: ScheduledFuture<*>? = null
     @Volatile private var lastScheduleCheckAt: Long = 0L
     @Volatile private var networkCallback: ConnectivityManager.NetworkCallback? = null
     private val dialerHandoffStore = DialerHandoffStore(app)
@@ -322,6 +327,7 @@ class GatewayRuntime private constructor(context: Context) {
         if (serviceToken !== service) return@execute
         foregroundRunning = true
         foregroundRequested = true
+        startCustomerOutreachScheduler()
         startGateway()
         updateReadiness()
     }
@@ -330,6 +336,7 @@ class GatewayRuntime private constructor(context: Context) {
         if (serviceToken !== service) return@execute
         serviceToken = null
         foregroundRunning = false
+        stopCustomerOutreachScheduler()
         // Destruction releases resources, never changes roles or immediately restarts the service.
         // An explicit launch or a later switch-on can request it again.
         foregroundRequested = _health.value.needsForegroundService
@@ -387,6 +394,27 @@ class GatewayRuntime private constructor(context: Context) {
         }.onFailure { AppLog.w("network callback cleanup failed", it) }
         setupPending = false
         worker.allowCoreThreadTimeOut(true)
+    }
+
+    /** Customer outreach continues with the foreground host even when SIP takeover is switched off. */
+    private fun startCustomerOutreachScheduler() {
+        if (customerOutreachCheck != null) return
+        customerOutreachCheck = outreachWorker.scheduleWithFixedDelay(
+            {
+                runCatching { customerOutreach.runOnePass() }
+                    .onFailure { AppLog.w("customer outreach scheduler pass failed", it) }
+            },
+            10,
+            30,
+            TimeUnit.SECONDS,
+        )
+        AppLog.i("customer outreach scheduler started")
+    }
+
+    private fun stopCustomerOutreachScheduler() {
+        customerOutreachCheck?.cancel(false)
+        customerOutreachCheck = null
+        AppLog.i("customer outreach scheduler stopped with foreground service")
     }
 
     // ------------------------------------------------------------ privileged setup / health
@@ -847,6 +875,128 @@ class GatewayRuntime private constructor(context: Context) {
         settingsStore.save(updated); _settings.value = updated
     }
 
+    /** Save Manus and WhatsApp credentials via SettingsStore's Android Keystore encryption. */
+    fun updateCustomerOutreachSettings(
+        manusApiKey: String,
+        connectorId: String,
+        whatsappPhoneNumberId: String,
+        whatsappAccessToken: String,
+        graphVersion: String,
+        language: String,
+        callback: (String) -> Unit = {},
+    ) = worker.execute {
+        val key = manusApiKey.trim()
+        val connector = connectorId.trim()
+        val phoneId = whatsappPhoneNumberId.trim()
+        val token = whatsappAccessToken.trim()
+        val graph = graphVersion.trim()
+        val templateLanguage = language.trim()
+        val result = runCatching {
+            require(key.isBlank() || key.length >= 16) { "Manus API key format is invalid" }
+            require(connector.isNotBlank()) { "Gmail connector ID is required" }
+            require(phoneId.isBlank() || phoneId.matches(Regex("[0-9]{1,40}"))) { "WhatsApp Phone Number ID is invalid" }
+            require(graph.matches(Regex("v[0-9]+\\.[0-9]+"))) { "Graph API version is invalid" }
+            require(templateLanguage.matches(Regex("[A-Za-z]{2,3}([_-][A-Za-z0-9]{2,8})?"))) { "WhatsApp template language is invalid" }
+            val updated = settings.copy(
+                manusApiKey = key,
+                manusGmailConnectorId = connector,
+                whatsappPhoneNumberId = phoneId,
+                whatsappAccessToken = token,
+                whatsappGraphVersion = graph,
+                whatsappTemplateLanguage = templateLanguage,
+            )
+            settingsStore.save(updated)
+            _settings.value = updated
+            "تم حفظ إعدادات التواصل؛ المفاتيح محفوظة مشفرة."
+        }.getOrElse { "تعذر حفظ إعدادات التواصل: ${it.message ?: it.javaClass.simpleName}" }
+        callback(result)
+    }
+
+    /** Credential-only read; this verifies Manus authentication and does not test Gmail or send email. */
+    fun testManusApiKey(apiKey: String, callback: (String) -> Unit) {
+        outreachWorker.execute {
+            val result = runCatching {
+                ManusV2Client(apiKey.trim(), "").checkApiKey()
+            }.fold(
+                onSuccess = { if (it) "success: Manus API key verified; no email was sent." else "failure: Manus did not confirm this API key." },
+                onFailure = { "failure: Manus connection could not be verified (${it.javaClass.simpleName}); no email was sent." },
+            )
+            callback(result)
+        }
+    }
+
+    /** GET-only WhatsApp Phone Number check; this does not send a test message. */
+    fun testWhatsAppConnection(
+        phoneNumberId: String,
+        accessToken: String,
+        graphVersion: String,
+        callback: (String) -> Unit,
+    ) {
+        outreachWorker.execute {
+            val result = runCatching {
+                WhatsAppCloudApiClient(accessToken.trim(), phoneNumberId.trim(), graphVersion.trim()).checkPhoneNumberConnection()
+            }.fold(
+                onSuccess = { if (it) "success: WhatsApp Phone Number access verified; no message was sent." else "failure: WhatsApp access was not verified." },
+                onFailure = { "failure: WhatsApp connection could not be verified (${it.javaClass.simpleName}); no message was sent." },
+            )
+            callback(result)
+        }
+    }
+
+    fun loadCustomerOutreachTemplates(callback: (List<CustomerOutreachTemplate>) -> Unit) {
+        outreachWorker.execute {
+            callback(runCatching { customerOutreach.loadTemplates() }.getOrDefault(CustomerOutreachTemplates.defaults))
+        }
+    }
+
+    fun saveCustomerOutreachTemplate(template: CustomerOutreachTemplate, callback: (String) -> Unit = {}) {
+        outreachWorker.execute {
+            val result = runCatching {
+                require(template.stage in 1..CustomerOutreachTemplates.COUNT) { "قيمة المرحلة غير صالحة" }
+                require(template.title.isNotBlank() && template.emailSubject.isNotBlank() && template.emailBody.isNotBlank()) {
+                    "العنوان وموضوع البريد ونصه مطلوبة"
+                }
+                require(template.emailSubject.length <= 180 && template.emailBody.length <= 10_000) { "القالب أطول من الحد المسموح" }
+                val unknownTokens = Regex("\\{([^}]+)}").findAll(template.emailSubject + "\n" + template.emailBody)
+                    .map { it.groupValues[1] }.filter { it !in setOf("name", "company") }.toSet()
+                require(unknownTokens.isEmpty()) { "متغيرات غير مدعومة في القالب؛ المسموح {name} و{company}" }
+                require(template.whatsappTemplateName.isBlank() || template.whatsappTemplateName.matches(Regex("[a-z0-9_]{1,512}"))) {
+                    "اسم قالب WhatsApp يجب أن يطابق الاسم المعتمد في Meta"
+                }
+                require(template.whatsappLanguage.matches(Regex("[A-Za-z]{2,3}([_-][A-Za-z0-9]{2,8})?"))) {
+                    "رمز لغة قالب WhatsApp غير صالح"
+                }
+                customerOutreach.saveTemplate(template)
+                "تم حفظ قالب المرحلة ${template.stage}."
+            }.getOrElse { "تعذر حفظ القالب: ${it.message ?: it.javaClass.simpleName}" }
+            callback(result)
+        }
+    }
+
+    fun startCustomerOutreach(customerId: String, firstAt: Long, minDays: Int, maxDays: Int, callback: (String) -> Unit) = outreachWorker.execute {
+        callback(runCatching { customerOutreach.start(customerId.trim(), firstAt, minDays, maxDays) }
+            .fold(
+                onSuccess = { "تم جدولة تسلسل التواصل ${it.id} للعميل ${it.customerId} من ${ScheduleCommandParser.displayTime(it.firstAt)}؛ القنوات المؤهلة فقط ستُرسل مع إعادة فحص الموافقة قبل كل مرحلة." },
+                onFailure = { "تعذر بدء التسلسل: ${it.message ?: it.javaClass.simpleName}" },
+            ))
+    }
+
+    fun stopCustomerOutreach(sequenceId: String, callback: (String) -> Unit) = outreachWorker.execute {
+        val stopped = runCatching { customerOutreach.stop(sequenceId.trim()) }.getOrDefault(false)
+        callback(if (stopped) "أُوقف تسلسل التواصل. إن كانت نتيجة رسالة خارجية قيد الانتظار، فحالته تحتاج مراجعة ولن يعاد إرسالها تلقائياً." else "لم يمكن إيقاف التسلسل؛ تحقق من المعرف والحالة النهائية.")
+    }
+
+    fun listCustomerOutreach(callback: (String) -> Unit) = outreachWorker.execute {
+        val report = runCatching {
+            customerOutreach.listSequences().take(30).joinToString("\n") { sequence ->
+                val customerName = customers.findById(sequence.customerId)?.name.orEmpty().ifBlank { "عميل" }
+                val review = sequence.lastError.takeIf { sequence.status == "needs_review" }?.let { "\n   مراجعة: ${it.take(220)}" }.orEmpty()
+                "${sequence.id} | $customerName | ${sequence.stage}/${CustomerOutreachTemplates.COUNT} | ${sequence.status} | ${ScheduleCommandParser.displayTime(sequence.runAt)}$review"
+            }.ifBlank { "لا توجد تسلسلات تواصل." }
+        }.getOrElse { "تعذر تحميل التسلسلات: ${it.javaClass.simpleName}" }
+        callback(report)
+    }
+
     fun loadCallInstructionTemplates(callback: (Map<String, String>) -> Unit) = worker.execute {
         callback(mapOf(
             "first" to customers.callInstructionTemplate("first"),
@@ -1071,16 +1221,20 @@ class GatewayRuntime private constructor(context: Context) {
     fun localDatabaseStatus(): String = "SQLite محلية متصلة؛ البيانات محفوظة داخل الهاتف"
     fun localDatabaseSummary(): String = runCatching {
         val db = firebaseStore.requireDatabase()
-        listOf("customers", "customer_memories", "customer_messages", "customer_sms_sequences", "call_summaries", "call_schedules", "sms_schedules", "campaigns", "campaign_customers", "sales_admin_leads", "schedule_reconciliation_audit")
+        listOf("customers", "customer_memories", "customer_messages", "customer_sms_sequences", "customer_outreach_sequences", "customer_outreach_events", "outreach_templates", "call_summaries", "call_schedules", "sms_schedules", "campaigns", "campaign_customers", "sales_admin_leads", "schedule_reconciliation_audit")
             .joinToString("\n") { "$it: ${db.count(it)}" }
     }.getOrElse { "تعذر قراءة قاعدة البيانات المحلية: ${it.javaClass.simpleName}" }
     fun automaticSchedulingReport(): String = runCatching {
         val calls = customers.listSchedules(100)
         val sms = customers.listSmsSchedules(100)
+        val outreach = customerOutreach.listSequences()
         val now = System.currentTimeMillis()
         val pending = calls.count { it.status == "pending" } + sms.count { it.status == "queued" }
         val running = calls.count { it.status == "running" } + sms.count { it.status == "running" }
         val review = calls.count { it.status == ScheduleLeasePolicy.RECONCILIATION_STATUS } + sms.count { it.status == ScheduleLeasePolicy.RECONCILIATION_STATUS }
+        val outreachActive = outreach.count { it.status in setOf("scheduled", "running", "waiting_email") }
+        val outreachReview = outreach.count { it.status == "needs_review" }
+        val outreachNext = outreach.filter { it.status == "scheduled" && it.runAt >= now }.minOfOrNull { it.runAt }
         val next = (calls.filter { it.status == "pending" && it.runAt >= now }.map { it.runAt } +
             sms.filter { it.status == "queued" && it.runAt >= now }.map { it.runAt }).minOrNull()
         val last = lastScheduleCheckAt.takeIf { it > 0L }?.let(ScheduleCommandParser::displayTime) ?: "لم تبدأ بعد"
@@ -1088,7 +1242,8 @@ class GatewayRuntime private constructor(context: Context) {
             "آخر فحص: $last\n" +
             "قيد الانتظار: $pending | قيد التنفيذ: $running | تحتاج مراجعة: $review\n" +
             "الموعد القادم: ${next?.let(ScheduleCommandParser::displayTime) ?: "لا يوجد"}\n" +
-            "المهام تُنفذ تلقائياً كل 30 ثانية عند تشغيل خدمة Gateway."
+            "المكالمات وSMS تُنفذ كل 30 ثانية عند تشغيل Gateway.\n" +
+            "تسلسل العملاء: ${if (customerOutreachCheck?.isCancelled == false) "عامل خدمة الخلفية يعمل" else "خدمة الخلفية متوقفة"} | نشطة: $outreachActive | للمراجعة: $outreachReview | القادمة: ${outreachNext?.let(ScheduleCommandParser::displayTime) ?: "لا يوجد"}."
     }.getOrElse { "تعذر قراءة حالة التشغيل التلقائي: ${it.message ?: it.javaClass.simpleName}" }
     fun maintainLocalDatabase(callback: (String) -> Unit = {}) = worker.execute {
         callback(runCatching {
@@ -1097,7 +1252,9 @@ class GatewayRuntime private constructor(context: Context) {
         }.getOrElse { "فشلت صيانة قاعدة البيانات: ${it.message ?: it.javaClass.simpleName}" })
     }
     fun localDatabaseCustomers(): String = runCatching {
-        customers.listCustomers(20).joinToString("\n") { "${it.id} | ${it.name} | ${it.phone} | ${it.company}" }
+        customers.listCustomers(5).joinToString("\n") {
+            "${it.id} | ${it.name} | ${it.phone} | ${it.company} | شخصي: ${it.personalEmail.ifBlank { "—" }} | مهني: ${it.workEmail.ifBlank { "—" }} | WhatsApp: ${if (it.phoneHasWhatsApp) "مرتبط" else "غير مرتبط"} | موافقة البريد/WhatsApp: ${if (it.emailContactConsent) "نعم" else "لا"}/${if (it.whatsappContactConsent) "نعم" else "لا"}"
+        }
             .ifBlank { "لا يوجد عملاء" }
     }.getOrElse { "تعذر قراءة العملاء: ${it.javaClass.simpleName}" }
     fun localDatabaseCustomerOptions(limit: Int = 20, offset: Int = 0): List<VoicxCustomer> =
@@ -1224,7 +1381,13 @@ class GatewayRuntime private constructor(context: Context) {
         val cc = customers.latestCampaignCustomer(phone)
         callback(if (cc == null) "لم أعثر على عضوية حملة لهذا الرقم." else if (customers.scheduleFollowUp(cc, callAt, smsAt, note)) "تم استئناف العميل بموعد صريح." else "تعذر استئناف العميل.")
     }
-    fun searchCustomers(query: String, callback: (String) -> Unit) = worker.execute { callback(runCatching { customers.search(query).joinToString("\n") { "${it.id} | ${it.name} | ${it.phone} | ${it.company}" } }.getOrElse { "خطأ البحث: ${it.javaClass.simpleName}" }.ifBlank { "لا توجد نتائج" }) }
+    fun searchCustomers(query: String, callback: (String) -> Unit) = worker.execute {
+        callback(runCatching {
+            customers.search(query, 5).joinToString("\n") {
+                "${it.id} | ${it.name} | ${it.phone} | ${it.company} | شخصي: ${it.personalEmail.ifBlank { "—" }} | مهني: ${it.workEmail.ifBlank { "—" }} | WhatsApp: ${if (it.phoneHasWhatsApp) "مرتبط" else "غير مرتبط"} | موافقات البريد/WA: ${if (it.emailContactConsent) "نعم" else "لا"}/${if (it.whatsappContactConsent) "نعم" else "لا"}"
+            }
+        }.getOrElse { "خطأ البحث: ${it.javaClass.simpleName}" }.ifBlank { "لا توجد نتائج" })
+    }
     fun saveCallSchedule(schedule: CallSchedule, callback: (String) -> Unit) = worker.execute { callback(runCatching { customers.saveSchedule(schedule) }.getOrElse { "خطأ جدولة الاتصال: ${it.javaClass.simpleName}" }) }
     fun saveManualCallSchedule(
         customerId: String,

@@ -335,6 +335,17 @@ private fun SettingsSection(rt: GatewayRuntime) {
     var telegramBotToken by remember(cur) { mutableStateOf(cur.telegramBotToken) }
     var telegramAllowedUserId by remember(cur) { mutableStateOf(if (cur.telegramAllowedUserId > 0) cur.telegramAllowedUserId.toString() else "") }
     var geminiApiKey by remember(cur) { mutableStateOf(cur.geminiApiKey) }
+    // Secrets are intentionally never copied from settingsFlow into Compose state or a text field.
+    var outreachManusApiKey by remember { mutableStateOf("") }
+    var outreachWhatsAppAccessToken by remember { mutableStateOf("") }
+    var outreachConnectorId by remember(cur) { mutableStateOf(cur.manusGmailConnectorId) }
+    var outreachPhoneNumberId by remember(cur) { mutableStateOf(cur.whatsappPhoneNumberId) }
+    var outreachGraphVersion by remember(cur) { mutableStateOf(cur.whatsappGraphVersion) }
+    var outreachLanguage by remember(cur) { mutableStateOf(cur.whatsappTemplateLanguage) }
+    var outreachTemplates by remember { mutableStateOf(CustomerOutreachTemplates.defaults) }
+    var outreachStatus by remember { mutableStateOf("") }
+    var outreachBusy by remember { mutableStateOf(false) }
+    val outreachScope = rememberCoroutineScope()
     var geminiSpeechRate by remember(cur) { mutableStateOf(cur.geminiSpeechRate) }
     var firstCallInstruction by remember { mutableStateOf("") }
     var reminderCallInstruction by remember { mutableStateOf("") }
@@ -352,6 +363,13 @@ private fun SettingsSection(rt: GatewayRuntime) {
             firstCallInstruction = templates["first"].orEmpty()
             reminderCallInstruction = templates["reminder"].orEmpty()
             busyCallInstruction = templates["busy_retry"].orEmpty()
+        }
+        rt.loadCustomerOutreachTemplates { templates ->
+            outreachScope.launch {
+                withContext(Dispatchers.Main) {
+                    outreachTemplates = templates.sortedBy { it.stage }
+                }
+            }
         }
     }
     val context = LocalContext.current
@@ -451,6 +469,139 @@ private fun SettingsSection(rt: GatewayRuntime) {
         Button(onClick = { rt.updateSmsApiKey(smsApiKey) }) { Text(t("حفظ مفتاح SMS", "Save SMS key")) }
     }
 
+    Section(t("تواصل العملاء", "Customer outreach")) {
+        Text(t(
+            "إعداد Gmail عبر Manus وWhatsApp. حقول المفاتيح سرية ولا تُعرض بعد حفظها. اختبارات الاتصال لا ترسل رسائل للعملاء.",
+            "Configure Gmail through Manus and WhatsApp. Secret fields stay hidden after saving. Connection tests do not send customer messages."
+        ), style = MaterialTheme.typography.bodySmall)
+        Text(if (cur.manusApiKey.isBlank()) t("لا يوجد Manus API key محفوظ", "No Manus API key saved") else t("Manus API key محفوظ ومخفي", "Saved Manus API key is hidden"), style = MaterialTheme.typography.bodySmall)
+        OutlinedTextField(
+            value = outreachManusApiKey, onValueChange = { outreachManusApiKey = it },
+            label = { Text("Manus API key") }, visualTransformation = PasswordVisualTransformation(),
+            singleLine = true, modifier = Modifier.fillMaxWidth(),
+        )
+        Field(t("معرّف موصل Gmail", "Gmail connector ID"), outreachConnectorId) { outreachConnectorId = it }
+        Field(t("معرّف رقم WhatsApp", "WhatsApp Phone Number ID"), outreachPhoneNumberId) { outreachPhoneNumberId = it }
+        Text(if (cur.whatsappAccessToken.isBlank()) t("لا يوجد WhatsApp access token محفوظ", "No WhatsApp access token saved") else t("WhatsApp access token محفوظ ومخفي", "Saved WhatsApp access token is hidden"), style = MaterialTheme.typography.bodySmall)
+        OutlinedTextField(
+            value = outreachWhatsAppAccessToken, onValueChange = { outreachWhatsAppAccessToken = it },
+            label = { Text(t("WhatsApp access token", "WhatsApp access token")) },
+            visualTransformation = PasswordVisualTransformation(), singleLine = true,
+            modifier = Modifier.fillMaxWidth(),
+        )
+        Field(t("إصدار Graph API", "Graph API version"), outreachGraphVersion) { outreachGraphVersion = it }
+        Field(t("لغة قوالب WhatsApp", "WhatsApp template language"), outreachLanguage) { outreachLanguage = it }
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Button(
+                enabled = !outreachBusy,
+                onClick = {
+                    outreachBusy = true
+                    outreachStatus = ""
+                    rt.updateCustomerOutreachSettings(
+                        manusApiKey = outreachManusApiKey.ifBlank { cur.manusApiKey },
+                        connectorId = outreachConnectorId,
+                        whatsappPhoneNumberId = outreachPhoneNumberId,
+                        whatsappAccessToken = outreachWhatsAppAccessToken.ifBlank { cur.whatsappAccessToken },
+                        graphVersion = outreachGraphVersion,
+                        language = outreachLanguage,
+                    ) { result ->
+                        outreachScope.launch {
+                            withContext(Dispatchers.Main) {
+                                val saved = result.startsWith("تم حفظ")
+                                if (saved) {
+                                    outreachManusApiKey = ""
+                                    outreachWhatsAppAccessToken = ""
+                                }
+                                outreachStatus = if (saved) t("تم حفظ إعدادات التواصل. المفاتيح السرية مشفرة.", "Customer-outreach settings saved. Secret values are encrypted.") else result
+                                outreachBusy = false
+                            }
+                        }
+                    }
+                },
+            ) { Text(t("حفظ إعدادات التواصل", "Save outreach settings")) }
+            OutlinedButton(
+                enabled = !outreachBusy && (outreachManusApiKey.isNotBlank() || cur.manusApiKey.isNotBlank()),
+                onClick = {
+                    outreachBusy = true
+                    outreachStatus = ""
+                    rt.testManusApiKey(
+                        apiKey = outreachManusApiKey.ifBlank { cur.manusApiKey },
+                    ) { result ->
+                        outreachScope.launch {
+                            withContext(Dispatchers.Main) {
+                                val succeeded = result.contains("success", ignoreCase = true) || result.contains("نجاح") || result.contains("connected", ignoreCase = true)
+                                outreachStatus = if (succeeded) t("تم التحقق من مفتاح Manus فقط؛ لم يُختبر موصل Gmail ولم تُرسل رسالة.", "Manus API key verified only; the Gmail connector was not tested and no email was sent.")
+                                    else t("تعذر التحقق من مفتاح Manus. لم يُختبر موصل Gmail ولم تُرسل رسالة.", "Could not verify the Manus API key. The Gmail connector was not tested and no email was sent.")
+                                outreachBusy = false
+                            }
+                        }
+                    }
+                },
+            ) { Text(t("اختبار مفتاح Manus", "Test Manus API key")) }
+            OutlinedButton(
+                enabled = !outreachBusy && outreachPhoneNumberId.isNotBlank() && (outreachWhatsAppAccessToken.isNotBlank() || cur.whatsappAccessToken.isNotBlank()),
+                onClick = {
+                    outreachBusy = true
+                    outreachStatus = ""
+                    rt.testWhatsAppConnection(
+                        phoneNumberId = outreachPhoneNumberId,
+                        accessToken = outreachWhatsAppAccessToken.ifBlank { cur.whatsappAccessToken },
+                        graphVersion = outreachGraphVersion,
+                    ) { result ->
+                        outreachScope.launch {
+                            withContext(Dispatchers.Main) {
+                                val succeeded = result.contains("success", ignoreCase = true) || result.contains("نجاح") || result.contains("connected", ignoreCase = true)
+                                outreachStatus = if (succeeded) t("اتصال WhatsApp ناجح. لم تُرسل أي رسالة.", "WhatsApp connection succeeded. No message was sent.")
+                                    else t("تعذر تأكيد اتصال WhatsApp. تحقق من الإعدادات والإنترنت؛ لم تُرسل أي رسالة.", "Could not confirm the WhatsApp connection. Check settings and internet; no message was sent.")
+                                outreachBusy = false
+                            }
+                        }
+                    }
+                },
+            ) { Text(t("اختبار WhatsApp", "Test WhatsApp")) }
+        }
+        if (outreachStatus.isNotBlank()) Text(outreachStatus, style = MaterialTheme.typography.bodySmall)
+        Text(t("قوالب التواصل العشرة", "Ten outreach templates"), style = MaterialTheme.typography.titleSmall)
+        Text(t("رسائل WhatsApp لا تُرسل إلا باسم قالب معتمد في Meta؛ يجب أن يقبل نص القالب متغيرين نصيين بالترتيب: الاسم ثم الشركة. القالب الفارغ يتخطى قناة WhatsApp.", "WhatsApp sends only approved Meta templates; the template body must accept exactly two text variables in this order: customer name, then company. A blank template skips WhatsApp for that stage."), style = MaterialTheme.typography.bodySmall)
+        outreachTemplates.sortedBy { it.stage }.forEach { template ->
+            Card(Modifier.fillMaxWidth()) {
+                Column(Modifier.fillMaxWidth().padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(t("المرحلة ${template.stage}", "Stage ${template.stage}"), style = MaterialTheme.typography.titleSmall)
+                    OutlinedTextField(value = template.title, onValueChange = { value ->
+                        outreachTemplates = outreachTemplates.map { if (it.stage == template.stage) it.copy(title = value) else it }
+                    }, label = { Text(t("العنوان", "Title")) }, singleLine = true, modifier = Modifier.fillMaxWidth())
+                    OutlinedTextField(value = template.emailSubject, onValueChange = { value ->
+                        outreachTemplates = outreachTemplates.map { if (it.stage == template.stage) it.copy(emailSubject = value) else it }
+                    }, label = { Text(t("موضوع البريد الإلكتروني", "Email subject")) }, singleLine = true, modifier = Modifier.fillMaxWidth())
+                    OutlinedTextField(value = template.emailBody, onValueChange = { value ->
+                        outreachTemplates = outreachTemplates.map { if (it.stage == template.stage) it.copy(emailBody = value) else it }
+                    }, label = { Text(t("نص البريد الإلكتروني", "Email body")) }, minLines = 3, modifier = Modifier.fillMaxWidth())
+                    OutlinedTextField(value = template.whatsappTemplateName, onValueChange = { value ->
+                        outreachTemplates = outreachTemplates.map { if (it.stage == template.stage) it.copy(whatsappTemplateName = value) else it }
+                    }, label = { Text(t("اسم قالب WhatsApp المعتمد", "Approved WhatsApp template name")) }, singleLine = true, modifier = Modifier.fillMaxWidth())
+                    OutlinedTextField(value = template.whatsappLanguage, onValueChange = { value ->
+                        outreachTemplates = outreachTemplates.map { if (it.stage == template.stage) it.copy(whatsappLanguage = value) else it }
+                    }, label = { Text(t("لغة قالب WhatsApp", "WhatsApp template language")) }, singleLine = true, modifier = Modifier.fillMaxWidth())
+                    OutlinedButton(
+                        enabled = !outreachBusy,
+                        onClick = {
+                            outreachBusy = true
+                            outreachStatus = ""
+                            rt.saveCustomerOutreachTemplate(template) { result ->
+                                outreachScope.launch {
+                                    withContext(Dispatchers.Main) {
+                                        outreachStatus = if (result.startsWith("تم حفظ")) t("تم حفظ قالب المرحلة ${template.stage}.", "Stage ${template.stage} template saved.") else result
+                                        outreachBusy = false
+                                    }
+                                }
+                            }
+                        },
+                    ) { Text(t("حفظ هذه المرحلة", "Save this stage")) }
+                }
+            }
+        }
+    }
+
     Section(t("Voicx Control API", "Voicx Control API")) {
         Text(t("Необязательное подключение к частному центру управления. Требуется HTTPS через VPN или TLS-прокси. Настройки SIP не меняются.",
             "Optional connection to your private control bridge. HTTPS via VPN or TLS proxy is required. SIP settings are not changed."),
@@ -542,6 +693,7 @@ private fun SettingsSection(rt: GatewayRuntime) {
                 Text(t("أوامر البوت", "Bot commands"), style = MaterialTheme.typography.titleSmall)
                 val commands = "/start — بدء / Start\n/menu — فتح لوحة التحكم / Open control panel\n/help — المساعدة / Help\n/status أو /health — حالة البوابة / Gateway status\n/automation_status — حالة محرك التشغيل التلقائي والموعد القادم / Automatic scheduler status and next run\n/sip — حالة SIP / SIP status\n/calls — حالة المكالمات / Call status\n/db — ملخص قاعدة البيانات / Database summary\n/customers [صفحة] — العملاء مع أزرار اتصال وSMS مجدولين / Customers with scheduled call and SMS buttons\n/find نص — بحث عن عميل / Find customer\n/add_customer رقم | اسم | وظيفة | شركة | تعليمات — إضافة عميل / Add customer\n/schedule أو /schedule_add customerId | رقم | Unix ms/seconds | ملاحظة | تكرار اختياري | انتهاء Unix اختياري — جدولة اتصال / Schedule call with optional recurrence and end time\n/schedule_edit ID | Unix ms/seconds | ملاحظة — تعديل اتصال / Edit call\n/sms_schedule customerId | رقم | Unix ms/seconds | رسالة | ملاحظة — جدولة SMS / Schedule SMS\n/sms_schedule_edit ID | Unix ms/seconds | رسالة | ملاحظة — تعديل SMS / Edit SMS\nالتكرار من أزرار العميل: مرة واحدة، يومي، أسبوعي، شهري؛ المكالمات المتكررة تستخدم سجل الحوار السابق دون إعادة الأسئلة / Recurrence buttons: once, daily, weekly, monthly; recurring calls continue the prior dialogue\n/schedules أو /list_schedules — عرض اتصالات وSMS المجدولة / List call and SMS schedules\n/list_calls — عرض اتصالات مجدولة / List scheduled calls\n/cancel_schedule ID — إلغاء اتصال مجدول وسلسلته / Cancel call and series\n/cancel_sms ID — إلغاء SMS مجدول وسلسلته / Cancel SMS and series\n/simcall <رقم> — اتصال SIM وربطه بـ SIP / Call via SIM and bridge to SIP\n/call الرقم | الاسم | الوظيفة | الشركة — اتصال SIM مع Gemini / SIM call with Gemini\n/ai_status — فحص اتصال Gemini Live API / Test Gemini Live API\n/ai_errors — آخر تشخيصات Gemini / Recent Gemini diagnostics\n/auto_answer_on — تشغيل الرد الآلي بـ Gemini / Enable Gemini auto-answer\n/auto_answer_off — إيقاف الرد الآلي بـ Gemini / Disable auto-answer\n/ai_stop — إيقاف مكالمة Gemini / Stop Gemini call\n/simcall_cancel — إنهاء اتصال SIM / End SIM call\n/account — سجل المكالمات / Call history\n/simcall_delete <id> — حذف سجل / Delete a record\n/enable — تشغيل البوابة / Enable gateway\n/disable — إيقاف التحويل / Disable takeover"
                 Text(commands, style = MaterialTheme.typography.bodySmall)
+                Text(t("بيانات التواصل: /add_customer رقم | اسم | وظيفة | شركة | تعليمات | بريد شخصي | بريد مهني | WhatsApp نعم/لا | موافقة البريد نعم/لا | موافقة WhatsApp نعم/لا. ابدأ فقط بأمر /outreach_start رقم؛ /outreach_sequences للعرض و/outreach_stop رقم للإيقاف.", "Contact fields: /add_customer phone | name | role | company | instructions | personal email | work email | WhatsApp yes/no | email consent yes/no | WhatsApp consent yes/no. Sending starts only with /outreach_start phone; use /outreach_sequences to view and /outreach_stop phone to stop."), style = MaterialTheme.typography.bodySmall)
                 Text(t("من لوحة المواعيد في Telegram يمكنك عرض المهام التي توقفت لأن نتيجة الاتصال أو SMS غير مؤكدة. العرض لا يعيد التنفيذ ولا يرسل شيئاً.", "From the Telegram schedules panel, you can view tasks quarantined because the call or SMS outcome is unknown. Viewing does not retry or send anything."), style = MaterialTheme.typography.bodySmall)
                 Text(t("إيقاف التحويل لا يقطع مكالمة جارية.", "Disabling takeover does not interrupt an active call."), style = MaterialTheme.typography.bodySmall)
                 OutlinedButton(onClick = {
