@@ -3,9 +3,13 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { randomBytes } from "node:crypto";
+import { parseTelegramAdminIds } from "./policies.mjs";
 import assert from "node:assert/strict";
 
 const secret = () => randomBytes(32).toString("hex");
+assert.deepEqual([...parseTelegramAdminIds("12345, 67890,not-a-number,")], ["12345", "67890"],
+  "Telegram allowlist parser must retain numeric admin IDs and reject malformed entries");
+assert.equal(parseTelegramAdminIds("").size, 0, "empty Telegram allowlist must stay disabled");
 const admin = secret();
 const deviceToken = secret();
 const dir = await mkdtemp(path.join(tmpdir(), "voicx-bridge-"));
