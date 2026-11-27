@@ -384,6 +384,83 @@ internal class VoicxCustomerRepository(private val store: VoicxFirebaseStore) {
     fun instructionFor(phone: String) = findByPhone(phone)?.instructions.orEmpty()
     fun memoriesFor(phone: String, limit: Int = 10): String { val id = findByPhone(phone)?.id ?: return ""; return query("customer_memories") { it.text("customerId") == id }.sortedByDescending { it.long("createdAt") }.take(limit.coerceIn(1, 20)).map { it.text("text") }.filter(String::isNotBlank).asReversed().joinToString("\n") { "- $it" } }
 
+    /** Default stage instructions are seeded once in SQLite and remain editable by the manager. */
+    fun callInstructionTemplate(stage: String): String {
+        require(stage in setOf("first", "reminder", "busy_retry")) { "مرحلة الاتصال غير معروفة" }
+        val defaults = mapOf(
+            "first" to "ابدأ بتحية قصيرة، تحقق أنك تتحدث مع المسؤول المناسب، واطلب الإذن لدقيقة. اسأل سؤالاً واحداً فقط لفهم نشاط العميل واحتياجه لتوريد الديزل.",
+            "reminder" to "هذه مكالمة متابعة بعد تواصل سابق. راجع الملاحظات والرسائل والمكالمات السابقة قبل الكلام. ذكّر العميل بسبب المتابعة باختصار، ولا تكرر أسئلة أجاب عنها.",
+            "busy_retry" to "هذه إعادة اتصال لأن العميل كان مشغولاً أو لم يتوفر في المحاولة السابقة. اعتذر عن الإزعاج، وقل إنك تعاود الاتصال في الوقت المتفق عليه، واسأله إن كان الوقت مناسباً الآن."
+        )
+        val current = read("call_instruction_templates", stage)
+        if (current != null) return current.text("instruction")
+        val value = defaults.getValue(stage)
+        save("call_instruction_templates", stage, mapOf("stage" to stage, "instruction" to value, "updatedAt" to System.currentTimeMillis()))
+        return value
+    }
+
+    fun saveCallInstructionTemplate(stage: String, instruction: String): Boolean {
+        require(stage in setOf("first", "reminder", "busy_retry")) { "مرحلة الاتصال غير معروفة" }
+        require(instruction.isNotBlank() && instruction.length <= 5000) { "التعليمات مطلوبة وبحد أقصى 5000 حرف" }
+        save("call_instruction_templates", stage, mapOf("stage" to stage, "instruction" to instruction.trim(), "updatedAt" to System.currentTimeMillis()))
+        return true
+    }
+
+    /** Context assembled from the local customer record, notes, recent SMS and earlier call reports. */
+    fun salesContextForCall(phone: String): String {
+        val customer = findByPhone(phone) ?: return ""
+        val id = customer.id.orEmpty()
+        val messages = query("customer_messages") { it.text("customerId") == id }
+            .sortedByDescending { maxOf(it.long("receivedAt"), it.long("sentAt"), it.long("createdAt")) }
+            .take(16).asReversed().joinToString("\\n") {
+                "${it.text("direction")} SMS: ${it.text("body").take(500)}"
+            }
+        val calls = query("call_summaries") { it.text("phone") == customer.phone }
+            .sortedByDescending { it.long("endedAt") }.take(5).asReversed().joinToString("\\n") {
+                "مكالمة سابقة: ${it.text("cause")}؛ العميل قال: ${it.text("inputText").take(700)}؛ ملخص الحوار: ${it.text("conversationTranscript").take(900)}"
+            }
+        return buildString {
+            customer.notes.takeIf(String::isNotBlank)?.let { appendLine("ملاحظات العميل: $it") }
+            messages.takeIf(String::isNotBlank)?.let { appendLine("الرسائل السابقة:\\n$it") }
+            calls.takeIf(String::isNotBlank)?.let { appendLine("سجل المكالمات السابقة:\\n$it") }
+        }.take(8000)
+    }
+
+    fun scheduleAutomaticFollowUp(customer: VoicxCustomer, runAt: Long, stage: String, reason: String, callId: String): String {
+        require(stage in setOf("reminder", "busy_retry"))
+        require(runAt > System.currentTimeMillis())
+        val note = "stage:$stage\\n$reason\\nتعليمات المرحلة: ${callInstructionTemplate(stage)}"
+        return saveSchedule(CallSchedule(
+            customerId = customer.id.orEmpty(), phone = customer.phone, runAt = runAt,
+            note = note, idempotencyKey = "auto-followup:${customer.phone}:$callId",
+        ))
+    }
+
+    fun cancelPendingCallsForPhone(phone: String, reason: String): Int = db.transaction {
+        val normalized = PhoneNumberNormalizer.normalizeYemen(phone)
+        val pending = query("call_schedules") {
+            it.text("phone") == normalized && it.text("status") in listOf("pending", "running")
+        }
+        pending.forEach { save("call_schedules", it.id, mapOf("status" to "cancelled", "error" to reason.take(300))) }
+        pending.size
+    }
+
+    /** Creates a deduplicated management lead when the customer explicitly requests a quote. */
+    fun createSalesAdminLead(customer: VoicxCustomer, report: AiCallReport): Boolean = db.transaction {
+        val callId = report.callId.ifBlank { "${report.startedAt}-${report.endedAt}" }
+        if (query("sales_admin_leads") { it.text("callId") == callId }.isNotEmpty()) return@transaction false
+        save("sales_admin_leads", UUID.randomUUID().toString(), mapOf(
+            "callId" to callId, "customerId" to customer.id.orEmpty(), "phone" to customer.phone,
+            "name" to customer.name, "role" to customer.role, "company" to customer.company,
+            "requestType" to "quotation", "status" to "pending",
+            "customerRequest" to report.inputText.take(6000),
+            "conversationTranscript" to report.conversationTranscript.take(12000),
+            "customerNotes" to customer.notes.take(3000),
+            "createdAt" to System.currentTimeMillis(),
+        ))
+        true
+    }
+
     fun saveSchedule(s: CallSchedule): String = db.transaction {
         val existing = s.idempotencyKey?.takeIf(String::isNotBlank)?.let { key ->
             query("call_schedules") { it.text("idempotencyKey") == key }.firstOrNull()?.id
