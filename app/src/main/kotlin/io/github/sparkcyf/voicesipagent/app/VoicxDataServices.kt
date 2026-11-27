@@ -434,17 +434,17 @@ internal class VoicxCustomerRepository(private val store: VoicxFirebaseStore) {
         val id = customer.id.orEmpty()
         val messages = query("customer_messages") { it.text("customerId") == id }
             .sortedByDescending { maxOf(it.long("receivedAt"), it.long("sentAt"), it.long("createdAt")) }
-            .take(16).asReversed().joinToString("\\n") {
+            .take(16).asReversed().joinToString("\n") {
                 "${it.text("direction")} SMS: ${it.text("body").take(500)}"
             }
         val calls = query("call_summaries") { it.text("phone") == customer.phone }
-            .sortedByDescending { it.long("endedAt") }.take(5).asReversed().joinToString("\\n") {
+            .sortedByDescending { it.long("endedAt") }.take(5).asReversed().joinToString("\n") {
                 "مكالمة سابقة: ${it.text("cause")}؛ العميل قال: ${it.text("inputText").take(700)}؛ ملخص الحوار: ${it.text("conversationTranscript").take(900)}"
             }
         return buildString {
             customer.notes.takeIf(String::isNotBlank)?.let { appendLine("ملاحظات العميل: $it") }
-            messages.takeIf(String::isNotBlank)?.let { appendLine("الرسائل السابقة:\\n$it") }
-            calls.takeIf(String::isNotBlank)?.let { appendLine("سجل المكالمات السابقة:\\n$it") }
+            messages.takeIf(String::isNotBlank)?.let { appendLine("الرسائل السابقة:\n$it") }
+            calls.takeIf(String::isNotBlank)?.let { appendLine("سجل المكالمات السابقة:\n$it") }
         }.take(8000)
     }
 
@@ -460,14 +460,14 @@ internal class VoicxCustomerRepository(private val store: VoicxFirebaseStore) {
     }
 
     fun salesAdminLeadsReport(limit: Int = 20): String = query("sales_admin_leads") { it.text("status") == "pending" }
-        .sortedByDescending { it.long("createdAt") }.take(limit.coerceIn(1, 50)).joinToString("\\n\\n") {
-            "طلب عرض سعر | ${it.text("name")} | ${it.text("company")} | ${it.text("phone")}\\nالطلب: ${it.text("customerRequest").take(700)}"
+        .sortedByDescending { it.long("createdAt") }.take(limit.coerceIn(1, 50)).joinToString("\n\n") {
+            "طلب عرض سعر | ${it.text("name")} | ${it.text("company")} | ${it.text("phone")}\nالطلب: ${it.text("customerRequest").take(700)}"
         }.ifBlank { "لا توجد طلبات عروض أسعار معلقة للإدارة." }
 
     fun scheduleAutomaticFollowUp(customer: VoicxCustomer, runAt: Long, stage: String, reason: String, callId: String): String {
         require(stage in setOf("reminder", "busy_retry"))
         require(runAt > System.currentTimeMillis())
-        val note = "stage:$stage\\n$reason\\nتعليمات المرحلة: ${callInstructionTemplate(stage)}"
+        val note = "stage:$stage\n$reason\nتعليمات المرحلة: ${callInstructionTemplate(stage)}"
         return saveSchedule(CallSchedule(
             customerId = customer.id.orEmpty(), phone = customer.phone, runAt = runAt,
             note = note, idempotencyKey = "auto-followup:${customer.phone}:$callId",
