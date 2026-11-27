@@ -221,6 +221,15 @@ internal class VoicxCustomerRepository(private val store: VoicxFirebaseStore) {
     }
     fun claimDueSchedule(now: Long = System.currentTimeMillis()): CallSchedule? = claim("call_schedules", "pending", now) { scheduleFrom(it) }?.second
     fun updateScheduleStatus(id: String, status: String, error: String = "") { if (id.isNotBlank()) save("call_schedules", id, mapOf("status" to status, "error" to error.takeIf(String::isNotBlank))) }
+    fun deferSchedule(id: String, runAt: Long, reason: String) {
+        if (id.isBlank()) return
+        save("call_schedules", id, mapOf(
+            "status" to "pending",
+            "runAt" to runAt,
+            "claimedAt" to null,
+            "error" to reason.take(300),
+        ))
+    }
     fun saveSmsSchedule(s: SmsSchedule): String {
         val existing = s.idempotencyKey?.takeIf(String::isNotBlank)?.let { key ->
             query("sms_schedules") { it.text("idempotencyKey") == key }.firstOrNull()?.id
